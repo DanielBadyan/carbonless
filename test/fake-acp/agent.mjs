@@ -6,6 +6,12 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, closeSync, readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream } from "@agentclientprotocol/sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+	getDefaultEnvironment,
+	StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const scenarioPath = process.env.CRB_FAKE_ACP;
 const read = () =>
@@ -74,6 +80,189 @@ function split(text, n) {
 const cancelled = new Set();
 let calls = 0;
 
+/** The `crb` MCP server session/new gave (null: none, the old text-answer mode). */
+let crbServer = null;
+/** The connected MCP client, once a prompt needed it. */
+let mcpClient = null;
+/** The token an approved attach returned. */
+let token = null;
+
+async function connectMcp() {
+	if (mcpClient) return mcpClient;
+	const c = new Client({ name: "fake-acp", version });
+	const srv = crbServer;
+	const pairs = (list) =>
+		Object.fromEntries((list ?? []).map((h) => [h.name, h.value]));
+	const transport =
+		srv.type === "http"
+			? new StreamableHTTPClientTransport(new URL(srv.url), {
+					requestInit: { headers: pairs(srv.headers) },
+				})
+			: new StdioClientTransport({
+					command: srv.command,
+					args: srv.args,
+					env: { ...getDefaultEnvironment(), ...pairs(srv.env) },
+				});
+	await c.connect(transport);
+	mcpClient = c;
+	return c;
+}
+
+/** Calls crb's tool `name`: its JSON answer, logged (the token redacted). */
+async function tool(name, args) {
+	const c = await connectMcp();
+	const r = await c.callTool({ name, arguments: args });
+	const text = r.content?.[0]?.text ?? "{}";
+	let value;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		value = { text };
+	}
+	const { token: _, ...shown } = args;
+	const { token: __, ...said } = value;
+	log({
+		method: `mcp/${name}`,
+		params: shown,
+		response: { error: r.isError === true, value: said },
+	});
+	return { error: r.isError === true, value };
+}
+
+/** The attach arguments the kickoff prompt carries: a JSON line with `request`. */
+function attachArgs(text) {
+	for (const line of text.split("\n")) {
+		const at = line.indexOf('{"review"');
+		if (at < 0) continue;
+		try {
+			const args = JSON.parse(line.slice(at));
+			if (typeof args.request === "string") return args;
+		} catch {}
+	}
+	return null;
+}
+
+/** Permission requests (each a tool_call update first), as the scenario lists them. */
+async function permissions(cx, update, sessionId) {
+	for (const r of s.requests ?? []) {
+		const toolCallId = `call-${++calls}`;
+		await update({
+			sessionUpdate: "tool_call",
+			toolCallId,
+			title: r.title,
+			kind: r.kind,
+			status: "pending",
+			rawInput: r.rawInput ?? {},
+		});
+		const params = {
+			sessionId,
+			toolCall: {
+				toolCallId,
+				title: r.title,
+				kind: r.kind,
+				rawInput: r.rawInput ?? {},
+				status: "pending",
+			},
+			options: [
+				{ optionId: "allow", name: "Allow", kind: "allow_once" },
+				{ optionId: "reject", name: "Reject", kind: "reject_once" },
+			],
+		};
+		const response = await cx.client.request(
+			methods.client.session.requestPermission,
+			params,
+		);
+		log({ method: "session/request_permission", params, response });
+		const allowed =
+			response.outcome.outcome === "selected" &&
+			response.outcome.optionId === "allow";
+		await update({
+			sessionUpdate: "tool_call_update",
+			toolCallId,
+			status: allowed ? "completed" : "failed",
+		});
+	}
+}
+
+/** The answer for a question's latest message: the first match, else the last. */
+function answerFor(latest) {
+	const answers = s.answers?.length ? s.answers : [{ text: "ok" }];
+	return (
+		answers.find((a) => a.match !== undefined && latest.includes(a.match)) ??
+		answers.at(-1)
+	);
+}
+
+/**
+ * A turn as a joined session works: attach with the kickoff's request (once),
+ * the scenario's extra tools, then next → reply until none waits.
+ */
+async function mcpTurn(cx, sessionId, prompt) {
+	const stopped = () => cancelled.has(sessionId);
+	const update = (u) =>
+		cx.client.notify(methods.client.session.update, { sessionId, update: u });
+	const cfg = { attach: true, replies: "answer", ...(s.mcp ?? {}) };
+	const text = prompt
+		.filter((b) => b.type === "text")
+		.map((b) => b.text)
+		.join("\n");
+	if (!token && cfg.attach) {
+		const args = attachArgs(text);
+		if (args) {
+			const r = await tool("attach", { name, ...args });
+			if (r.value.state === "approved") token = r.value.token;
+		}
+	}
+	if (!token) return { stopReason: "end_turn" };
+	for (const t of cfg.tools ?? []) await tool(t, { token });
+	let crashed = false;
+	for (;;) {
+		if (stopped()) return { stopReason: "cancelled" };
+		const q = await tool("next", { token });
+		if (q.error || q.value.none) break;
+		if (s.crashOnPrompt && !crashed) {
+			crashed = true;
+			process.stdout.write("", () => process.exit(70));
+			return new Promise(() => {});
+		}
+		await permissions(cx, update, sessionId);
+		const latest = q.value.envelope?.messages?.at(-1)?.text ?? "";
+		const answer = answerFor(latest);
+		if (answer.run?.length) {
+			execFileSync(answer.run[0], answer.run.slice(1), { stdio: "ignore" });
+		}
+		await update({
+			sessionUpdate: "agent_message_chunk",
+			content: { type: "text", text: answer.text },
+		});
+		await hold("prompt", stopped);
+		if (stopped()) return { stopReason: "cancelled" };
+		if (answer.stop === "error") {
+			throw new Error(answer.error ?? "fake agent: error");
+		}
+		if (cfg.replies === "none") return { stopReason: "end_turn" };
+		if (cfg.strayReply) {
+			await tool("reply", {
+				token,
+				thread: cfg.strayReply,
+				replyTo: q.value.replyTo ?? "",
+				text: "stray",
+			});
+		}
+		await tool("reply", {
+			token,
+			thread: q.value.thread,
+			replyTo: q.value.replyTo ?? "",
+			text: answer.text,
+		});
+		if (answer.stop && answer.stop !== "end_turn") {
+			return { stopReason: answer.stop };
+		}
+	}
+	if (cfg.detach) await tool("detach", { token });
+	return { stopReason: "end_turn" };
+}
+
 agent({ name })
 	.onRequest(methods.agent.initialize, async (cx) => {
 		log({ method: "initialize", params: cx.params });
@@ -84,13 +273,17 @@ agent({ name })
 		await hold("initialize");
 		return {
 			protocolVersion: 1,
-			agentCapabilities: {},
+			agentCapabilities: {
+				mcpCapabilities: { http: s.mcpHttp !== false, sse: false },
+			},
 			agentInfo: { name, version },
 			authMethods: [],
 		};
 	})
 	.onRequest(methods.agent.session.new, async (cx) => {
 		log({ method: "session/new", params: cx.params });
+		crbServer =
+			(cx.params.mcpServers ?? []).find((m) => m.name === "crb") ?? null;
 		return { sessionId: `fake-${process.pid}` };
 	})
 	.onRequest(methods.agent.session.prompt, async (cx) => {
@@ -100,49 +293,9 @@ agent({ name })
 		const stopped = () => cancelled.has(sessionId);
 		const update = (u) =>
 			cx.client.notify(methods.client.session.update, { sessionId, update: u });
-		for (const r of s.requests ?? []) {
-			const toolCallId = `call-${++calls}`;
-			await update({
-				sessionUpdate: "tool_call",
-				toolCallId,
-				title: r.title,
-				kind: r.kind,
-				status: "pending",
-				rawInput: r.rawInput ?? {},
-			});
-			const params = {
-				sessionId,
-				toolCall: {
-					toolCallId,
-					title: r.title,
-					kind: r.kind,
-					rawInput: r.rawInput ?? {},
-					status: "pending",
-				},
-				options: [
-					{ optionId: "allow", name: "Allow", kind: "allow_once" },
-					{ optionId: "reject", name: "Reject", kind: "reject_once" },
-				],
-			};
-			const response = await cx.client.request(
-				methods.client.session.requestPermission,
-				params,
-			);
-			log({ method: "session/request_permission", params, response });
-			const allowed =
-				response.outcome.outcome === "selected" &&
-				response.outcome.optionId === "allow";
-			await update({
-				sessionUpdate: "tool_call_update",
-				toolCallId,
-				status: allowed ? "completed" : "failed",
-			});
-		}
-		const latest = latestText(prompt);
-		const answers = s.answers?.length ? s.answers : [{ text: "ok" }];
-		const answer =
-			answers.find((a) => a.match !== undefined && latest.includes(a.match)) ??
-			answers.at(-1);
+		if (crbServer) return mcpTurn(cx, sessionId, prompt);
+		await permissions(cx, update, sessionId);
+		const answer = answerFor(latestText(prompt));
 		// A command the agent runs in its cwd before answering (e.g. a checkout).
 		if (answer.run?.length) {
 			execFileSync(answer.run[0], answer.run.slice(1), { stdio: "ignore" });

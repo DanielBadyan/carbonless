@@ -44,6 +44,28 @@ export interface AcpScenario {
 	 * `initialize` holds the handshake (the status stays `starting`).
 	 */
 	hold?: AcpHoldOp[];
+	/** Advertise `mcpCapabilities.http` at initialize (default true): else crb gives a stdio server. */
+	mcpHttp?: boolean;
+	/**
+	 * With a `crb` MCP server in session/new, every turn works through it
+	 * as a joined session does: `attach` with the kickoff's request (a JSON
+	 * line `{"review":…,"request":…}` in the prompt; `attach: false` never
+	 * does), the `tools` named (e.g. `threads`), then `next` → `reply`
+	 * (the text from `answers`, matched against the question's latest
+	 * message) until none waits. `replies: "none"` takes a question and
+	 * ends the turn without replying. `strayReply` first replies to that
+	 * thread id (one it wasn't handed). `detach` calls detach at the end.
+	 * `requests` are made per question; `hold: ["prompt"]` holds after
+	 * `next` handed one out; `crashOnPrompt` exits right after the first
+	 * `next`. Every call is logged as `mcp/<tool>` (token redacted).
+	 */
+	mcp?: {
+		attach?: boolean;
+		replies?: "answer" | "none";
+		tools?: string[];
+		detach?: boolean;
+		strayReply?: string;
+	};
 }
 
 /** Writes `<dir>/fake-acp-scenario.json` atomically; its path goes in CRB_FAKE_ACP. */
