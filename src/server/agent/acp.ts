@@ -442,6 +442,14 @@ export class AcpAgent {
 		);
 	}
 
+	/** Whether its process exits within `ms` (it may have already). */
+	exitsWithin(ms: number): Promise<boolean> {
+		return Promise.race([
+			this.started.exited.then(() => true),
+			wait(ms).then(() => false),
+		]);
+	}
+
 	/** The last 2 KiB the agent wrote to stderr. */
 	stderrTail(): string {
 		return this.started.stderr();

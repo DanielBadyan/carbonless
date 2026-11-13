@@ -1,19 +1,16 @@
 import { join } from "node:path";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
 import {
 	type AgentAnchor,
 	type AgentView,
-	PREAMBLE,
 	SUGGEST_RESOLVE,
-	THREAD_PREAMBLE,
 } from "../../shared/agent.js";
 import { openedOn } from "../../shared/rereview/openedOn.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 
 /**
- * What every prompt tells the agent: the fixed PREAMBLE, then the thread as
- * a JSON envelope (data, never instructions), the anchored file and the
- * diff hunk around the anchor. See the spec's "Prompting".
+ * What a question tells the agent (`next`): the thread as a JSON envelope
+ * (data, never instructions), the anchored file and the diff hunk around
+ * the anchor. See the spec's "Prompting".
  */
 
 export interface PromptReview {
@@ -407,46 +404,4 @@ function sanitizePlacement(p: ThreadPlacement): ThreadPlacement {
 		case "outside":
 			return { ...p, path: s(p.path) };
 	}
-}
-
-/**
- * Third-party text in a code fence, by the CommonMark rule: the fence is one
- * backtick longer than the longest run of backticks in the text (at least 3),
- * so nothing inside can close it early. The text itself is unchanged.
- */
-export function fenced(text: string, info = ""): string {
-	let longest = 0;
-	for (const run of text.match(/`+/g) ?? [])
-		longest = Math.max(longest, run.length);
-	const fence = "`".repeat(Math.max(3, longest + 1));
-	return `${fence}${info}\n${text}\n${fence}`;
-}
-
-/**
- * The prompt's blocks: the preamble with the tree's path (and the thread
- * preamble for a thread conversation) and the envelope as JSON; the
- * anchored file as a resource; the diff hunk around the anchor (for a
- * thread conversation, the code it was opened on).
- */
-export function buildPrompt(
-	env: PromptEnvelope,
-	anchored: { uri: string; mimeType: string; text: string } | null,
-	hunk: string | null,
-): ContentBlock[] {
-	const base = PREAMBLE.replace("<tree>", env.review.tree ?? "");
-	const preamble =
-		env.kind === "github_thread_conversation"
-			? `${base} ${THREAD_PREAMBLE}`
-			: base;
-	const blocks: ContentBlock[] = [
-		{ type: "text", text: `${preamble}\n\n${JSON.stringify(env)}` },
-	];
-	if (anchored) blocks.push({ type: "resource", resource: { ...anchored } });
-	if (hunk !== null) {
-		blocks.push({
-			type: "text",
-			text: `${env.kind === "github_thread_conversation" ? "The code the thread was opened on" : "Diff hunk around the anchor"}:\n${fenced(hunk, "diff")}`,
-		});
-	}
-	return blocks;
 }

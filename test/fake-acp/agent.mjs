@@ -217,12 +217,22 @@ async function mcpTurn(cx, sessionId, prompt) {
 	for (const t of cfg.tools ?? []) await tool(t, { token });
 	let crashed = false;
 	for (;;) {
+		if (cfg.next === false) break;
 		if (stopped()) return { stopReason: "cancelled" };
 		const q = await tool("next", { token });
 		if (q.error || q.value.none) break;
 		if (s.crashOnPrompt && !crashed) {
 			crashed = true;
 			process.stdout.write("", () => process.exit(70));
+			return new Promise(() => {});
+		}
+		if (s.lingerOnPrompt) {
+			// Its stdout closes, the process lives on (until killed).
+			process.stdout.write("", () => {
+				process.stdout.on("error", () => {});
+				closeSync(1);
+				setInterval(() => {}, 1000);
+			});
 			return new Promise(() => {});
 		}
 		await permissions(cx, update, sessionId);

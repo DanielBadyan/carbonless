@@ -56,8 +56,8 @@ export interface AcpScenario {
 	 * ends the turn without replying. `strayReply` first replies to that
 	 * thread id (one it wasn't handed). `detach` calls detach at the end.
 	 * `requests` are made per question; `hold: ["prompt"]` holds after
-	 * `next` handed one out; `crashOnPrompt` exits right after the first
-	 * `next`. Every call is logged as `mcp/<tool>` (token redacted).
+	 * `next` handed one out; `crashOnPrompt` exits (and `lingerOnPrompt`
+	 * closes its stdout) right after the first `next` hands one out. Every call is logged as `mcp/<tool>` (token redacted).
 	 */
 	mcp?: {
 		attach?: boolean;
@@ -65,6 +65,8 @@ export interface AcpScenario {
 		tools?: string[];
 		detach?: boolean;
 		strayReply?: string;
+		/** false: attaches but never calls next (an agent that ignores crb). */
+		next?: boolean;
 	};
 }
 

@@ -163,8 +163,6 @@ describe("AgentHost with a session joined through MCP", () => {
 	/** When the stub runner last heard from its agent (ms), if ever. */
 	let acpSeen: number | undefined;
 	let host: AgentHost;
-	/** The thread the stub ACP runner is answering. */
-	let busy: string | null;
 
 	/** The PR's head the stub facts report. */
 	let head: string;
@@ -233,9 +231,6 @@ describe("AgentHost with a session joined through MCP", () => {
 		store = new AgentThreadStore(new RefStore(bare.path), REVIEW, "dan");
 		runner = {
 			status: async (): Promise<AgentStatus> => ({
-				...(busy
-					? { answering: { thread: busy, text: "so far", activity: [] } }
-					: {}),
 				state: acpOff() ? "off" : "ready",
 				configured: true,
 				...(acpOff() ? {} : { agent: { name: "fake-acp", version: "1.0.0" } }),
@@ -251,9 +246,11 @@ describe("AgentHost with a session joined through MCP", () => {
 			detach: vi.fn(async () => {}),
 			cancel: async () => {},
 			close: async () => {},
-			inFlight: () => busy,
+			handed: vi.fn(),
+			activity: () => [],
+			replied: vi.fn(),
+			takeNotice: () => undefined,
 		};
-		busy = null;
 		acpSeen = undefined;
 		head = "d".repeat(40);
 		ghThread = null;
@@ -266,6 +263,21 @@ describe("AgentHost with a session joined through MCP", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	/**
+	 * A spawned agent (admitted, attached) takes the oldest question with
+	 * next: an approved outside join then leaves it a grace on that thread.
+	 */
+	async function spawnedHolds(h = host): Promise<string> {
+		const secret = "S".repeat(43);
+		const { request } = h.join.admit(
+			{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+			secret,
+		);
+		const o = await h.join.outcome(request, 0, secret);
+		const token = (o as { token: string }).token;
+		const q = await h.sessionNext(token);
+		return q?.thread as string;
+	}
 	async function approve(h = host): Promise<string> {
 		const { request } = h.join.request(WHO);
 		await h.join.answer(request, true);
@@ -449,15 +461,11 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(s.spawned).toBeUndefined();
 	});
 
-	it("the ACP turn still running after Approve stays in the status, and the session's watcher isn't woken for it", async () => {
+	it("the thread a replaced spawned agent still holds after Approve: the session's watcher isn't woken for it", async () => {
 		const x = await host.open({ clientId: "c1", text: "Why?", span });
-		busy = x.id;
+		expect(await spawnedHolds()).toBe(x.id);
 		const token = await approve();
 		expect(host.busyThread()).toBe(x.id);
-		expect((await host.status()).answering).toMatchObject({
-			thread: x.id,
-			text: "so far",
-		});
 		const reads = vi.spyOn(store, "read");
 		const lease = host.join.watcher(token);
 		let woken = false;
@@ -471,7 +479,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(woken).toBe(false);
 		reads.mockRestore();
 		// The turn ended: the thread is the session's.
-		busy = null;
+		host.join.endGrace();
 		const again = host.join.watcher(token);
 		await expect(again?.deliver).resolves.toBeUndefined();
 	});
@@ -643,7 +651,7 @@ describe("AgentHost with a session joined through MCP", () => {
 	});
 	it("the session isn't woken for the ACP buddy's running turn, and is woken once that turn is stopped", async () => {
 		const x = await host.open({ clientId: "c1", text: "Why?", span });
-		busy = x.id;
+		expect(await spawnedHolds()).toBe(x.id);
 		let releaseStop!: () => void;
 		runner.stop.mockImplementationOnce(
 			() =>
@@ -663,7 +671,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(delivered).toBe(false);
 		// The turn is stopped (cancelled): what it left waits for the session.
-		busy = null;
+		host.join.endGrace();
 		releaseStop();
 		await vi.waitFor(() => expect(delivered).toBe(true));
 	});
@@ -672,7 +680,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		it("next skips the thread the ACP buddy still answers, then hands it out once that turn ends", async () => {
 			const x = await host.open({ clientId: "c1", text: "One?", span });
 			const y = await host.open({ clientId: "c2", text: "Two?", span });
-			busy = x.id;
+			expect(await spawnedHolds()).toBe(x.id);
 			const token = await approve();
 			const first = await host.sessionNext(token);
 			expect(first?.thread).toBe(y.id);
@@ -684,7 +692,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			// The ACP turn on x still runs (it may yet store its answer).
 			expect(await host.sessionNext(token)).toBeNull();
 			expect(await host.sessionWaiting()).toBe(0);
-			busy = null;
+			host.join.endGrace();
 			expect((await host.sessionNext(token))?.thread).toBe(x.id);
 		});
 

@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type {
 	RequestPermissionRequest,
@@ -16,30 +18,24 @@ import {
 	type AgentStatus,
 	type AgentStop,
 	type AgentView,
+	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
-import { runGit } from "../git.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
+import type { JoinBroker } from "./join.js";
 import { decidePermission } from "./policy.js";
-import {
-	anchorFor,
-	buildPrompt,
-	type CommentRole,
-	type GithubThreadFacts,
-	type PromptEnvelope,
-	type PromptMessage,
-	type PromptPatchset,
-	type PromptReview,
-	sanitizeEnvelope,
-	takeSuggestion,
-	threadEnvelope,
+import type {
+	CommentRole,
+	GithubThreadFacts,
+	PromptPatchset,
+	PromptReview,
 } from "./prompt.js";
 import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 
 /**
- * What the runner asks of the review it serves. None of it writes to
- * GitHub: the runner can't resolve, reply to or write to a thread.
+ * What the review offers its buddy's questions (`next`). None of it
+ * writes to GitHub.
  */
 export interface RunnerFacts {
 	review(): PromptReview;
@@ -66,16 +62,25 @@ export interface RunnerFacts {
 	checkHead(): Promise<void>;
 }
 
-/** What a turn sends: the envelope, the anchored file and the code block. */
-interface Prepared {
-	env: PromptEnvelope;
-	anchored: { uri: string; mimeType: string; text: string } | null;
-	hunk: string | null;
-	/** A thread conversation's turn: its answer may suggest resolving. */
-	suggestions: boolean;
-}
+/** What the runner asks of the review's join broker: its agent joins through it. */
+export type SpawnJoin = Pick<
+	JoinBroker,
+	| "admit"
+	| "isSpawned"
+	| "attached"
+	| "handedOut"
+	| "release"
+	| "setBusy"
+	| "spawnedGone"
+	| "endGrace"
+	| "view"
+>;
 
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+/** crb's own `/mcp` as this machine reaches it (no query), and its access key. */
+export interface SelfMcp {
+	url: string;
+	key: string | null;
+}
 
 export interface RunnerDeps {
 	reviewId: string;
@@ -94,23 +99,39 @@ export interface RunnerDeps {
 	port: number;
 	facts: RunnerFacts;
 	now?: () => number;
+	/** Each handed-out question's limit, from `next` to its `reply`. */
 	turnMs?: number;
-	/** The reviewer's login, named on their messages in the envelope. */
 	viewer?: string;
 	/**
-	 * The review's ACP buddy is off (its spawn flag isn't set, or a
-	 * session joined through MCP): nothing spawns, no turn starts, and a
-	 * process still running is stopped on the next status. None: always on.
+	 * The review's ACP buddy is off (its spawn flag isn't set, or an
+	 * outside session joined through MCP): nothing spawns, no turn starts,
+	 * and a process still running is stopped on the next status.
 	 */
 	acpOff?: () => boolean;
 	/** The review's claim, shared with a joined session (else the runner takes its own). */
 	claim?: ReviewClaim;
+	/** The review's join broker: the spawned agent is its joined session. */
+	join: SpawnJoin;
+	/** crb's own /mcp; null when unknown (a spawn then fails, saying so). */
+	mcp(): SelfMcp | null;
+	/** The stdio bridge's command (tests); default bridgeCommand(). */
+	bridge?: { command: string; args: string[] };
 }
+
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /** A live title is cut here; the stored list is capped again (capActivity). */
 const MAX_TITLE = 200;
-/** Live activity entries kept for the status while a turn runs. */
+/** Live activity entries kept for a hand-out. */
 const MAX_LIVE_ACTIVITY = 200;
+/**
+ * Turns in a row that store no reply while a question is handed out or
+ * waits: then the handed-out question fails, and an agent that ignores
+ * the wake-up isn't prompted again until a human asks.
+ */
+export const MAX_DRY_TURNS = 2;
+/** How long a broken connection's process gets to exit before it counts as lingering. */
+const LINGER_MS = 2_000;
 const ACTIVITY_KINDS: readonly string[] = [
 	"read",
 	"edit",
@@ -131,6 +152,32 @@ const kindOf = (kind: unknown): ActivityKind =>
 const titleOf = (title: unknown): string =>
 	typeof title === "string" ? title.slice(0, MAX_TITLE) : "";
 
+/** The wake-up: never the question itself (that comes through `next`). */
+export const WAKE_LINE =
+	"A question waits for you in the review: call crb's next tool, answer it with reply, and call next again until none waits.";
+
+/** The re-prompt when a turn ends with a question still handed out. */
+export const holdLine = (thread: string): string =>
+	`You still hold thread ${thread}: answer it with crb's reply tool, then call next.`;
+
+/**
+ * The first prompt: the joined preamble and the attach call to make, as
+ * one JSON line (the link and the request id are crb's own: a URL and a
+ * ULID; JSON.stringify quotes them).
+ */
+export function kickoffLine(args: {
+	review: string;
+	request: string;
+	name: string;
+}): string {
+	return `${JOINED_PREAMBLE}\n\ncarbonless started you as this review's buddy, already approved. Call crb's attach tool with exactly these arguments, then follow the instructions it returns:\n${JSON.stringify(
+		{ review: args.review, request: args.request, name: args.name },
+	)}`;
+}
+
+/** What a thread shows when its hand-out ends without a reply. */
+export const STOPPED_WITHOUT_ANSWER = "The agent stopped without answering";
+
 /** One spawned process, as the runner tracks it. */
 interface Proc {
 	agent: AcpAgent | null;
@@ -142,20 +189,33 @@ interface Proc {
 	stopping: boolean;
 }
 
-interface Answering {
+/** One ACP prompt in flight. */
+interface Turn {
+	agent: AcpAgent;
+	/** Replies stored while it ran. */
+	replies: number;
+	/** Stop current, or the question's time limit: no wake-up follows it. */
+	stopped: boolean;
+}
+
+/** The question `next` handed the spawned agent, as the runner sees it. */
+interface Hand {
 	thread: string;
-	/** The last human message the turn answers. */
-	asked: string | undefined;
-	text: string;
 	activity: AgentActivity[];
 	/** toolCallId → its entry in `activity`. */
 	calls: Map<string, AgentActivity>;
+	/** Its AGENT_TURN_MS limit (restarted by each `next`). */
+	timer: ReturnType<typeof setTimeout>;
 }
 
 /**
- * The reviewer's agent for one review: its status, and the queue of
- * waiting threads, answered one prompt at a time, oldest opened first. See
- * the spec's "Lifecycle and status" and "The runner".
+ * The reviewer's spawned agent for one review: it launches the configured
+ * command, admits it to the review's join broker (pre-approved), tells it
+ * to attach through crb's MCP, and wakes it over ACP when a question
+ * waits. The agent answers only through MCP (`next`, `reply`); the runner
+ * never stores prompt text. Its extras: live activity on the handed-out
+ * question, Stop current, a crash or failed turn shown in the thread.
+ * Spec: docs/superpowers/specs/2026-11-13-spawned-agent-mcp-design.md.
  */
 export class AgentRunner {
 	readonly #deps: RunnerDeps;
@@ -173,23 +233,24 @@ export class AgentRunner {
 	#identity: AgentIdentity | undefined;
 	#release: (() => Promise<void>) | null = null;
 	#checkout: Checkout | null = null;
-	#answering: Answering | null = null;
 	/**
-	 * Crashes since the last turn that ended without one: at two, no
+	 * Crashes (and failed kickoffs) since the last good turn: at two, no
 	 * respawn until a human asks again or the config is saved.
 	 */
 	#crashes = 0;
 	/** The config saves last seen (RunnerDeps.config). */
 	#saves: number | undefined;
-	/** Whether the process has had a prompt (the first carries `pr`). */
-	#prompted = false;
-	/** A rejected permission's reason, for the thread's next envelope. */
+	/** The current process has had its kickoff. */
+	#kicked = false;
+	/** The kickoff's request id (the process's attach). */
+	#request: string | null = null;
+	#turn: Turn | null = null;
+	#hand: Hand | null = null;
+	/** Turns in a row that stored no reply while one was due. */
+	#dry = 0;
+	/** A rejected permission's reason, for that thread's next `next`. */
 	readonly #notices = new Map<string, string>();
-	/** Agents that went away by crashing (their last turn is stored). */
-	readonly #crashedAgents = new WeakSet<AcpAgent>();
 	#pump: Promise<void> | null = null;
-	/** The agent whose turn stop() cancelled: its partial reply isn't stored. */
-	#stopCancelled: AcpAgent | null = null;
 	#again = false;
 	#closed: Promise<void> | null = null;
 	/** A detach under way (the reviewer's, or ACP found off on a status). */
@@ -236,33 +297,26 @@ export class AgentRunner {
 			// The count is a hint; the ref may be unreadable a moment.
 		}
 		// Questions asked elsewhere (another server showing `elsewhere`)
-		// reach the ref, not this runner: the holder answers them on its poll.
+		// reach the ref, not this runner: the holder wakes its agent on its
+		// poll (the dry-turn cap keeps an agent that ignores it unprompted).
 		if (waiting > 0 && this.#state === "ready" && !this.#pump) this.poke();
 		if (this.#off()) this.#windDown();
-		const answering = this.#answering;
+		const turn = this.#turn;
 		// ACP going off: off at once, unless a turn still finishes (stop()).
-		const stopping = this.#off() && !answering;
+		const stopping = this.#off() && !turn;
 		const error =
 			this.#state === "error" && !stopping
 				? this.#error
 				: this.#problems.length
 					? this.#problems.join("; ")
 					: undefined;
+		const hand = this.#liveHand();
 		return {
 			state: stopping ? "off" : this.#state,
 			configured: this.#configured,
 			...(this.#identity && !stopping ? { agent: this.#identity } : {}),
 			since: new Date(this.#since).toISOString(),
-			...(answering
-				? {
-						answering: {
-							thread: answering.thread,
-							text: answering.text,
-							activity: answering.activity.map((a) => ({ ...a })),
-							...(answering.asked ? { asked: answering.asked } : {}),
-						},
-					}
-				: {}),
+			...(hand ? { answering: hand } : {}),
 			...(error ? { error } : {}),
 			...(this.#state === "elsewhere" && this.#elsewhere !== undefined
 				? { elsewhere: this.#elsewhere }
@@ -272,10 +326,24 @@ export class AgentRunner {
 		};
 	}
 
+	/** The handed-out question with its live activity, while the spawned agent holds it. */
+	#liveHand(): AgentStatus["answering"] | undefined {
+		const handed = this.#deps.join.handedOut();
+		if (!handed || !this.#deps.join.isSpawned()) return undefined;
+		const activity =
+			this.#hand?.thread === handed.thread ? this.#hand.activity : [];
+		return {
+			thread: handed.thread,
+			text: "",
+			activity: activity.map((a) => ({ ...a })),
+			...(handed.asked ? { asked: handed.asked } : {}),
+		};
+	}
+
 	/** When the agent was last heard from (ISO): now while it is alive and idle. */
 	#seenAt(): string | undefined {
 		const agent = this.#proc?.agent;
-		if (agent?.alive && !this.#answering && !this.#off()) {
+		if (agent?.alive && !this.#turn && !this.#off()) {
 			return new Date(this.#now()).toISOString();
 		}
 		return this.#seen === undefined
@@ -283,7 +351,7 @@ export class AgentRunner {
 			: new Date(this.#seen).toISOString();
 	}
 
-	/** After a human open or message: spawns if needed, then drains. Never throws. */
+	/** After a human open or message: spawns if needed, then wakes it if a question waits. Never throws. */
 	poke(): void {
 		if (this.#closed) return;
 		if (this.#off()) {
@@ -311,35 +379,36 @@ export class AgentRunner {
 
 	/**
 	 * A human asked (a new thread or a message): like poke, and an agent
-	 * that crashed twice may start again. One question, one try: never a loop.
+	 * that crashed twice may start again, one that went quiet is woken
+	 * again. One question, one try: never a loop.
 	 */
 	asked(): void {
 		this.#crashes = 0;
+		this.#dry = 0;
 		this.poke();
 	}
 
 	/**
-	 * ACP is going off (a join was approved): the turn under way may
-	 * finish for up to `ms`, then is cancelled; the agent is closed and
-	 * the status is `off`. The claim and the checkout stay.
+	 * ACP is going off (an outside join was approved): the turn under way
+	 * may finish for up to `ms` (its reply to the thread it holds still
+	 * lands: the broker's grace), then is cancelled; the agent is closed
+	 * and the status is `off`. The claim and the checkout stay.
 	 */
 	async stop(ms: number): Promise<void> {
 		this.#again = false;
-		if (this.#answering && this.#pump) {
-			const agent = this.#proc?.agent;
+		if (this.#turn && this.#pump) {
+			const agent = this.#turn.agent;
 			// carbonless's cancel, not the reviewer's: the question keeps
 			// waiting for the joined session (principle 2).
-			const timer = setTimeout(() => {
-				this.#stopCancelled = agent ?? null;
-				void agent?.cancel();
-			}, ms);
+			const timer = setTimeout(() => void agent.cancel(), ms);
 			try {
 				await this.#pump;
 			} finally {
 				clearTimeout(timer);
-				this.#stopCancelled = null;
 			}
 		}
+		this.#deps.join.endGrace();
+		this.#clearHand();
 		// Start pressed while the turn finished: the agent stays.
 		if (!this.#off()) return;
 		await this.#stopProc();
@@ -348,13 +417,7 @@ export class AgentRunner {
 		await this.#stopProc();
 		if (!this.#off()) return;
 		this.#identity = undefined;
-		this.#answering = null;
 		if (!this.#closed) this.#set("off");
-	}
-
-	/** The thread the ACP buddy is answering now, if any (a joined session skips it). */
-	inFlight(): string | null {
-		return this.#answering?.thread ?? null;
 	}
 
 	#off(): boolean {
@@ -363,15 +426,17 @@ export class AgentRunner {
 
 	/** Resolves once nothing is running (tests). */
 	async settled(): Promise<void> {
-		while (this.#pump) await this.#pump;
+		while (this.#pump || this.#detaching) {
+			await this.#pump;
+			await this.#detaching;
+		}
 	}
 
 	/**
 	 * The reviewer's Detach (its spawn flag already cleared): the turn
-	 * under way is cancelled (its partial reply isn't stored; the question
-	 * still waits), the process stops, the checkout is removed and the
-	 * claim released: nothing is coming. Off. Unlike close(), the runner
-	 * stays usable: the next Spawn starts afresh.
+	 * under way is cancelled (the question it held waits again), the
+	 * process stops, the checkout is removed and the claim released. Off.
+	 * Unlike close(), the runner stays usable: the next Spawn starts afresh.
 	 */
 	detach(): Promise<void> {
 		if (this.#closed) return this.#closed;
@@ -388,12 +453,11 @@ export class AgentRunner {
 			this.#closed ||
 			this.#detaching ||
 			this.#pump ||
-			this.#answering ||
+			this.#turn ||
 			!(this.#proc || this.#release)
 		) {
 			return;
 		}
-		// #detach catches what it awaits; a failure here still shows.
 		this.#startDetach({ keepCheckout: true }).catch((error: unknown) => {
 			this.#set("error", { error: (error as Error).message });
 		});
@@ -421,20 +485,13 @@ export class AgentRunner {
 
 	async #detach(opts: { keepCheckout: boolean }): Promise<void> {
 		this.#again = false;
-		const agent = this.#proc?.agent;
-		if (agent && this.#answering) {
-			// carbonless's cancel, not the reviewer's Stop: nothing is stored.
-			this.#stopCancelled = agent;
-			await agent.cancel();
-		}
-		try {
-			await this.#stopProc();
-			await this.#pump;
-			// A spawn that finished meanwhile is closed too.
-			await this.#stopProc();
-		} finally {
-			this.#stopCancelled = null;
-		}
+		const turn = this.#turn;
+		// carbonless's cancel, not the reviewer's Stop: nothing is stored.
+		if (turn) await turn.agent.cancel();
+		await this.#stopProc();
+		await this.#pump;
+		// A spawn that finished meanwhile is closed too.
+		await this.#stopProc();
 		if (!opts.keepCheckout) {
 			await this.#checkout?.remove().catch(() => {});
 			this.#checkout = null;
@@ -442,18 +499,28 @@ export class AgentRunner {
 		await this.#release?.().catch(() => {});
 		this.#release = null;
 		this.#identity = undefined;
-		this.#answering = null;
 		this.#crashes = 0;
+		this.#dry = 0;
 		this.#seen = undefined;
 		if (this.#closed) return;
 		// Spawn pressed again while this ran: #startDetach pokes once it ends.
 		this.#set("off");
 	}
 
-	/** Stops the current turn only. */
+	/**
+	 * The reviewer's Stop current: the handed-out question gets a
+	 * `cancelled` message (its wait ends, its hand-out too, so a late reply
+	 * is refused), then the turn is cancelled. No wake-up follows it.
+	 */
 	async cancel(): Promise<void> {
-		const agent = this.#proc?.agent;
-		if (agent && this.#answering) await agent.cancel();
+		const turn = this.#turn;
+		if (!turn) return;
+		turn.stopped = true;
+		const handed = this.#deps.join.handedOut();
+		if (handed && this.#deps.join.isSpawned()) {
+			await this.#endHand(handed, { stop: "cancelled" });
+		}
+		await turn.agent.cancel();
 	}
 
 	/** Cancels, closes the agent, removes the checkout and releases the claim. */
@@ -468,10 +535,103 @@ export class AgentRunner {
 			this.#checkout = null;
 			await this.#release?.().catch(() => {});
 			this.#release = null;
-			this.#answering = null;
 			this.#set("off");
 		})();
 		return this.#closed;
+	}
+
+	// The hooks the host calls from the spawned agent's MCP tools.
+
+	/** `next` handed `thread` to the spawned agent: its activity starts (or goes on), its time limit restarts. */
+	handed(thread: string): void {
+		const hand = this.#hand;
+		if (hand) clearTimeout(hand.timer);
+		const timer = setTimeout(
+			() => void this.#overtime(thread),
+			this.#deps.turnMs ?? AGENT_TURN_MS,
+		);
+		timer.unref?.();
+		this.#hand =
+			hand?.thread === thread
+				? { ...hand, timer }
+				: { thread, activity: [], calls: new Map(), timer };
+	}
+
+	/** The activity recorded while `thread` was handed out (a copy). */
+	activity(thread: string): AgentActivity[] {
+		return this.#hand?.thread === thread
+			? this.#hand.activity.map((a) => ({ ...a }))
+			: [];
+	}
+
+	/** The spawned agent's reply to `thread` was stored: its hand-out (and limit) ends. */
+	replied(thread: string): void {
+		if (this.#hand?.thread === thread) this.#clearHand();
+		if (this.#turn) this.#turn.replies++;
+		this.#crashes = 0;
+	}
+
+	/** A rejected permission's reason for `thread`, once: it goes into what `next` returns. */
+	takeNotice(thread: string): string | undefined {
+		const n = this.#notices.get(thread);
+		this.#notices.delete(thread);
+		return n;
+	}
+
+	#clearHand(): void {
+		if (this.#hand) clearTimeout(this.#hand.timer);
+		this.#hand = null;
+	}
+
+	/** The handed-out question ran past its limit: it fails, the turn is cancelled. */
+	async #overtime(thread: string): Promise<void> {
+		const handed = this.#deps.join.handedOut();
+		if (handed?.thread !== thread || !this.#deps.join.isSpawned()) return;
+		const minutes = Math.max(
+			1,
+			Math.round((this.#deps.turnMs ?? AGENT_TURN_MS) / 60_000),
+		);
+		const turn = this.#turn;
+		if (turn) turn.stopped = true;
+		await this.#endHand(handed, {
+			stop: "error",
+			error: `The agent took longer than ${minutes} min`,
+		});
+		await turn?.agent.cancel();
+	}
+
+	/**
+	 * Ends the hand-out of `handed` without an answer: released first (a
+	 * late reply is refused), then a message with `stop` (and `error`)
+	 * replying to the question, which ends its wait.
+	 */
+	async #endHand(
+		handed: { thread: string; asked: string | undefined },
+		how: { stop: AgentStop; error?: string },
+	): Promise<void> {
+		const { join } = this.#deps;
+		const who = join.view().joined;
+		const activity = this.activity(handed.thread);
+		join.release(handed.thread);
+		if (this.#hand?.thread === handed.thread) this.#clearHand();
+		const agent: AgentIdentity = who
+			? { name: who.name, version: who.harness ?? "", via: "acp" }
+			: { ...(this.#identity ?? { name: "agent", version: "" }), via: "acp" };
+		try {
+			await this.#deps.store.message(handed.thread, {
+				by: "ai",
+				text: "",
+				agent,
+				stop: how.stop,
+				activity,
+				...(handed.asked ? { replyTo: handed.asked } : {}),
+				...(how.error ? { error: how.error } : {}),
+			});
+		} catch (error) {
+			this.#set("error", {
+				error: `Could not store the agent's stop: ${(error as Error).message}`,
+			});
+		}
 	}
 
 	#set(
@@ -501,7 +661,7 @@ export class AgentRunner {
 		this.#key = key;
 		this.#config = agent;
 		this.#crashes = 0;
-		if (this.#proc && this.#proc.key !== key && this.#answering) {
+		if (this.#proc && this.#proc.key !== key && this.#turn) {
 			await this.#proc.agent?.cancel();
 		}
 		return { changed: !first, saved };
@@ -511,11 +671,11 @@ export class AgentRunner {
 		while (this.#again && !this.#closed) {
 			this.#again = false;
 			const agent = await this.#ensure();
-			if (agent) await this.#drain(agent);
+			if (agent) await this.#work(agent);
 		}
 	}
 
-	/** The running agent, spawned if it should run; null when it can't or shouldn't. */
+	/** The running agent, spawned (and admitted) if it should run; null when it can't or shouldn't. */
 	async #ensure(): Promise<AcpAgent | null> {
 		await this.#readConfig();
 		if (this.#closed) return null;
@@ -566,12 +726,21 @@ export class AgentRunner {
 		if (this.#off()) return null;
 		// The config moved while the claim was taken: the next round has it.
 		if (this.#config !== config) return null;
+		const mcp = this.#deps.mcp();
+		if (!mcp) {
+			this.#set("error", {
+				error:
+					"carbonless doesn't know its own address yet: the agent can't reach its tools",
+			});
+			return null;
+		}
 		this.#set("starting");
 		// A tree removed under us (a sweep, by hand) is made again.
 		if (this.#checkout && !existsSync(join(this.#checkout.tree, ".git"))) {
 			this.#checkout = null;
 		}
 		try {
+			// Made at spawn, at the PR's head; crb never moves it after that.
 			this.#checkout ??= await createCheckout(
 				this.#deps.cacheClone,
 				this.#deps.reviewId,
@@ -600,18 +769,26 @@ export class AgentRunner {
 			stopping: false,
 		};
 		this.#proc = proc;
+		// This process's alone: only it can collect the request below.
+		const secret = randomBytes(32).toString("base64url");
 		let agent: AcpAgent;
 		try {
 			agent = await AcpAgent.spawn({
 				command: config.command,
 				args: config.args,
 				env: agentEnv(config.env),
-				cwd: this.#checkout.dir,
+				cwd: this.#checkout.tree,
 				stderrFile: join(this.#checkout.dir, "agent.stderr.log"),
 				onUpdate: (u) => this.#onUpdate(u),
 				onPermission: (req) => this.#onPermission(req),
 				onExit: (code, signal) => this.#onExit(proc, code, signal),
 				signal: proc.abort.signal,
+				mcp: {
+					url: mcp.url,
+					key: mcp.key,
+					headers: [{ name: "X-Crb-Spawn", value: secret }],
+				},
+				...(this.#deps.bridge ? { bridge: this.#deps.bridge } : {}),
 			});
 		} catch (error) {
 			if (this.#proc === proc) this.#proc = null;
@@ -632,7 +809,19 @@ export class AgentRunner {
 			return null;
 		}
 		this.#identity = agent.info;
-		this.#prompted = false;
+		// Pressing Spawn is the approval: a request already approved.
+		const { request } = this.#deps.join.admit(
+			{
+				name: agent.info.name,
+				machine: hostname(),
+				...(agent.info.version ? { harness: agent.info.version } : {}),
+			},
+			secret,
+		);
+		this.#request = request;
+		this.#kicked = false;
+		this.#dry = 0;
+		this.#clearHand();
 		// Its handshake answered.
 		this.#seen = this.#now();
 		this.#set("ready");
@@ -645,44 +834,62 @@ export class AgentRunner {
 		this.#proc = null;
 		proc.stopping = true;
 		proc.abort.abort();
+		// Its join ends with it: a question it held waits again.
+		if (proc.agent) this.#deps.join.spawnedGone("disconnected");
+		this.#clearHand();
 		await proc.agent?.close();
 	}
 
 	/**
 	 * A process whose connection closed while it still runs: a crash (it
-	 * counts, its last turn is stored), then killed.
+	 * counts), then killed.
 	 */
 	async #lost(proc: Proc): Promise<void> {
 		if (proc.stopping) return;
 		if (this.#proc === proc) this.#proc = null;
 		proc.stopping = true;
-		if (proc.agent) this.#crashedAgents.add(proc.agent);
 		this.#crashes++;
 		const tail = proc.agent?.stderrTail().trim() ?? "";
-		this.#set("error", {
-			error: `The agent's connection closed${tail ? `: ${tail.slice(-500)}` : ""}`,
-		});
+		const reason = `The agent's connection closed${tail ? `: ${tail.slice(-500)}` : ""}`;
+		await this.#gone(reason);
+		this.#set("error", { error: reason });
 		await proc.agent?.close();
 	}
 
 	#onExit(proc: Proc, code: number | null, signal: string | null): void {
 		if (proc.stopping || this.#closed) return;
 		if (this.#proc === proc) this.#proc = null;
-		if (proc.agent) this.#crashedAgents.add(proc.agent);
+		proc.stopping = true;
 		this.#crashes++;
 		const tail = proc.agent?.stderrTail().trim() ?? "";
 		const how = signal ? `on ${signal}` : `with code ${code}`;
-		this.#set("error", {
-			error: `exited ${how}${tail ? `: ${tail.slice(-500)}` : ""}`,
-		});
+		const reason = `exited ${how}${tail ? `: ${tail.slice(-500)}` : ""}`;
+		this.#set("error", { error: reason });
+		void this.#gone(reason);
 	}
 
-	/** Whether `agent` is the one that should run now (a status may have just turned it off). */
-	#current(agent: AcpAgent): boolean {
+	/** The process went (a crash): the question it held shows why, then its join ends. */
+	async #gone(reason: string): Promise<void> {
+		const { join } = this.#deps;
+		const handed = join.isSpawned() ? join.handedOut() : null;
+		if (handed) {
+			await this.#endHand(handed, {
+				stop: "error",
+				error: reason.slice(0, 300),
+			});
+		}
+		join.spawnedGone("lost");
+		this.#clearHand();
+	}
+
+	/** Whether `agent` is the one that should run now. */
+	#usable(agent: AcpAgent): boolean {
 		return (
 			!this.#closed &&
+			!this.#off() &&
 			this.#proc?.agent === agent &&
-			this.#proc.key === this.#key
+			this.#proc.key === this.#key &&
+			agent.alive
 		);
 	}
 
@@ -690,335 +897,132 @@ export class AgentRunner {
 		return join(agentsDir(), this.#deps.reviewId);
 	}
 
-	/** Answers waiting threads, oldest opened first, while this agent runs. */
-	async #drain(agent: AcpAgent): Promise<void> {
+	/** Whether a question waits for the agent (as `next` would hand it one). */
+	async #waiting(): Promise<boolean> {
+		const threads = await this.#deps.facts.join(await this.#deps.store.read());
+		return threads.some(
+			(t) => t.waiting && (t.anchor.subject === "thread" || !t.resolved),
+		);
+	}
+
+	/** Prompts the agent while there is a reason to: kickoff, a held question, a waiting one. */
+	async #work(agent: AcpAgent): Promise<void> {
 		for (;;) {
-			if (this.#closed || this.#proc?.agent !== agent) return;
-			// ACP going off: the turn that ran finished; no new one starts.
-			if (this.#off()) return;
-			if (this.#proc.key !== this.#key || !agent.alive) return;
-			const threads = await this.#deps.facts.join(
-				await this.#deps.store.read(),
-			);
-			// A question already waiting on a GitHub thread resolved since is
-			// still answered (it was asked); a resolved span thread's isn't.
-			const next = threads.find(
-				(t) => t.waiting && (t.anchor.subject === "thread" || !t.resolved),
-			);
-			if (!next) {
-				// A failed last turn keeps its reason up until the next one.
-				if (this.#current(agent) && this.#state !== "error") {
+			if (!this.#usable(agent)) return;
+			const line = await this.#line();
+			if (line === null) {
+				if (this.#usable(agent) && this.#state !== "error") {
 					this.#set("ready");
 				}
 				return;
 			}
-			if (!(await this.#turn(agent, next))) return;
+			if (!this.#usable(agent)) return;
+			if (!(await this.#prompt(agent, line))) return;
 		}
 	}
 
-	/** One prompt for `thread`; false when draining should stop. */
-	async #turn(agent: AcpAgent, thread: AgentThreadFold): Promise<boolean> {
-		const { facts } = this.#deps;
-		const rejected = this.#notices.get(thread.id);
-		let pr: PromptEnvelope["pr"];
-		if (!this.#prompted) {
-			pr = await facts.prFacts().then(
-				(p) => ({ title: p.title, body: p.body, files: p.files }),
-				() => undefined,
-			);
+	/** The next prompt's text; null: nothing to say (idle). */
+	async #line(): Promise<{ text: string; kickoff: boolean } | null> {
+		const { join } = this.#deps;
+		if (!this.#kicked) {
+			this.#kicked = true;
+			const mcp = this.#deps.mcp();
+			const request = this.#request;
+			if (!mcp || !request) return null;
+			return {
+				kickoff: true,
+				text: kickoffLine({
+					review: `${new URL(mcp.url).origin}/r/${this.#deps.reviewId}`,
+					request,
+					name: join.view().joined?.name ?? this.#identity?.name ?? "agent",
+				}),
+			};
 		}
-		const messages = await this.#messages(thread);
-		const { env, anchored, hunk, suggestions } =
-			thread.anchor.subject === "thread"
-				? await this.#threadTurn(thread, messages, rejected, pr)
-				: await this.#spanTurn(thread, messages, rejected, pr);
-		if (this.#closed || this.#proc?.agent !== agent) return false;
-		// The answer names the last human message it saw: a reply sent while
-		// the turn runs lands before the answer and still waits (the fold).
-		const asked = thread.messages.findLast((m) => m.by === "human")?.id;
-		const answering: Answering = {
-			thread: thread.id,
-			asked,
-			text: "",
-			activity: [],
-			calls: new Map(),
-		};
-		this.#answering = answering;
-		if (this.#current(agent)) this.#set("busy");
-		const deadline = setTimeout(
-			() => void agent.cancel(),
-			this.#deps.turnMs ?? AGENT_TURN_MS,
-		);
-		const reply = await agent.prompt(buildPrompt(env, anchored, hunk));
-		clearTimeout(deadline);
-		// Its stop (or its connection's end) came in.
-		if (reply.stop !== "error") this.#seen = this.#now();
-		this.#prompted = true;
-		try {
-			return await this.#store(
-				agent,
-				thread,
-				reply,
-				answering,
-				rejected,
-				suggestions,
-			);
-		} finally {
-			// Only once the reply is stored (or never will be): the status
-			// keeps the streamed text until the thread holds it.
-			if (this.#answering === answering) this.#answering = null;
-		}
-	}
-
-	/** The thread's messages as the envelope gives them. */
-	async #messages(thread: AgentThreadFold): Promise<PromptMessage[]> {
-		const viewer = this.#deps.viewer;
-		const role = viewer ? await this.#deps.facts.authorOf(viewer) : undefined;
-		return thread.messages.map(
-			(m): PromptMessage =>
-				m.by === "ai"
-					? { author: { role: "agent" }, at: m.at, text: m.text }
-					: {
-							author:
-								viewer && role ? { login: viewer, role } : { role: "reviewer" },
-							at: m.at,
-							text: m.text,
-						},
-		);
-	}
-
-	/**
-	 * A span thread's turn (an orphan's too): the tree follows the PR's
-	 * head (a Refresh moves it); the anchored file and the hunk around it.
-	 */
-	async #spanTurn(
-		thread: AgentThreadFold,
-		messages: PromptMessage[],
-		rejected: string | undefined,
-		pr: PromptEnvelope["pr"],
-	): Promise<Prepared> {
-		const { facts } = this.#deps;
-		const review = facts.review();
-		const stuck = await this.#moveTo(review.head.commit);
-		const notice = joinNotices([
-			rejected,
-			thread.orphaned
-				? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
-				: undefined,
-			stuck
-				? `The PR's head is now ${review.head.commit}, but your checkout could not move there (${stuck}); it is still at the commit you were given before.`
-				: undefined,
-		]);
-		const env = sanitizeEnvelope({
-			kind: "agent_thread",
-			review,
-			thread: { id: thread.id, anchor: anchorFor(thread.anchor, review) },
-			messages,
-			...(notice ? { notice } : {}),
-			...(pr ? { pr } : {}),
-		});
-		const [anchored, hunk] = await Promise.all([
-			facts.anchored(thread.anchor).catch(() => null),
-			facts.hunk(thread.anchor).catch(() => null),
-		]);
-		return { env, anchored, hunk, suggestions: false };
-	}
-
-	/**
-	 * A thread conversation's turn: checkHead first (so `current`'s objects
-	 * are in the clone), the view of the last human message (else the
-	 * latest patch set), the checkout moved to `view.right`, GitHub's
-	 * thread read now (none when it can't be: never a made-up resolved),
-	 * and any commit the clone lacks named in the notice.
-	 */
-	async #threadTurn(
-		thread: AgentThreadFold,
-		messages: PromptMessage[],
-		rejected: string | undefined,
-		pr: PromptEnvelope["pr"],
-	): Promise<Prepared> {
-		const { facts } = this.#deps;
-		const anchor = thread.anchor as Extract<AgentAnchor, { subject: "thread" }>;
-		const checked = await facts.checkHead().then(
-			() => undefined,
-			(error: unknown) => oneLine((error as Error).message),
-		);
-		const review = facts.review();
-		const { patchsets, current } = facts.views();
-		const view = viewOf(thread, patchsets, review);
-		let github: GithubThreadFacts | null = null;
-		let unread: string | undefined;
-		let gone = false;
-		if (thread.githubUnknown) unread = "";
-		else {
-			try {
-				github = await facts.github(anchor.thread, view);
-				gone = github === null;
-			} catch (error) {
-				unread = oneLine((error as Error).message);
+		if (!join.isSpawned()) return null;
+		for (;;) {
+			const handed = join.handedOut();
+			if (handed) {
+				if (this.#dry < MAX_DRY_TURNS) {
+					return { kickoff: false, text: holdLine(handed.thread) };
+				}
+				// Two turns without a reply: the question fails (red, its
+				// wait ends); the reviewer asks again to retry.
+				await this.#endHand(handed, {
+					stop: "error",
+					error: STOPPED_WITHOUT_ANSWER,
+				});
+				this.#dry = 0;
+				continue;
 			}
+			// Woken twice for nothing: quiet until a human asks.
+			if (this.#dry >= MAX_DRY_TURNS) return null;
+			if (await this.#waiting()) return { kickoff: false, text: WAKE_LINE };
+			this.#dry = 0;
+			return null;
 		}
-		const stuck = await this.#moveTo(view.right);
-		const opened = github ? github.openedOn : anchor.commit;
-		const missing = await this.#missing([
-			[opened, "the commit the thread was opened on (openedOn)"],
-			[view.left, "view.left"],
-			[view.right, "view.right"],
-			[current, "current"],
-		]);
-		const notice = joinNotices([
-			rejected,
-			unread !== undefined
-				? `GitHub couldn't be read${unread ? ` (${unread})` : ""}: the thread's comments and whether it is resolved are not in this prompt.`
-				: undefined,
-			gone
-				? `The GitHub thread (${anchor.path}) is gone: it is no longer listed on GitHub.`
-				: undefined,
-			checked
-				? `carbonless couldn't check GitHub for the PR's newest head (${checked}): \`current\` is the head as last read.`
-				: undefined,
-			stuck
-				? `Your checkout could not move to view.right, ${view.right} (${stuck}); run \`git rev-parse HEAD\` to see where it is.`
-				: undefined,
-			...missing.map(
-				([oid, what]) =>
-					`Commit ${oid} (${what}) is missing from the clone: it was never fetched (likely force-pushed away before carbonless saw it), so it can't be checked out or diffed.`,
-			),
-		]);
-		const env = sanitizeEnvelope(
-			threadEnvelope({
-				review,
-				thread: { id: thread.id, anchor },
-				github,
-				view,
-				current,
-				patchsets,
-				messages,
-				...(notice ? { notice } : {}),
-				...(pr ? { pr } : {}),
-			}),
-		);
-		const anchored = await facts.anchored(anchor).catch(() => null);
-		return {
-			env,
-			anchored,
-			hunk: github?.code ?? null,
-			suggestions: true,
-		};
 	}
 
-	/** Moves the checkout to `commit`: undefined when it is there, else why not (one line). */
-	async #moveTo(commit: string): Promise<string | undefined> {
-		const stuck = await this.#checkout
-			?.moveTo(commit)
-			.catch((error: unknown) => (error as Error).message);
-		return stuck ? oneLine(stuck) : undefined;
-	}
-
-	/** The commits (OIDs; others are skipped, never passed to git) the clone doesn't have. */
-	async #missing(commits: [string, string][]): Promise<[string, string][]> {
-		const repo = this.#checkout?.tree ?? this.#deps.cacheClone;
-		const out: [string, string][] = [];
-		const seen = new Set<string>();
-		for (const [oid, what] of commits) {
-			if (!OID.test(oid) || seen.has(oid)) continue;
-			seen.add(oid);
-			const type = (
-				await runGit(repo, ["cat-file", "-t", `${oid}^{commit}`], {
-					allowFailure: true,
-				})
-			).trim();
-			if (type !== "commit") out.push([oid, what]);
-		}
-		return out;
-	}
-
-	/** The checkout's commit now, when it can be read. */
-	async #checkoutHead(): Promise<string | undefined> {
-		const tree = this.#checkout?.tree;
-		if (!tree) return undefined;
-		const head = (
-			await runGit(tree, ["rev-parse", "HEAD"], { allowFailure: true })
-		).trim();
-		return OID.test(head) ? head : undefined;
-	}
-
-	/** Stores a turn's reply; false when draining should stop. */
-	async #store(
+	/** One ACP turn; false when the work should stop. */
+	async #prompt(
 		agent: AcpAgent,
-		thread: AgentThreadFold,
-		reply: { text: string; stop: AgentStop; error?: string },
-		answering: Answering,
-		rejected: string | undefined,
-		suggestions: boolean,
+		line: { text: string; kickoff: boolean },
 	): Promise<boolean> {
-		if (rejected !== undefined && this.#notices.get(thread.id) === rejected) {
-			this.#notices.delete(thread.id);
-		}
-		// A process stopped on purpose (the session closing, a new config):
-		// nothing half-written lands; the thread still waits for the next one.
-		const stoppedOnPurpose =
-			this.#closed ||
-			// stop()'s cancel at an Approve: the thread waits for the session.
-			this.#stopCancelled === agent ||
-			// The config changed under the turn: the new agent answers it.
-			(this.#proc?.agent === agent && this.#proc.key !== this.#key) ||
-			(this.#proc?.agent !== agent && !this.#crashedLast(agent));
-		if (stoppedOnPurpose) return false;
-		// A suggestion is data on the message: only a human's press resolves.
-		// The marker is stripped on any stop; only a finished answer suggests.
-		const taken = suggestions
-			? takeSuggestion(reply.text)
-			: { text: reply.text, suggests: false };
-		const text = taken.text;
-		const suggests = taken.suggests && reply.stop === "end_turn";
-		const head = await this.#checkoutHead();
+		const { join } = this.#deps;
+		const turn: Turn = { agent, replies: 0, stopped: false };
+		this.#turn = turn;
+		join.setBusy(true);
+		this.#set("busy");
+		let r: { text: string; stop: AgentStop; error?: string };
 		try {
-			await this.#deps.store.message(thread.id, {
-				by: "ai",
-				text,
-				agent: agent.info,
-				...(head ? { head } : {}),
-				...(suggests ? { suggests: "resolve" as const } : {}),
-				stop: reply.stop,
-				activity: answering.activity,
-				...(answering.asked ? { replyTo: answering.asked } : {}),
-				...(reply.error ? { error: reply.error } : {}),
-			});
-		} catch (error) {
+			r = await agent.prompt([{ type: "text", text: line.text }]);
+		} finally {
+			join.setBusy(false);
+			if (this.#turn === turn) this.#turn = null;
+		}
+		if (r.stop !== "error") this.#seen = this.#now();
+		const proc = this.#proc;
+		if (proc?.agent === agent && !proc.stopping && !agent.alive) {
+			// Its connection broke: an exit (onExit says why) or a process
+			// that lingers with its stdout closed (killed here).
+			const exited = await agent.exitsWithin(LINGER_MS);
+			if (!exited && !proc.stopping) await this.#lost(proc);
+			return false;
+		}
+		// Off (Detach, an approved join), closed, replaced or crashed:
+		// whoever did that says what happens next.
+		if (!this.#usable(agent)) return false;
+		if (line.kickoff && !(join.isSpawned() && join.attached())) {
+			this.#crashes++;
+			const why = r.error ? `: ${r.error}` : "";
+			await this.#stopProc();
 			this.#set("error", {
-				error: `Could not store the reply: ${(error as Error).message}`,
+				error: `The agent didn't attach to the review${why}`,
 			});
 			return false;
 		}
-		// Its connection closed while the process lingers: a crash.
-		if (this.#proc?.agent === agent && !agent.alive) {
-			await this.#lost(this.#proc);
+		if (r.stop === "error") {
+			// A failed turn: the question it held shows the agent's reason.
+			const handed = join.handedOut();
+			const reason = r.error ?? "The agent's turn failed";
+			if (handed) await this.#endHand(handed, { stop: "error", error: reason });
+			this.#set("error", { error: reason });
 			return false;
 		}
-		// Gone (a crash): onExit says so; the next question respawns.
-		if (this.#proc?.agent !== agent || !agent.alive) return false;
-		if (reply.stop !== "error") this.#crashes = 0;
-		if (this.#current(agent)) {
-			// The agent's reason for a failed turn, until the next turn.
-			if (reply.error) this.#set("error", { error: reply.error });
-			else this.#set("ready");
+		if (turn.stopped) {
+			this.#set("ready");
+			return false;
 		}
+		if (turn.replies > 0) this.#dry = 0;
+		else if (join.handedOut() || (await this.#waiting())) this.#dry++;
+		this.#set("ready");
 		return true;
-	}
-
-	/** Whether `agent` went away by crashing (not stopped on purpose). */
-	#crashedLast(agent: AcpAgent): boolean {
-		return this.#crashedAgents.has(agent);
 	}
 
 	#onUpdate(u: SessionUpdate): void {
 		this.#seen = this.#now();
-		const a = this.#answering;
+		const a = this.#currentHand();
 		if (!a) return;
-		if (u.sessionUpdate === "agent_message_chunk") {
-			if (u.content.type === "text") a.text += u.content.text;
-		} else if (u.sessionUpdate === "tool_call") {
+		if (u.sessionUpdate === "tool_call") {
 			const entry: AgentActivity = {
 				kind: kindOf(u.kind),
 				title: titleOf(u.title),
@@ -1033,10 +1037,16 @@ export class AgentRunner {
 		}
 	}
 
+	/** The runner's record of the question the broker says is handed out now. */
+	#currentHand(): Hand | null {
+		const handed = this.#deps.join.handedOut();
+		return handed && this.#hand?.thread === handed.thread ? this.#hand : null;
+	}
+
 	#onPermission(req: RequestPermissionRequest): RequestPermissionResponse {
 		this.#seen = this.#now();
 		const d = decidePermission(req, this.#config?.leash ?? "open");
-		const a = this.#answering;
+		const a = this.#currentHand();
 		if (a) {
 			const known = a.calls.get(req.toolCall.toolCallId);
 			if (known) known.decision = d.decision;
@@ -1055,16 +1065,6 @@ export class AgentRunner {
 		}
 		return d.response;
 	}
-}
-
-/** The notices that are set, one per line; undefined when none is. */
-function joinNotices(parts: (string | undefined)[]): string | undefined {
-	return parts.filter(Boolean).join("\n") || undefined;
-}
-
-/** An error message on one line, cut to 300 characters. */
-function oneLine(message: string): string {
-	return message.trim().replace(/\s+/g, " ").slice(0, 300);
 }
 
 /**

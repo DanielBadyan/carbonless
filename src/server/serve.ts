@@ -1,5 +1,5 @@
 import { sweepStaleCheckouts } from "./agent/checkout.js";
-import { setServerPort } from "./agent/host.js";
+import { setServerMcp, setServerPort } from "./agent/host.js";
 import { buildApp } from "./app.js";
 import { readConfig, updateConfig } from "./config.js";
 import { configAccess, HomeService } from "./home/homeService.js";
@@ -120,6 +120,7 @@ export async function startServer(opts: {
 	const address = app.server.address();
 	actualPort = typeof address === "object" && address ? address.port : port;
 	setServerPort(actualPort);
+	setServerMcp(selfMcp(host, actualPort, key));
 	const urlHost = host.includes(":") ? `[${host}]` : host;
 	url = `http://${urlHost}:${actualPort}`;
 	await writeServerState({
@@ -152,4 +153,18 @@ export async function startServer(opts: {
 			return closed;
 		},
 	};
+}
+
+/**
+ * crb's own /mcp as an agent it spawns reaches it: this machine, so the
+ * bound address (loopback for a wildcard bind), never serve.publicUrl.
+ */
+export function selfMcp(
+	host: string,
+	port: number,
+	key: string | null,
+): { url: string; key: string | null } {
+	const wildcard = host === "0.0.0.0" || host === "::" || host === "";
+	const h = wildcard ? "127.0.0.1" : host.includes(":") ? `[${host}]` : host;
+	return { url: `http://${h}:${port}/mcp`, key };
 }
