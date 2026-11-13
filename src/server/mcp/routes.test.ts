@@ -57,6 +57,16 @@ describe("/mcp", () => {
 		clients.push(client);
 		return client;
 	};
+	const connectWith = async (headers: Record<string, string>) => {
+		const client = new Client({ name: "spawned", version: "1.0.0" });
+		await client.connect(
+			new StreamableHTTPClientTransport(new URL(`http://${host}/mcp`), {
+				requestInit: { headers },
+			}),
+		);
+		clients.push(client);
+		return client;
+	};
 	const call = async (
 		client: Client,
 		name: string,
@@ -327,6 +337,40 @@ describe("/mcp", () => {
 			repo: "acme/widget",
 			link: link(),
 		});
+	});
+
+	it("a spawned agent's request: attach with the spawn's secret header is approved at once, with a token and no watch line; without it, or with another, expired", async () => {
+		const agent = registry.peek(id)?.agent;
+		if (!agent) throw new Error("no agent");
+		const secret = "S".repeat(43);
+		const { request } = agent.join.admit(
+			{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+			secret,
+		);
+		expect((await status()).joinRequest).toBeUndefined();
+		const args = { review: link(), name: "fake-acp", request };
+		const none = await connect();
+		expect((await call(none, "attach", args)).value).toMatchObject({
+			state: "expired",
+		});
+		const wrong = await connectWith({ "X-Crb-Spawn": "W".repeat(43) });
+		expect((await call(wrong, "attach", args)).value).toMatchObject({
+			state: "expired",
+		});
+		const right = await connectWith({ "X-Crb-Spawn": secret });
+		const ok = await call(right, "attach", args);
+		expect(ok.value).toMatchObject({ state: "approved", waiting: 0 });
+		expect(ok.value.token).toEqual(expect.stringMatching(/^[0-9a-z]{26}\./));
+		expect(ok.value).not.toHaveProperty("watch");
+		expect(ok.value.instructions).toContain("Don't run any watch command");
+		expect((await status()).via).toBe("acp");
+		// Collected once.
+		expect((await call(right, "attach", args)).value).toMatchObject({
+			state: "expired",
+		});
+		// The token works like a joined session's.
+		const t = await call(right, "threads", { token: ok.value.token });
+		expect(t.error).toBe(false);
 	});
 
 	it("a reviewer's message while the session answers still waits after its reply (Review focus 4)", async () => {
