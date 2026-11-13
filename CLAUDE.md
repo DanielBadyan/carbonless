@@ -200,10 +200,10 @@ loading never looking empty, checking against a real PR):
   reference workload, or a scaling check: the input 4x as large against
   four runs of the quarter; `test/cpu.ts`), never against an absolute
   budget measured on the devbox alone, because CI runners' CPUs are slower
-  and contended. The exception: one generous absolute backstop (3x or more
-  CI's slowest measurement) for a cost the ratio can't see, such as a fixed
-  per-run cost both sides pay; its comment says why and what was measured
-  where. No automatic retries (Playwright `retries`, Vitest
+  and contended. The exception: a cost the ratio can't see (such as a
+  fixed per-run cost both sides pay) may get one generous absolute
+  backstop, at least 3x CI's slowest measurement; one per cost guarded,
+  and its comment says why and what was measured where. No automatic retries (Playwright `retries`, Vitest
   `retry`): a flaky test fails visibly and gets fixed. Playwright's expects
   wait 10 s (a reload's chained reads); a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
