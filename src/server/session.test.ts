@@ -15,16 +15,19 @@ import {
 	prView,
 	release,
 	reviewThread,
+	type Scenario,
 	threadComment,
 	timelineCommit,
 	timelineReview,
 } from "../../test/fake-gh/scenario";
+import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { agentsDir } from "./agent/checkout";
 import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
+import { ghIdle } from "./gh";
 import { parseHead } from "./pinnedHead";
 import { answerRereview } from "./rereview/engine";
 import { RefStore } from "./review/refStore";
@@ -333,9 +336,123 @@ describe("Session", () => {
 		});
 	});
 
+	describe("gh calls of an overview read", () => {
+		const callsSince = (from: number) => ghCallKinds(pr.ghLog(), from);
+		const withThread = (over: Partial<Scenario> = {}) =>
+			pr.scenario({
+				...over,
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({
+										login: "rev1",
+										text: "Hm",
+										commit: pr.head(),
+									}),
+								]),
+							],
+						},
+					},
+				},
+			});
+
+		it("is five calls, the first paint one: it waits for neither the threads nor the timeline; a Refresh is six", async () => {
+			withThread();
+			const s = await Session.open(pr.arg, process.cwd());
+			// The first overview also asks the compare (commentLeft, once per snapshot).
+			const first = await s.overview();
+			await Promise.all([
+				s.threads(first.readId, "full"),
+				s.timeline(first.readId),
+			]);
+			await ghIdle();
+			const before = ghCallsOf(pr.ghLog()).length;
+			// The threads and the timeline wait for the test: the overview comes without them.
+			withThread({ hold: ["threads", "timeline"] });
+			const o = await s.overview(0);
+			expect(callsSince(before)).toContain("overview");
+			release(process.env.CRB_FAKE_GH ?? "", "threads");
+			release(process.env.CRB_FAKE_GH ?? "", "timeline");
+			await Promise.all([s.threads(o.readId, "full"), s.timeline(o.readId)]);
+			await ghIdle();
+			// The threads' first and last pages: two calls at once.
+			expect(callsSince(before)).toEqual([
+				"contents",
+				"overview",
+				"threads",
+				"threads",
+				"timeline",
+			]);
+			const beforeRefresh = ghCallsOf(pr.ghLog()).length;
+			await s.refresh();
+			const r = await s.overview();
+			await Promise.all([s.threads(r.readId, "full"), s.timeline(r.readId)]);
+			await ghIdle();
+			expect(callsSince(beforeRefresh)).toEqual([
+				"contents",
+				"head",
+				"overview",
+				"threads",
+				"threads",
+				"timeline",
+			]);
+		});
+
+		it("reads up to 199 reviews and comments in its one query, joined by id; past that, on from the first page's cursor", async () => {
+			const review = (i: number) => ({
+				author: { login: `rev${i}`, __typename: "User" },
+				state: "COMMENTED",
+				submittedAt: `2026-01-03T10:0${i}:00Z`,
+				commit: { oid: pr.head() },
+			});
+			const comment = (i: number) => ({
+				author: { login: `c${i}`, __typename: "User" },
+				createdAt: `2026-01-03T10:0${i}:00Z`,
+			});
+			const scenario = (reviews: number, comments: number) =>
+				pr.scenario({
+					// Pages of 2: 3 nodes are the first and last pages joined.
+					pageSize: 2,
+					prs: {
+						12: {
+							view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							graphql: {
+								reviews: Array.from({ length: reviews }, (_, i) => review(i)),
+								comments: Array.from({ length: comments }, (_, i) =>
+									comment(i),
+								),
+							},
+						},
+					},
+				});
+			const pages = (from: number) =>
+				ghCallsOf(pr.ghLog())
+					.slice(from)
+					.filter((c) => /(reviews|comments)\(first: 100, after/.test(c));
+			const s = await Session.open(pr.arg, process.cwd());
+			await ghIdle();
+			scenario(3, 3);
+			let before = ghCallsOf(pr.ghLog()).length;
+			let o = await s.overview(0);
+			expect(o.reviews).toHaveLength(3);
+			expect(o.commenters).toHaveLength(3);
+			expect(pages(before)).toEqual([]);
+			// Five: the ends don't meet, the pages after the first follow.
+			scenario(5, 5);
+			before = ghCallsOf(pr.ghLog()).length;
+			o = await s.overview(0);
+			expect(o.reviews).toHaveLength(5);
+			expect(o.commenters).toHaveLength(5);
+			expect(pages(before)).toHaveLength(4);
+		});
+	});
+
 	describe("overview", () => {
-		/** gh calls reading the overview (its `pr view` asks for the author). */
-		const reads = () => (pr.ghLog().match(/^pr view .*author/gm) ?? []).length;
+		/** gh calls reading the overview (its one query). */
+		const reads = () => (pr.ghLog().match(/query PrOverview\(/g) ?? []).length;
 		const titled = (title: string) =>
 			pr.scenario({
 				prs: {
@@ -596,7 +713,7 @@ describe("Session", () => {
 				});
 			const s = await Session.open(pr.arg, process.cwd());
 			// Its overview fails (no description) while its threads go on.
-			slowThreads({ failGraphql: "{ bodyHTML }" });
+			slowThreads({ failGraphql: "query PrOverview(" });
 			await expect(s.overview(0)).rejects.toThrow();
 			// More reads than are kept: the oldest is pushed out, still running.
 			slowThreads();
@@ -1098,6 +1215,26 @@ describe("Session", () => {
 			const ghCalls = pr.ghLog().length;
 			expect(await s.overview()).toEqual(o);
 			expect(pr.ghLog().length).toBe(ghCalls);
+		});
+
+		it("reads anew in four calls with no threads: the snapshot head's checks come in the overview's one query", async () => {
+			const then = pr.head();
+			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }));
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			await ghIdle();
+			const before = ghCallsOf(pr.ghLog()).length;
+			const o = await s.overview(0);
+			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+			await Promise.all([s.threads(o.readId, "full"), s.timeline(o.readId)]);
+			await ghIdle();
+			expect(ghCallKinds(pr.ghLog(), before)).toEqual([
+				"overview",
+				"threads",
+				"threads",
+				"timeline",
+			]);
 		});
 
 		it("treats --viewer as you, so the gh login shows as a third party", async () => {

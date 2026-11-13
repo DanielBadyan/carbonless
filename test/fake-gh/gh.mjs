@@ -1266,6 +1266,80 @@ async function call(io) {
 			if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 				fail("GraphQL: Something went wrong while executing your query.");
 			}
+			const endSize = s.pageSize ?? 100;
+			/** A connection's first or last `size` nodes, as GitHub pages them. */
+			const endOf = (all, end) => {
+				const start = end === "last" ? Math.max(0, all.length - endSize) : 0;
+				const hasNextPage = end === "first" && endSize < all.length;
+				return {
+					totalCount: all.length,
+					pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${endSize}` : null },
+					nodes: all.slice(start, start + endSize),
+				};
+			};
+			/** A commit's checks as a statusCheckRollup (null: none reported). */
+			const rollupOf = (contexts) => {
+				if (contexts === null) return null;
+				const all = checkContexts(contexts ?? [], false);
+				const hasNextPage = endSize < all.length;
+				return {
+					contexts: {
+						pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${endSize}` : null },
+						nodes: all.slice(0, endSize),
+					},
+				};
+			};
+			// The overview's one query (gh.ts overviewQuery): the PR's fields
+			// from its `view` (gh pr view's), its description, the first and
+			// last pages of comments and reviews, and the checks: the head's,
+			// or as of a cutoff the snapshot head's (`oid`). Held as `prView`.
+			if (/^query PrOverview\(/.test(f.query ?? "")) {
+				const pr = pr0();
+				if (!pr) notFound(f.number);
+				await delay("prView", s.prViewDelayMs);
+				const v = pr.view ?? {};
+				// Every node has an id on GitHub (the ends are joined by it).
+				const comments = (pr.graphql?.comments ?? []).map((c, i) => ({ id: `IC_${f.number}_${i}`, ...c }));
+				const reviews = (pr.graphql?.reviews ?? []).map((r, i) => ({
+					id: `PRR_${f.number}_${i}`,
+					...withUrl(f.number, r, i),
+				}));
+				const pull = {
+					number: v.number ?? Number(f.number),
+					title: v.title ?? "",
+					url: v.url ?? "",
+					author: v.author ?? null,
+					body: v.body ?? "",
+					bodyHTML: pr.graphql?.bodyHTML ?? "",
+					state: v.state ?? "OPEN",
+					isDraft: v.isDraft ?? false,
+					createdAt: v.createdAt ?? null,
+					updatedAt: v.updatedAt ?? null,
+					baseRefName: v.baseRefName ?? "main",
+					headRefName: v.headRefName ?? "",
+					mergeable: v.mergeable ?? "UNKNOWN",
+					reviewRequests: {
+						nodes: (v.reviewRequests ?? []).map(({ asCodeOwner, ...r }) => ({ requestedReviewer: r })),
+					},
+					comments: endOf(comments, "first"),
+					commentsLast: endOf(comments, "last"),
+					reviews: endOf(reviews, "first"),
+					reviewsLast: endOf(reviews, "last"),
+				};
+				const repository = { pullRequest: pull };
+				if (f.oid) {
+					// Else the head of a PR: its statusCheckRollup.
+					const headOf = Object.values(s.prs).find((p) => p.view?.headRefOid === f.oid);
+					const commit =
+						s.commits?.[f.oid] ?? (headOf ? { contexts: headOf.view.statusCheckRollup ?? [] } : undefined);
+					repository.asOfHead = commit === undefined ? null : { statusCheckRollup: rollupOf(commit.contexts) };
+				} else {
+					pull.headCommit = {
+						nodes: [{ commit: { oid: v.headRefOid, statusCheckRollup: rollupOf(v.statusCheckRollup ?? []) } }],
+					};
+				}
+				print({ data: { repository } });
+			}
 			// The Final Verdict's read (gh.ts VERDICT_QUERY): the PR's merge
 			// state, review decision, requested reviewers, first page of
 			// reviews and the head's checks with isRequired.

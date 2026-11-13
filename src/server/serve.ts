@@ -14,6 +14,7 @@ import {
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
 import { serveChecksOff, updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
+import { ViewerCache } from "./viewerCache.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -79,10 +80,13 @@ export async function startServer(opts: {
 	if (hooksEnv && !testHooks) {
 		log(`${TEST_HOOKS_ENV} is not a 32-hex token: test hooks off`);
 	}
-	const registry = new SessionRegistry();
+	// One gh login for the server: every open and Home read it from here.
+	const viewers = new ViewerCache();
+	const registry = new SessionRegistry({ viewers });
 	// Home reads GitHub only when its page asks (no timer to stop).
 	const home = new HomeService({
 		config: configAccess(readConfig, updateConfig),
+		viewers,
 	});
 	let url = "";
 	let actualPort = port;
