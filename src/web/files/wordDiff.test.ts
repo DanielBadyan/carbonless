@@ -588,8 +588,9 @@ describe("wordMarks", () => {
 	// and 7.6x the yardstick on the dev machine) fails the unrelated test.
 	// The similar ratio moves more with load (wordMarks allocates more
 	// than the yardstick), hence its looser budget. The absolute ceilings
-	// are only a backstop for the yardstick itself slowing down: three
-	// times CI's slowest best-of-three (100 and 241 ms).
+	// are the backstop CLAUDE.md allows, for a cost the ratios can't see:
+	// the yardstick itself slowing down. Three times CI's slowest
+	// best-of-three (100 and 241 ms).
 	it(
 		"marks 2,000 pairs of similar 120-character lines in 1.8x the CPU of their character diff",
 		() => {

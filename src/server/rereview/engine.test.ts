@@ -725,5 +725,11 @@ describe("the engine's cost", () => {
 			`engine trace CPU for 200 files: ${(best / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file trace`,
 		);
 		expect(ratio).toBeLessThan(2);
+		// The absolute backstop CLAUDE.md allows: both sides pay the fixed
+		// per-run cost, so the ratio can't see it grow, even 100x. One
+		// 200-file trace measured 16-27 ms CPU on the dev machine; CI's
+		// runners were 1.5-3x slower on wordDiff, so CI's slowest is about
+		// 27 x 3 = 81 ms, and 250 ms is about 3x that.
+		expect(best).toBeLessThan(250_000);
 	});
 });
