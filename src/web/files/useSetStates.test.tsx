@@ -5,7 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { viewSaverFor } from "../home/viewSaver";
 import { draftsFor } from "../threads/drafts";
 import { threadWritesFor } from "../threads/threadWrites";
-import { stateSyncFor, useUnsavedGuard } from "./useSetStates";
+import { DELAYED_MS } from "./stateSync";
+import {
+	stateSyncFor,
+	useReviewView,
+	useSyncStale,
+	useSyncState,
+	useUnsaved,
+	useUnsavedGuard,
+} from "./useSetStates";
 
 function Guard() {
 	useUnsavedGuard();
@@ -288,5 +296,71 @@ describe("useUnsavedGuard", () => {
 			await vi.waitFor(() => expect(writes.state().refused).toEqual([]));
 		});
 		expect(leave()).toBe(false);
+	});
+});
+
+describe("the sync's notices", () => {
+	afterEach(() => {
+		cleanup();
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	// CAR-147: the Files page read the whole sync state, so a save turning
+	// delayed rendered every line of an open file again (and each line's
+	// highlight query notified on its own).
+	it("a save turning delayed renders only what shows the notice, not the page's readers", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		// Nothing answers: the review read and the write stay out.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		const renders = { view: 0, unsaved: 0, stale: 0, notice: 0 };
+		function View() {
+			useReviewView();
+			renders.view++;
+			return null;
+		}
+		function Unsaved() {
+			useUnsaved();
+			renders.unsaved++;
+			return null;
+		}
+		function Stale() {
+			useSyncStale();
+			renders.stale++;
+			return null;
+		}
+		function Notice() {
+			useSyncState();
+			renders.notice++;
+			return null;
+		}
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<View />
+				<Unsaved />
+				<Stale />
+				<Notice />
+			</QueryClientProvider>,
+		);
+		const sync = stateSyncFor(client);
+		await act(async () => {
+			void sync.apply("r1", "a.ts", [{ key: "k1", state: "reviewed" }]);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(sync.getState().delayed).toBe(false);
+		const before = { ...renders };
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(DELAYED_MS);
+		});
+		expect(sync.getState().delayed).toBe(true);
+		// The control: a whole-state reader did render again.
+		expect(renders.notice).toBeGreaterThan(before.notice);
+		expect(renders.view).toBe(before.view);
+		expect(renders.unsaved).toBe(before.unsaved);
+		expect(renders.stale).toBe(before.stale);
 	});
 });

@@ -90,6 +90,27 @@ export function useSyncState(): SyncState {
 }
 
 /**
+ * One part of the sync's state: the component renders again only when that
+ * part changes, not on every notice (a save turning delayed, a retry's
+ * wait). `select` returns a value kept across states (SyncState's maps and
+ * `stale` are) or a primitive. The Files page and the review overlay read
+ * this way: a whole long file rendering again for a notice costs a
+ * notification per highlighted line (CAR-147).
+ */
+function useSyncPart<T>(select: (state: SyncState) => T): T {
+	const sync = stateSyncFor(useQueryClient());
+	const get = () => select(sync.getState());
+	return useSyncExternalStore(sync.subscribe, get, get);
+}
+
+const pendingOf = (s: SyncState) => s.pending;
+const staleOf = (s: SyncState) => s.stale;
+const anyPending = (s: SyncState) => s.pending.size > 0;
+
+/** The write the server refused because the snapshot moved (SyncState.stale). */
+export const useSyncStale = () => useSyncPart(staleOf);
+
+/**
  * Every cluster state write: `save(revision, path, changes)` shows them at
  * once and resolves once stored (see StateSync.apply).
  */
@@ -108,7 +129,7 @@ export function useSetStates() {
  */
 export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
 	const review = useQuery(reviewQuery(target));
-	const { pending } = useSyncState();
+	const pending = useSyncPart(pendingOf);
 	const data = useMemo(
 		() => review.data && overlayReview(review.data, pending),
 		[review.data, pending],
@@ -152,7 +173,7 @@ export function useUnsavedGuard() {
  * list): what an update's restart asks about first, as leaving does.
  */
 export function useUnsaved(): boolean {
-	const states = useSyncState().pending.size > 0;
+	const states = useSyncPart(anyPending);
 	const drafts = unsent(useDrafts());
 	const durable = useDraftsDurable();
 	const { busy, lost } = useThreadWrites();
