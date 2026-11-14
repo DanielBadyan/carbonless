@@ -378,19 +378,6 @@ function safeJson(text: string): unknown {
 	}
 }
 
-export async function viewerSlug(): Promise<string> {
-	return slugify(await viewerLogin());
-}
-
-async function viewerLogin(): Promise<string> {
-	const user = safeJson(await runGh(["api", "user"])) as { login?: unknown };
-	const login = typeof user?.login === "string" ? user.login : "";
-	if (!slugify(login).replace(/-/g, "")) {
-		throw new GhError("Could not determine your GitHub login from gh api user");
-	}
-	return login;
-}
-
 function isNotFound(error: unknown): boolean {
 	return (
 		error instanceof GhError &&
@@ -703,7 +690,8 @@ const COMMIT_CHECKS = `statusCheckRollup { contexts(first: 100) { pageInfo { has
 /**
  * The overview's whole first paint in one round trip (fetchOverview): the
  * PR's fields, its description as GitHub renders it (HTML comments
- * dropped, emoji and images resolved), its requested reviewers, the first
+ * dropped, emoji and images resolved), its requested reviewers (User,
+ * Bot and Team, as `gh pr view` asks for them: gh 2.104), the first
  * and last 100 of its comments and reviews (joinEnds: up to 199 each in
  * this one call) and the checks: the head's, or as of a cutoff (`asOf`)
  * those of the snapshot head `$oid`. Light fields only: merging the review
@@ -716,7 +704,7 @@ const overviewQuery = (
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number title url ${AUTHOR} body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable
-      reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { name slug } } } }
+      reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { name slug } } } }
       ${endPage("comments", "comments", "first", OVERVIEW_NODES.comments)}
       ${endPage("commentsLast", "comments", "last", OVERVIEW_NODES.comments)}
       ${endPage("reviews", "reviews", "first", OVERVIEW_NODES.reviews)}
@@ -1023,15 +1011,19 @@ async function checksFrom(
 	commit: unknown,
 	read: ReadSignal,
 ): Promise<unknown[]> {
-	const rollup = rec(commit).statusCheckRollup;
-	if (rollup === null || rollup === undefined) return [];
-	const conn = rec(rec(rollup).contexts);
-	if (!Array.isArray(conn.nodes)) {
-		throw new GhError("gh returned an unexpected response for the checks");
-	}
+	const unexpected = () =>
+		new GhError("gh returned an unexpected response for the checks");
+	const c = rec(commit);
+	if (!("statusCheckRollup" in c)) throw unexpected();
+	// No checks ever reported for this commit.
+	if (c.statusCheckRollup === null) return [];
+	const conn = rec(rec(c.statusCheckRollup).contexts);
+	if (!Array.isArray(conn.nodes)) throw unexpected();
 	const info = rec(conn.pageInfo);
-	if (info.hasNextPage !== true || typeof info.endCursor !== "string") {
-		return conn.nodes;
+	if (info.hasNextPage !== true) return conn.nodes;
+	// More, but nowhere to read on from: as fetchCommitChecks, never fewer.
+	if (typeof info.endCursor !== "string") {
+		throw new GhError("Too many checks to read for this commit");
 	}
 	return fetchCommitChecks(ref, oid, read, {
 		after: info.endCursor,
@@ -1086,9 +1078,6 @@ export async function fetchOverview(
 		if (typeof p.bodyHTML !== "string") {
 			throw new GhError("gh returned an unexpected response for the PR body");
 		}
-		const head = rec(
-			(rec(p.headCommit).nodes as unknown[] | undefined)?.[0],
-		).commit;
 		let checks: Promise<unknown[]>;
 		if (asOf) {
 			const object = repo.asOfHead;
@@ -1097,9 +1086,21 @@ export async function fetchOverview(
 			}
 			checks = checksFrom(ref, asOf.head, object, read);
 		} else {
+			const nodes = rec(p.headCommit).nodes;
+			if (!Array.isArray(nodes)) {
+				throw new GhError("gh returned an unexpected response for the checks");
+			}
+			// A PR without a commit has no checks; a head commit has an oid.
+			const head = rec(nodes[0]).commit;
 			const oid = rec(head).oid;
+			if (
+				nodes.length > 0 &&
+				(typeof oid !== "string" || !OID_FORM.test(oid))
+			) {
+				throw new GhError("gh returned an unexpected response for the checks");
+			}
 			checks =
-				typeof oid === "string" && OID_FORM.test(oid)
+				typeof oid === "string"
 					? checksFrom(ref, oid, head, read)
 					: Promise.resolve([]);
 		}
@@ -1121,9 +1122,15 @@ export async function fetchOverview(
 			checks,
 		]);
 		// The PR's own fields as mapOverview reads them (`gh pr view`'s
-		// shapes: requested reviewers and checks as plain lists).
+		// shapes: requested reviewers and checks as plain lists, a bot author
+		// as `app/<login>`, which is how the attention sets know a bot PR).
+		const author = rec(p.author);
 		const view = {
 			...p,
+			author:
+				author.__typename === "Bot" && typeof author.login === "string"
+					? { ...author, login: `app/${author.login}` }
+					: p.author,
 			reviewRequests: (
 				(rec(p.reviewRequests).nodes as unknown[] | undefined) ?? []
 			)

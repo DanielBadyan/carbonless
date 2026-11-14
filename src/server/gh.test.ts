@@ -551,6 +551,28 @@ describe("runGh with a fake gh", () => {
 		const o = await fetchOverview(ref, "me");
 		expect(o.reviews).toHaveLength(150);
 		expect(o.commenters).toHaveLength(250);
+		// What it asks for: every field the overview maps, and the comments'
+		// and reviews' ids (without them the ends never join).
+		expect(log()).toContain(
+			"number title url author { login __typename } body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable",
+		);
+		expect(log()).toContain(
+			"reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { name slug } } } }",
+		);
+		for (const alias of ["comments", "commentsLast"]) {
+			expect(log()).toMatch(
+				new RegExp(
+					`${alias}: comments\\((first|last): 100\\) \\{ totalCount pageInfo \\{ hasNextPage endCursor \\} nodes \\{ id author \\{ login __typename \\} createdAt \\}`,
+				),
+			);
+		}
+		for (const alias of ["reviews", "reviewsLast"]) {
+			expect(log()).toMatch(
+				new RegExp(
+					`${alias}: reviews\\((first|last): 100\\) \\{ totalCount pageInfo \\{ hasNextPage endCursor \\} nodes \\{ id author \\{ login __typename \\} state submittedAt url commit \\{ oid \\} \\}`,
+				),
+			);
+		}
 		// The overview's own query, then the comments from their cursor.
 		expect(log().match(/^api graphql/gm)).toHaveLength(2);
 		expect(log()).toContain("endCursor=c100");
@@ -742,6 +764,65 @@ describe("runGh with a fake gh", () => {
 			runGh(["api", "graphql"], { signal: stop.signal }),
 		).rejects.toBeInstanceOf(GhAbortedError);
 		expect(log()).toBe(before);
+	});
+
+	it("maps a Bot author to gh's app/<name>, and fails rather than show fewer checks", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		const head = "a".repeat(40);
+		const checks = (pageInfo: unknown) => ({
+			headCommit: {
+				nodes: [
+					{
+						commit: {
+							oid: head,
+							statusCheckRollup: {
+								contexts: {
+									pageInfo,
+									nodes: [
+										{
+											__typename: "StatusContext",
+											context: "ci",
+											state: "SUCCESS",
+										},
+									],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({
+				author: { login: "dependabot", __typename: "Bot" },
+				...checks({ hasNextPage: false, endCursor: null }),
+			}),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const o = await fetchOverview(ref, "me");
+		expect(o.author).toBe("app/dependabot");
+		expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+		// More checks, but no cursor to read on from.
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer(checks({ hasNextPage: true, endCursor: null })),
+		);
+		await expect(fetchOverview(ref, "me")).rejects.toThrow(
+			"Too many checks to read for this commit",
+		);
+		// No rollup field at all: not "no checks".
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({
+				headCommit: { nodes: [{ commit: { oid: head } }] },
+			}),
+		);
+		await expect(fetchOverview(ref, "me")).rejects.toThrow(
+			"unexpected response for the checks",
+		);
 	});
 
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {

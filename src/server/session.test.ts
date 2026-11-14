@@ -401,6 +401,41 @@ describe("Session", () => {
 			]);
 		});
 
+		it("keeps a bot's PR a bot's: GraphQL's Bot author reads as gh's app/<name>, and never waits on a thread", async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							author: { login: "app/dependabot" },
+						}),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({
+										login: "rev1",
+										text: "Hm",
+										commit: pr.head(),
+									}),
+								]),
+							],
+						},
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const o = await s.overview();
+			// The fake answers GraphQL's shape: `dependabot`, a Bot.
+			expect(
+				ghCallsOf(pr.ghLog()).some((c) => c.includes("query PrOverview(")),
+			).toBe(true);
+			expect(o.author).toBe("app/dependabot");
+			const { threads } = await s.threads(o.readId, "summary");
+			// rev1 spoke last; a human author would be waited on, a bot never.
+			expect(threads[0]?.attention).toEqual([]);
+		});
+
 		it("reads up to 199 reviews and comments in its one query, joined by id; past that, on from the first page's cursor", async () => {
 			const review = (i: number) => ({
 				author: { login: `rev${i}`, __typename: "User" },

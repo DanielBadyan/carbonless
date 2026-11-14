@@ -70,7 +70,7 @@ describe("SessionRegistry", () => {
 		await pr.cleanup();
 	});
 
-	it("answers the page's first head check from the open's read when young; later checks and a Refresh ask GitHub", async () => {
+	it("answers the page's first head check from the open's read when young; an agent's check, later checks and a Refresh ask GitHub", async () => {
 		// The clock stands still: the open's read is as young as it gets.
 		vi.useFakeTimers({ toFake: ["Date"] });
 		onTestFinished(() => {
@@ -78,34 +78,39 @@ describe("SessionRegistry", () => {
 		});
 		const metas = () =>
 			(pr.ghLog().match(/^pr view .*headRefOid/gm) ?? []).length;
+		const page = { reuseOpen: true };
 		const r = registry();
 		const { session } = await r.open({ pr: pr.arg });
 		const opened = metas();
-		expect(await session.checkHead()).toMatchObject({
+		// An agent's turn checks first: it always asks GitHub, and leaves the
+		// page its one reuse.
+		await session.checkHead();
+		expect(metas()).toBe(opened + 1);
+		expect(await session.checkHead(page)).toMatchObject({
 			currentHead: pr.head(),
 		});
-		expect(metas()).toBe(opened);
+		expect(metas()).toBe(opened + 1);
 		// Only the first: a reload after a push asks.
 		const pushed = pr.moveHead({ "later.txt": "later\n" });
-		expect(await session.checkHead()).toMatchObject({
+		expect(await session.checkHead(page)).toMatchObject({
 			currentHead: pushed,
 			headMoved: true,
 		});
-		expect(metas()).toBe(opened + 1);
+		expect(metas()).toBe(opened + 2);
 
 		// An open whose read is older than HEAD_REUSE_MS: its first check asks.
 		const other = (await r.open({ pr: pr.arg, viewer: "someone-else" }))
 			.session;
 		vi.setSystemTime(Date.now() + HEAD_REUSE_MS + 1);
 		const before = metas();
-		await other.checkHead();
+		await other.checkHead(page);
 		expect(metas()).toBe(before + 1);
 
 		// A Refresh asks, and so does the check after it.
 		const third = (await r.open({ pr: pr.arg, viewer: "a-third" })).session;
 		const refreshed = metas();
 		await third.refresh();
-		await third.checkHead();
+		await third.checkHead(page);
 		expect(metas()).toBe(refreshed + 2);
 	});
 

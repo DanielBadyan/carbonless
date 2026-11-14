@@ -49,8 +49,14 @@ import {
 	postResolved,
 	resolvePrRef,
 	runGh,
-	viewerSlug,
+	slugify,
 } from "./gh";
+
+/** The gh login's slug, from `gh api user` (the fake's `user`). */
+const viewerSlug = async (): Promise<string> =>
+	slugify(
+		(JSON.parse(await runGh(["api", "user"])) as { login: string }).login,
+	);
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);

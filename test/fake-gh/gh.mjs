@@ -1298,17 +1298,30 @@ async function call(io) {
 				if (!pr) notFound(f.number);
 				await delay("prView", s.prViewDelayMs);
 				const v = pr.view ?? {};
-				// Every node has an id on GitHub (the ends are joined by it).
-				const comments = (pr.graphql?.comments ?? []).map((c, i) => ({ id: `IC_${f.number}_${i}`, ...c }));
-				const reviews = (pr.graphql?.reviews ?? []).map((r, i) => ({
-					id: `PRR_${f.number}_${i}`,
-					...withUrl(f.number, r, i),
-				}));
-				const pull = {
+				const q = f.query;
+				// Only what the query selects, as GitHub: the PR's own fields
+				// (those before its first connection), and a node's id only
+				// when its fields ask for it (the ends are joined by it).
+				const own = q.slice(q.indexOf("pullRequest(number: $number) {"), q.search(/reviewRequests\(|\w+: comments\(/));
+				const asked = (name) => new RegExp(`\\b${name}\\b`).test(own.replace(/\{[^{}]*\}/g, ""));
+				const withId = (alias, prefix) => (n, i) => {
+					const fields = new RegExp(`${alias}: \\w+\\((?:first|last): \\d+\\) \\{[^]*?nodes \\{([^{}]*)`).exec(q)?.[1] ?? "";
+					return /\bid\b/.test(fields) ? { id: `${prefix}_${f.number}_${i}`, ...n } : n;
+				};
+				const comments = pr.graphql?.comments ?? [];
+				const reviews = (pr.graphql?.reviews ?? []).map((r, i) => withUrl(f.number, r, i));
+				// gh pr view's `app/<name>` is GraphQL's Bot `<name>`.
+				const login = v.author?.login ?? "";
+				const author = v.author
+					? login.startsWith("app/")
+						? { login: login.slice(4), __typename: "Bot" }
+						: { login, __typename: v.author.__typename ?? "User" }
+					: null;
+				const fieldsOfPr = {
 					number: v.number ?? Number(f.number),
 					title: v.title ?? "",
 					url: v.url ?? "",
-					author: v.author ?? null,
+					author,
 					body: v.body ?? "",
 					bodyHTML: pr.graphql?.bodyHTML ?? "",
 					state: v.state ?? "OPEN",
@@ -1318,14 +1331,17 @@ async function call(io) {
 					baseRefName: v.baseRefName ?? "main",
 					headRefName: v.headRefName ?? "",
 					mergeable: v.mergeable ?? "UNKNOWN",
+				};
+				const pull = Object.fromEntries(Object.entries(fieldsOfPr).filter(([k]) => asked(k)));
+				Object.assign(pull, {
 					reviewRequests: {
 						nodes: (v.reviewRequests ?? []).map(({ asCodeOwner, ...r }) => ({ requestedReviewer: r })),
 					},
-					comments: endOf(comments, "first"),
-					commentsLast: endOf(comments, "last"),
-					reviews: endOf(reviews, "first"),
-					reviewsLast: endOf(reviews, "last"),
-				};
+					comments: endOf(comments.map(withId("comments", "IC")), "first"),
+					commentsLast: endOf(comments.map(withId("commentsLast", "IC")), "last"),
+					reviews: endOf(reviews.map(withId("reviews", "PRR")), "first"),
+					reviewsLast: endOf(reviews.map(withId("reviewsLast", "PRR")), "last"),
+				});
 				const repository = { pullRequest: pull };
 				if (f.oid) {
 					// Else the head of a PR: its statusCheckRollup.
@@ -1833,15 +1849,6 @@ async function call(io) {
 			// A connection's last page (`last: N`), not one after a cursor.
 			const fromEnd = f.query.includes(`${conn}(last: `);
 			const pr = s.prs[f.number];
-			// The description query: pullRequest { bodyHTML }, no connection.
-			if (!conn && /pullRequest\(number: \$number\) \{ bodyHTML \}/.test(f.query)) {
-				if (!pr) notFound(f.number);
-				print({
-					data: {
-						repository: { pullRequest: { bodyHTML: pr.graphql?.bodyHTML ?? "" } },
-					},
-				});
-			}
 			// One commit's checks: object(oid) { ... statusCheckRollup { contexts } }.
 			if (conn === "contexts") {
 				// Else the head of a PR: its statusCheckRollup (the verdict's pages).

@@ -125,13 +125,14 @@ import { ViewerCache } from "./viewerCache.js";
 const KEPT_READS = 3;
 
 /**
- * How young the open's read of the PR's head must be to answer the first
- * head check (checkHead): the page asks right after `crb <pr>` opened the
- * review (about a second later with a warm clone), which would repeat the
+ * How young the open's read of the PR's head must be to answer the page's
+ * first head check (`GET /head`, checkHead's reuseOpen): the page asks
+ * right after `crb <pr>` opened the review (about a second later with a
+ * warm clone), which would repeat the
  * open's read. A third of the page's own 30 s staleTime for the head, so
  * that answer is never staler than what the page takes from a check
  * anyway; an open that cloned (often longer) asks again. Only the first
- * check: a reload after a push always asks.
+ * check: a reload after a push always asks, and so does an agent's turn.
  */
 export const HEAD_REUSE_MS = 10_000;
 
@@ -273,8 +274,8 @@ export class Session {
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
 	/**
-	 * When the open read the PR's head, until the first head check or a
-	 * Refresh (checkHead; opens through the server only).
+	 * When the open read the PR's head, until the page's first head check
+	 * or a Refresh (checkHead's reuseOpen; opens through the server only).
 	 */
 	#openHeadAt: number | null = null;
 	/** Thread code from the clone; a Refresh retries what failed. */
@@ -2079,14 +2080,21 @@ export class Session {
 	 * no fetch; the same head under a moved base oid does (its merge base
 	 * may have moved).
 	 */
-	async checkHead(): Promise<SessionInfo> {
+	async checkHead(
+		/**
+		 * The page's own check (`GET /head`): its first, right after `crb <pr>`,
+		 * would ask what the open just read, so the open's answer serves it,
+		 * once, if young enough. Any other caller (an agent's turn) asks.
+		 */
+		options: { reuseOpen?: boolean } = {},
+	): Promise<SessionInfo> {
 		if (this.options.asOf) return this.info();
-		// The page's first check, loading right after `crb <pr>`, would ask
-		// what the open just read: the open's answer, once, if young enough.
-		const openAt = this.#openHeadAt;
-		this.#openHeadAt = null;
-		if (openAt !== null && Date.now() - openAt <= HEAD_REUSE_MS) {
-			return this.info();
+		if (options.reuseOpen) {
+			const openAt = this.#openHeadAt;
+			this.#openHeadAt = null;
+			if (openAt !== null && Date.now() - openAt <= HEAD_REUSE_MS) {
+				return this.info();
+			}
 		}
 		const seq = ++this.#metaSeq;
 		const meta = await fetchPrMeta(this.#ref(), { signal: this.#stop.signal });
