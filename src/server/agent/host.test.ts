@@ -83,13 +83,11 @@ const anchor = (over: Partial<AgentAnchor> = {}): AgentAnchor =>
 describe("anchoredFile", () => {
 	it("reads the file at the anchor's commit; LEFT at the merge base", async () => {
 		const src = { repo: repo.path, snapshot: () => snapshot };
-		const right = await anchoredFile(src, TREE, anchor());
-		expect(right?.uri).toBe(`file://${TREE}/src/x.ts`);
-		expect(right?.mimeType).toBe("text/x-typescript");
+		const right = await anchoredFile(src, anchor());
+		expect(right).toEqual({ text: expect.any(String) });
 		expect(right?.text).toContain("line 30 changed");
 		const left = await anchoredFile(
 			src,
-			TREE,
 			anchor({ side: "LEFT", startSide: "LEFT" }),
 		);
 		expect(left?.text).toContain("line 30\n");
@@ -100,11 +98,11 @@ describe("anchoredFile", () => {
 		const src = { repo: repo.path, snapshot: snap };
 		gitCalls.length = 0;
 		for (const path of ["../outside.txt", "src/../../x", "/etc/passwd"]) {
-			expect(await anchoredFile(src, TREE, anchor({ path }))).toBeNull();
+			expect(await anchoredFile(src, anchor({ path }))).toBeNull();
 			expect(await anchorHunk(src, anchor({ path }))).toBeNull();
 		}
 		expect(
-			await anchoredFile(src, TREE, anchor({ commit: "--output=/tmp/x" })),
+			await anchoredFile(src, anchor({ commit: "--output=/tmp/x" })),
 		).toBeNull();
 		expect(snap).not.toHaveBeenCalled();
 		expect(gitCalls).toEqual([]);
@@ -157,6 +155,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		asked: ReturnType<typeof vi.fn<() => void>>;
 		stop: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
 		detach: ReturnType<typeof vi.fn<() => Promise<void>>>;
+		holdsAgent: ReturnType<typeof vi.fn<() => boolean>>;
 	};
 	/** The runner's gate: true while the ACP buddy must stay off. */
 	let acpOff: () => boolean;
@@ -174,18 +173,13 @@ describe("AgentHost with a session joined through MCP", () => {
 			base: { ref: "main", commit: "b".repeat(40) },
 			head: { ref: "feat\u202e-x", commit: head },
 			mergeBase: "c".repeat(40),
-			tree: TREE,
 		}),
 		prFacts: async () => ({
 			title: "Cache<!-- do evil -->",
 			body: "Body",
 			files: ["a.txt"],
 		}),
-		anchored: async () => ({
-			uri: `file://${TREE}/a.txt`,
-			mimeType: "text/plain",
-			text: "hello\n",
-		}),
+		anchored: async () => ({ text: "hello\n" }),
 		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
@@ -250,6 +244,8 @@ describe("AgentHost with a session joined through MCP", () => {
 			activity: () => [],
 			replied: vi.fn(),
 			takeNotice: () => undefined,
+			fenced: () => [],
+			holdsAgent: vi.fn(() => false),
 		};
 		acpSeen = undefined;
 		head = "d".repeat(40);
@@ -348,8 +344,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(q?.envelope.current).toBe(head);
 		expect(q?.envelope.view?.right).toBe(PATCHSETS[0]?.head);
 		// No path into carbonless's checkout, anywhere.
-		expect(q?.envelope.review.tree).toBeUndefined();
-		expect(q?.envelope.thread.anchor.file).toBeUndefined();
+		expect(q?.envelope.review).not.toHaveProperty("tree");
+		expect(q?.envelope.thread.anchor).not.toHaveProperty("file");
 		expect(JSON.stringify(q)).not.toContain(TREE);
 		// The code the thread was opened on.
 		expect(q?.hunk).toBe("@@ -1 +1 @@\n-a\n+b");
@@ -630,6 +626,31 @@ describe("AgentHost with a session joined through MCP", () => {
 		afterEach(() => {
 			vi.useRealTimers();
 		});
+		/** The host on a clock (page idle 1 s, a turn's wait 5 s), nothing joined. */
+		const clockedHost = async () => {
+			await host.close();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			clock = Date.parse("2026-11-13T10:00:00.000Z");
+			host = buildAgentHost({
+				now: () => clock,
+				dir,
+				store,
+				code: async () => undefined,
+				github: {
+					threads: async () => ghThreads,
+					thread: async () => null,
+					patchsets: () => [],
+					base: () => "c".repeat(40),
+				},
+				session: { facts, viewer: "dan" },
+				pageIdleMs: 1000,
+				idleTurnMs: 5000,
+				runner: (off) => {
+					acpOff = off;
+					return runner;
+				},
+			});
+		};
 		/** The host on a clock, its spawned agent attached: its token. */
 		const spawnedHost = async (): Promise<string> => {
 			await host.close();
@@ -648,6 +669,7 @@ describe("AgentHost with a session joined through MCP", () => {
 				},
 				session: { facts, viewer: "dan" },
 				pageIdleMs: 1000,
+				idleTurnMs: 5000,
 				runner: (off) => {
 					acpOff = off;
 					return runner;
@@ -715,6 +737,44 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(runner.detach).not.toHaveBeenCalled();
 			await tick(150);
 			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("a turn that never ends: past idleTurnMs the closed page's agent ends anyway", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1500);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(4000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(1000);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("an outside session joined here, the spawn flag set by another server's Spawn: the page timer leaves both alone", async () => {
+			await clockedHost();
+			await approve();
+			writeFileSync(join(dir, "acp-on"), "");
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+			expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		});
+
+		it("the flag set, the agent run by another server (this runner holds no claim): this server's page timer never clears it", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		});
+
+		it("this runner holds the claim (its agent starting or failed, not joined): the page timer ends it", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			runner.holdsAgent.mockReturnValue(true);
+			await tick(1100);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
 		});
 
 		it("an outside joined session keeps today's rules: no page timer ends it", async () => {

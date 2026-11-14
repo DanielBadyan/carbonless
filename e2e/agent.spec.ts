@@ -100,6 +100,46 @@ test("ask from a selection: the spawned agent takes it through MCP, its activity
 	await shot(page, "agent-answered", isMobile);
 });
 
+test("an agent without MCP over HTTP: it reaches crb through the built crb mcp-bridge (stdio), from Spawn to an answered question", async ({
+	page,
+	pr,
+	agentCrb,
+	acpLogPath,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			mcpHttp: false,
+			answers: [{ text: "Answered over stdio." }],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	await expect(chip(page)).toHaveAttribute("data-via", "acp");
+	const card = await ask(page, section, 3, "Over stdio?");
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	await expect(card.getByTestId("agent-message-ai")).toHaveText(
+		"Answered over stdio.",
+	);
+	// Its crb server was the bridge: the built CLI, the URL in argv, the
+	// key and the secret only in its environment.
+	const session = acpLog(acpLogPath).find((e) => e.method === "session/new");
+	const [server] =
+		(session?.params as { mcpServers: Record<string, unknown>[] } | undefined)
+			?.mcpServers ?? [];
+	expect(server).toMatchObject({
+		name: "crb",
+		args: [
+			expect.stringMatching(/dist[\\/]cli\.js$/),
+			"mcp-bridge",
+			"--url",
+			expect.stringMatching(/^http:\/\/[^?]+\/mcp$/),
+		],
+	});
+	expect(server).not.toHaveProperty("type");
+	expect(JSON.stringify(server?.args)).not.toMatch(/key=|X-Crb-Spawn/);
+});
+
 test("Stop current mid-answer: the question shows stopped, and no further turn follows", async ({
 	page,
 	pr,

@@ -33,6 +33,7 @@ import { JoinBroker } from "./join.js";
 import {
 	AgentRunner,
 	holdLine,
+	IGNORED_WAKE,
 	kickoffLine,
 	type RunnerDeps,
 	type RunnerFacts,
@@ -118,7 +119,6 @@ const facts = (): RunnerFacts => ({
 		base: { ref: "main", commit: origin.shas[0] as string },
 		head: { ref: "feature", commit: prHead },
 		mergeBase: origin.shas[0] as string,
-		tree: join(agentsDir(), REVIEW, "tree"),
 	}),
 	prFacts: async () => ({
 		title: "Add a lock",
@@ -543,7 +543,7 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		expect(prompts().slice(2)).toEqual([WAKE_LINE, holdLine(t.id)]);
 	});
 
-	it("an agent that attaches but never calls next: woken until two dry turns, then left alone (yellow) until a human asks", async () => {
+	it("an agent that attaches but never calls next: woken until two dry turns, then left alone, the chip red while the question waits, until a human asks", async () => {
 		scenario({ mcp: { next: false } });
 		const t = await ask("why?");
 		makeRunner().poke();
@@ -554,11 +554,118 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		await runner.settled();
 		expect(prompts()).toEqual([expect.any(String), WAKE_LINE]);
 		expect((await threads())[0]?.waiting).toBe(true);
+		// Not ready or listening: it ignored the question, and the chip says so.
+		expect(await host?.status()).toMatchObject({
+			state: "error",
+			error: IGNORED_WAKE,
+		});
 		await say(t.id, "hello?", "r1");
 		await wait(() => expect(prompts()).toHaveLength(4));
 		await runner.settled();
 		expect(prompts().slice(2)).toEqual([WAKE_LINE, WAKE_LINE]);
 		expect((await threads())[0]?.waiting).toBe(true);
+		expect((await host?.status())?.error).toBe(IGNORED_WAKE);
+	});
+
+	it("a stop message being stored fences its thread: next meanwhile hands nothing out, and no second error follows (S3)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		let writing = 0;
+		const real = store;
+		store = new Proxy(real, {
+			get(target, prop, receiver) {
+				if (prop === "message") {
+					return async (...args: Parameters<AgentThreadStore["message"]>) => {
+						if (args[1].by === "ai") {
+							writing++;
+							await gate;
+						}
+						return target.message(...args);
+					};
+				}
+				const value = Reflect.get(target, prop, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		// Never poked: no process; the test is the agent, through the host.
+		makeRunner({ turnMs: 50 });
+		const h = host as AgentHost;
+		const secret = "S".repeat(43);
+		const { request } = h.join.admit(
+			{ name: "fake-acp", machine: "m", harness: "1" },
+			secret,
+		);
+		const o = await h.join.outcome(request, 0, secret);
+		const token = (o as { token: string }).token;
+		const t = await store.open({
+			anchor: anchor(1),
+			text: "why?",
+			by: "human",
+			clientId: "q1",
+		});
+		expect((await h.sessionNext(token))?.thread).toBe(t.id);
+		// Past its limit: the error message is being written (held).
+		await wait(() => expect(writing).toBe(1));
+		expect(await h.sessionNext(token)).toBeNull();
+		expect(await h.sessionWaiting()).toBe(0);
+		release();
+		await wait(async () => expect((await threads())[0]?.waiting).toBe(false));
+		expect(await h.sessionNext(token)).toBeNull();
+		const ai = (await threads())[0]?.messages.filter((m) => m.by === "ai");
+		expect(ai).toHaveLength(1);
+		expect(ai?.[0]).toMatchObject({
+			stop: "error",
+			replyTo: t.messages[0]?.id,
+		});
+	});
+
+	it("a crash's join ends at once: a respawn while its message is still being stored keeps its own join (S4)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		let writing = 0;
+		const real = store;
+		store = new Proxy(real, {
+			get(target, prop, receiver) {
+				if (prop === "message") {
+					return async (...args: Parameters<AgentThreadStore["message"]>) => {
+						if (args[1].by === "ai") {
+							writing++;
+							await gate;
+						}
+						return target.message(...args);
+					};
+				}
+				const value = Reflect.get(target, prop, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		scenario({ crashOnPrompt: true });
+		await ask("why?");
+		makeRunner().poke();
+		await wait(() => expect(writing).toBe(1));
+		// While the crash's message is held: respawned, admitted, attached.
+		runner.asked();
+		await wait(() => expect(mcpCalls("attach")).toHaveLength(2));
+		await wait(() => expect(host?.join.attached()).toBe(true));
+		release();
+		await answered(1);
+		await runner.settled();
+		expect(host?.join.isSpawned()).toBe(true);
+		expect(host?.join.attached()).toBe(true);
+		expect(spawns()).toHaveLength(2);
+	});
+
+	it("crb's address gone by the kickoff: an error saying so, never a silent idle (N4)", async () => {
+		let n = 0;
+		makeRunner({
+			mcp: () => (n++ === 0 ? { url: mcpUrl, key: null } : null),
+		}).poke();
+		const s = await runnerUntil((x) => x.state === "error");
+		expect(s.error).toContain("how to attach");
 	});
 
 	it("Stop current: the held question gets a cancelled message (its wait ends), the hand-out ends and no wake follows", async () => {
@@ -719,7 +826,10 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 	it("each handed-out question has its own time limit: past it, the question fails and the turn is cancelled", async () => {
 		scenario({ hold: ["prompt"] });
 		const t = await ask("why?");
-		makeRunner({ turnMs: 50 }).poke();
+		// The kickoff's turn has the limit too: long enough to attach and
+		// take the question (the limit restarts there), and then it fires
+		// while the agent is held.
+		makeRunner({ turnMs: 5000 }).poke();
 		await answered(1);
 		expect((await threads())[0]?.messages[1]).toMatchObject({
 			stop: "error",
@@ -836,6 +946,9 @@ describe("AgentRunner: what reaches the prompt and the page", () => {
 		expect(name).not.toMatch(/[\n\u202e]/);
 		expect(Array.from(name).length).toBeLessThanOrEqual(80);
 		expect(s.agent?.version).toBe("1.0 beta");
+		// The runner's own status (before attach, after a crash) too.
+		const rs = await runner.status();
+		expect(rs.agent).toEqual({ name, version: "1.0 beta" });
 		const stored = (await threads())[0]?.messages[1]?.agent;
 		expect(stored).toEqual({ name, version: "1.0 beta", via: "acp" });
 		const kick = JSON.parse(
@@ -1327,20 +1440,22 @@ describe("AgentRunner: a question's time limit (no process)", () => {
 		vi.useRealTimers();
 	});
 
-	it("restarts with each next: it fires turnMs after the latest hand-out, storing an error that ends the wait", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-		let handed: { thread: string; asked: string | undefined } | null = {
-			thread: "t1",
-			asked: "m1",
+	/** A runner on a stub broker (`handed` is what it says is handed out) and a stub store. */
+	const stubbed = () => {
+		const state = {
+			handed: { thread: "t1", asked: "m1" } as {
+				thread: string;
+				asked: string | undefined;
+			} | null,
+			messages: [] as unknown[],
 		};
-		const messages: unknown[] = [];
 		const join = {
 			admit: () => ({ request: "r" }),
 			isSpawned: () => true,
 			attached: () => true,
-			handedOut: () => handed,
+			handedOut: () => state.handed,
 			release: () => {
-				handed = null;
+				state.handed = null;
 			},
 			setBusy: () => {},
 			spawnedGone: () => {},
@@ -1354,7 +1469,7 @@ describe("AgentRunner: a question's time limit (no process)", () => {
 			config: async () => config,
 			store: {
 				message: async (_t: string, m: unknown) => {
-					messages.push(m);
+					state.messages.push(m);
 				},
 			} as unknown as AgentThreadStore,
 			cacheClone: "/nowhere",
@@ -1365,13 +1480,18 @@ describe("AgentRunner: a question's time limit (no process)", () => {
 			join,
 			mcp: () => null,
 		});
+		return { r, state };
+	};
+
+	it("a repeated next on the same thread keeps its limit: it fires turnMs after the first, storing an error that ends the wait", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const { r, state } = stubbed();
 		r.handed("t1");
 		await vi.advanceTimersByTimeAsync(900);
 		r.handed("t1");
-		await vi.advanceTimersByTimeAsync(900);
-		expect(messages).toEqual([]);
+		expect(state.messages).toEqual([]);
 		await vi.advanceTimersByTimeAsync(200);
-		expect(messages).toEqual([
+		expect(state.messages).toEqual([
 			expect.objectContaining({
 				by: "ai",
 				stop: "error",
@@ -1379,12 +1499,31 @@ describe("AgentRunner: a question's time limit (no process)", () => {
 				error: expect.stringContaining("took longer"),
 			}),
 		]);
-		expect(handed).toBeNull();
-		// A reply clears it.
-		handed = { thread: "t2", asked: "m2" };
+		expect(state.handed).toBeNull();
+	});
+
+	it("a new thread handed out restarts the limit", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const { r, state } = stubbed();
+		r.handed("t1");
+		await vi.advanceTimersByTimeAsync(900);
+		state.handed = { thread: "t2", asked: "m2" };
 		r.handed("t2");
-		r.replied("t2");
+		await vi.advanceTimersByTimeAsync(900);
+		expect(state.messages).toEqual([]);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(state.messages).toEqual([
+			expect.objectContaining({ stop: "error", replyTo: "m2" }),
+		]);
+	});
+
+	it("a reply between turns ends it", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const { r, state } = stubbed();
+		r.handed("t1");
+		r.replied("t1");
+		state.handed = null;
 		await vi.advanceTimersByTimeAsync(5000);
-		expect(messages).toHaveLength(1);
+		expect(state.messages).toEqual([]);
 	});
 });

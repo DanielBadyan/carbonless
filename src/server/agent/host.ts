@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
+	AGENT_TURN_MS,
 	type AgentAnchor,
 	type AgentConfig,
 	type AgentMessage,
@@ -38,7 +38,6 @@ import {
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
-	mimeTypeOf,
 	type PromptEnvelope,
 	type PromptMessage,
 	sanitizeEnvelope,
@@ -90,6 +89,8 @@ export type HostRunner = Pick<
 	| "activity"
 	| "replied"
 	| "takeNotice"
+	| "fenced"
+	| "holdsAgent"
 >;
 
 /** A joined session's token isn't (or is no longer) this review's (code unknown-token). */
@@ -190,11 +191,12 @@ export class AgentHost {
 		private readonly github: AgentGithub,
 		readonly join: JoinBroker,
 		private readonly session?: SessionFacts,
-		opts: { now?: () => number; pageIdleMs?: number } = {},
+		opts: { now?: () => number; pageIdleMs?: number; idleTurnMs?: number } = {},
 	) {
 		this.#restored = join.restore().catch(() => {});
 		this.#now = opts.now ?? Date.now;
 		this.#pageIdleMs = opts.pageIdleMs ?? PAGE_IDLE_MS;
+		this.#idleTurnMs = opts.idleTurnMs ?? AGENT_TURN_MS;
 		this.#pageSeenAt = this.#now();
 		join.onTurnEnd(() => this.#turnEnded());
 		this.#armPage();
@@ -202,6 +204,8 @@ export class AgentHost {
 
 	readonly #now: () => number;
 	readonly #pageIdleMs: number;
+	/** The longest a closed page's agent waits for its turn to end. */
+	readonly #idleTurnMs: number;
 	/** The review page's last request (ms): its status polls count, MCP doesn't. */
 	#pageSeenAt: number;
 	#pageTimer: ReturnType<typeof setTimeout> | null = null;
@@ -240,21 +244,40 @@ export class AgentHost {
 			this.#armPage();
 			return;
 		}
-		// Only crb's own agent: an outside session keeps today's rules.
-		if (!this.join.spawned() && !this.join.isSpawned()) return;
-		// An answer in progress still lands: it ends at the turn's end.
+		// Only the agent this server runs: its spawned join, or its runner
+		// holding the claim. Not the shared spawn flag alone: that may be
+		// another server's agent (this runner `elsewhere`), or set beside
+		// an outside session joined here.
+		if (!this.#runsSpawned()) return;
+		// An answer in progress still lands: it ends at the turn's end, or
+		// at the latest after idleTurnMs (a turn that never ends).
 		if (this.join.inTurn()) {
 			this.#idleDue = true;
+			this.#pageTimer = setTimeout(() => {
+				this.#pageTimer = null;
+				if (!this.#idleDue || this.#closed) return;
+				this.#idleDue = false;
+				if (this.#pageStale() && this.#runsSpawned()) {
+					void this.detach().catch(() => {});
+				}
+			}, this.#idleTurnMs);
+			this.#pageTimer.unref?.();
 			return;
 		}
 		void this.detach().catch(() => {});
 	}
 
+	/** This server runs the review's spawned agent (not just the shared flag). */
+	#runsSpawned(): boolean {
+		return this.join.isSpawned() || this.runner.holdsAgent();
+	}
+
 	#turnEnded(): void {
 		if (!this.#idleDue || this.#closed) return;
 		this.#idleDue = false;
-		if (this.#pageStale()) void this.detach().catch(() => {});
-		else this.#armPage();
+		if (this.#pageStale() && this.#runsSpawned()) {
+			void this.detach().catch(() => {});
+		} else this.#armPage();
 	}
 
 	/** The joined session (by `since`) and the head its last `next` saw. */
@@ -337,6 +360,15 @@ export class AgentHost {
 	/** The thread a replaced spawned agent may still answer (JOIN.acpStopMs after an Approve): `next` skips it. */
 	busyThread(): string | null {
 		return this.join.replaceGrace()?.thread ?? null;
+	}
+
+	/**
+	 * Threads `next` skips: the one a replaced spawned agent may still
+	 * answer, and those whose stop message the runner is storing.
+	 */
+	#skipped(): Set<string> {
+		const busy = this.busyThread();
+		return new Set([...(busy ? [busy] : []), ...this.runner.fenced()]);
 	}
 
 	/**
@@ -552,10 +584,10 @@ export class AgentHost {
 
 	/** Waiting questions a joined session can take (not the one the ACP buddy still answers). */
 	async sessionWaiting(): Promise<number> {
-		const busy = this.busyThread();
+		const skipped = this.#skipped();
 		// Joined with GitHub: an orphan is a span thread (its resolve counts).
 		return (await this.#joined(await this.store.read())).filter(
-			(t) => isQuestion(t) && t.id !== busy,
+			(t) => isQuestion(t) && !skipped.has(t.id),
 		).length;
 	}
 
@@ -566,7 +598,7 @@ export class AgentHost {
 	): Promise<SessionReviewFacts> {
 		await this.#token(secret);
 		const { facts } = this.#facts();
-		const { tree: _, ...r } = facts.review();
+		const r = facts.review();
 		const s = sanitizeThirdParty;
 		const out: SessionReviewFacts = {
 			...r,
@@ -591,7 +623,7 @@ export class AgentHost {
 		const { facts, viewer } = this.#facts();
 		const threads = await this.#joined(await this.store.read());
 		const handed = this.join.handedOut();
-		const busy = this.busyThread();
+		const skipped = this.#skipped();
 		const thread =
 			(handed &&
 				threads.find(
@@ -599,7 +631,7 @@ export class AgentHost {
 						t.id === handed.thread &&
 						(t.anchor.subject === "thread" || !t.resolved),
 				)) ||
-			threads.find((t) => isQuestion(t) && t.id !== busy);
+			threads.find((t) => isQuestion(t) && !skipped.has(t.id));
 		if (!thread) return null;
 		// The read took a while: the session may have left meanwhile.
 		if (!this.join.check(secret)) throw new SessionTokenError();
@@ -848,19 +880,6 @@ interface SessionTurn {
 	hunk: string | null;
 }
 
-/** The review without the ACP buddy's checkout (a joined session has its own copy, if any). */
-function noTree(facts: RunnerFacts) {
-	const { tree: _, ...review } = facts.review();
-	return review;
-}
-
-/** The anchor as the envelope gives it, without a path in carbonless's checkout. */
-function bareAnchor(anchor: AgentAnchor & { file?: string }): AgentAnchor {
-	const { file: _, ...rest } = anchor;
-	// Dropping `file` keeps the anchor's kind (a union: Omit would lose it).
-	return rest as AgentAnchor;
-}
-
 /**
  * A span thread's question for a joined session (the runner's span turn,
  * without the checkout): the review, the anchor, the messages, the
@@ -873,7 +892,7 @@ async function sessionSpanTurn(
 	moved: string | undefined,
 	pr: PromptEnvelope["pr"],
 ): Promise<SessionTurn> {
-	const review = noTree(facts);
+	const review = facts.review();
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
@@ -885,7 +904,7 @@ async function sessionSpanTurn(
 		review,
 		thread: {
 			id: thread.id,
-			anchor: bareAnchor(anchorFor(thread.anchor, review)),
+			anchor: anchorFor(thread.anchor, review),
 		},
 		messages,
 		...(notice ? { notice } : {}),
@@ -917,7 +936,7 @@ async function sessionThreadTurn(
 		() => undefined,
 		(error: unknown) => oneError(error),
 	);
-	const review = noTree(facts);
+	const review = facts.review();
 	const { patchsets, current } = facts.views();
 	const view = viewOf(thread, patchsets, review);
 	let github: GithubThreadFacts | null = null;
@@ -957,10 +976,7 @@ async function sessionThreadTurn(
 			...(pr ? { pr } : {}),
 		}),
 	);
-	const envelope: PromptEnvelope = {
-		...env,
-		thread: { ...env.thread, anchor: bareAnchor(env.thread.anchor) },
-	};
+	const envelope: PromptEnvelope = env;
 	const anchored = await facts.anchored(anchor).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
@@ -1001,16 +1017,22 @@ export function buildAgentHost(o: {
 	session?: SessionFacts;
 	/** How long no page request ends a spawned agent (default PAGE_IDLE_MS). */
 	pageIdleMs?: number;
+	/** The longest that end waits for a turn (default AGENT_TURN_MS). */
+	idleTurnMs?: number;
 }): AgentHost {
 	let runner: HostRunner | undefined;
 	// The thread a replaced spawned agent still answers isn't the session's.
 	const waiting = async () => {
-		const busy = join.replaceGrace()?.thread ?? null;
+		const skipped = new Set(
+			[join.replaceGrace()?.thread, ...(runner?.fenced() ?? [])].filter(
+				(t): t is string => typeof t === "string",
+			),
+		);
 		// Joined with GitHub, as sessionNext reads them: an orphan is a span thread.
 		const folds = await joinRead(await o.store.read(), () =>
 			o.github.threads(),
 		);
-		return folds.some((t) => isQuestion(t) && t.id !== busy);
+		return folds.some((t) => isQuestion(t) && !skipped.has(t.id));
 	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
@@ -1040,6 +1062,7 @@ export function buildAgentHost(o: {
 	return new AgentHost(runner, o.store, o.code, o.github, join, o.session, {
 		...(o.now ? { now: o.now } : {}),
 		...(o.pageIdleMs !== undefined ? { pageIdleMs: o.pageIdleMs } : {}),
+		...(o.idleTurnMs !== undefined ? { idleTurnMs: o.idleTurnMs } : {}),
 	});
 }
 
@@ -1200,7 +1223,6 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		src.reviewId,
 		src.viewer,
 	);
-	const tree = join(agentsDir(), src.reviewId, "tree");
 	/** The PR author's login; "" when it can't be read (nobody is then). */
 	const prAuthor = () => src.prAuthor().catch(() => "");
 	const facts: RunnerFacts = {
@@ -1214,14 +1236,13 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 				base: { ref: m.baseBranch, commit: m.baseOid ?? s.base },
 				head: { ref: m.headBranch, commit: s.head },
 				mergeBase: s.base,
-				tree,
 			};
 		},
 		prFacts: async () => ({
 			...(await src.prFacts()),
 			files: src.snapshot().files.map((f) => f.path),
 		}),
-		anchored: (anchor) => anchoredFile(src, tree, anchor),
+		anchored: (anchor) => anchoredFile(src, anchor),
 		hunk: (anchor) => anchorHunk(src, anchor),
 		authorOf: async (login) =>
 			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
@@ -1300,15 +1321,14 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 
 /**
  * The anchored file's text at the anchor's commit (the merge base for a
- * LEFT anchor), read from the clone with a checked OID and a path that
- * stays inside the tree; null when it can't be read, is binary or large.
+ * LEFT anchor), read from the clone with a checked OID and a relative
+ * path; null when it can't be read, is binary or large.
  */
 export async function anchoredFile(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
 		Partial<Pick<ReviewAgentSource, "patchsets">>,
-	tree: string,
 	anchor: AgentAnchor,
-): Promise<{ uri: string; mimeType: string; text: string } | null> {
+): Promise<{ text: string } | null> {
 	if (!isSafePath(anchor.path)) return null;
 	let commit = anchor.commit;
 	if (anchor.subject !== "file" && anchor.side === "LEFT") {
@@ -1327,11 +1347,7 @@ export async function anchoredFile(
 	if (blob.length === 0 || blob.length > MAX_ANCHORED || blob.includes(0)) {
 		return null;
 	}
-	return {
-		uri: pathToFileURL(join(tree, anchor.path)).href,
-		mimeType: mimeTypeOf(anchor.path),
-		text: blob.toString("utf8"),
-	};
+	return { text: blob.toString("utf8") };
 }
 
 /**

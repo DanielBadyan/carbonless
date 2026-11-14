@@ -19,11 +19,12 @@ import {
 	type AgentStop,
 	type AgentView,
 	JOINED_PREAMBLE,
+	type JoinIdentity,
 } from "../../shared/agent.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
-import type { JoinBroker } from "./join.js";
+import { cleanIdentity, type JoinBroker } from "./join.js";
 import { decidePermission } from "./policy.js";
 import type {
 	CommentRole,
@@ -40,9 +41,7 @@ import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 export interface RunnerFacts {
 	review(): PromptReview;
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
-	anchored(
-		anchor: AgentAnchor,
-	): Promise<{ uri: string; mimeType: string; text: string } | null>;
+	anchored(anchor: AgentAnchor): Promise<{ text: string } | null>;
 	hunk(anchor: AgentAnchor): Promise<string | null>;
 	authorOf(login: string): Promise<CommentRole>;
 	/**
@@ -178,6 +177,12 @@ export function kickoffLine(args: {
 /** What a thread shows when its hand-out ends without a reply. */
 export const STOPPED_WITHOUT_ANSWER = "The agent stopped without answering";
 
+/** The status once an agent ignored its wake-ups while a question waits. */
+export const IGNORED_WAKE = "The agent didn't take the waiting question";
+
+/** How long a cancelled turn past its limit may take to stop before its process is closed. */
+export const CANCEL_GRACE_MS = 30_000;
+
 /** One spawned process, as the runner tracks it. */
 interface Proc {
 	agent: AcpAgent | null;
@@ -204,8 +209,6 @@ interface Hand {
 	activity: AgentActivity[];
 	/** toolCallId → its entry in `activity`. */
 	calls: Map<string, AgentActivity>;
-	/** Its AGENT_TURN_MS limit (restarted by each `next`). */
-	timer: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -248,6 +251,17 @@ export class AgentRunner {
 	#hand: Hand | null = null;
 	/** Turns in a row that stored no reply while one was due. */
 	#dry = 0;
+	/**
+	 * The time limit (AGENT_TURN_MS): from a turn's start, restarted when
+	 * `next` hands out a new thread. Past it the turn is cancelled, and
+	 * the process closed if it ignores that.
+	 */
+	#deadline: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * Threads whose stop or error message is being stored: `next` and the
+	 * wake-up skip them, so a stopped question is never handed out again.
+	 */
+	readonly #fenced = new Set<string>();
 	/** A rejected permission's reason, for that thread's next `next`. */
 	readonly #notices = new Map<string, string>();
 	#pump: Promise<void> | null = null;
@@ -542,19 +556,37 @@ export class AgentRunner {
 
 	// The hooks the host calls from the spawned agent's MCP tools.
 
-	/** `next` handed `thread` to the spawned agent: its activity starts (or goes on), its time limit restarts. */
+	/**
+	 * `next` handed `thread` to the spawned agent: a new thread starts its
+	 * activity and restarts the time limit; the same one again keeps both.
+	 */
 	handed(thread: string): void {
-		const hand = this.#hand;
-		if (hand) clearTimeout(hand.timer);
-		const timer = setTimeout(
-			() => void this.#overtime(thread),
-			this.#deps.turnMs ?? AGENT_TURN_MS,
-		);
-		timer.unref?.();
-		this.#hand =
-			hand?.thread === thread
-				? { ...hand, timer }
-				: { thread, activity: [], calls: new Map(), timer };
+		if (this.#hand?.thread === thread) return;
+		this.#hand = { thread, activity: [], calls: new Map() };
+		this.#arm();
+	}
+
+	/** Whether this runner holds the review's agent (its claim): it runs, or is starting, the agent. */
+	holdsAgent(): boolean {
+		return this.#release !== null;
+	}
+
+	/** Threads `next` must skip: their stop message is being stored. */
+	fenced(): string[] {
+		return [...this.#fenced];
+	}
+
+	/** (Re)starts the time limit. */
+	#arm(): void {
+		this.#disarm();
+		const ms = this.#deps.turnMs ?? AGENT_TURN_MS;
+		this.#deadline = setTimeout(() => void this.#overtime(), ms);
+		this.#deadline.unref?.();
+	}
+
+	#disarm(): void {
+		if (this.#deadline) clearTimeout(this.#deadline);
+		this.#deadline = null;
 	}
 
 	/** The activity recorded while `thread` was handed out (a copy). */
@@ -564,9 +596,11 @@ export class AgentRunner {
 			: [];
 	}
 
-	/** The spawned agent's reply to `thread` was stored: its hand-out (and limit) ends. */
+	/** The spawned agent's reply to `thread` was stored: its hand-out ends. */
 	replied(thread: string): void {
 		if (this.#hand?.thread === thread) this.#clearHand();
+		// Between turns nothing else needs the limit (a turn has its own).
+		if (!this.#turn) this.#disarm();
 		if (this.#turn) this.#turn.replies++;
 		this.#crashes = 0;
 	}
@@ -579,25 +613,38 @@ export class AgentRunner {
 	}
 
 	#clearHand(): void {
-		if (this.#hand) clearTimeout(this.#hand.timer);
 		this.#hand = null;
 	}
 
-	/** The handed-out question ran past its limit: it fails, the turn is cancelled. */
-	async #overtime(thread: string): Promise<void> {
-		const handed = this.#deps.join.handedOut();
-		if (handed?.thread !== thread || !this.#deps.join.isSpawned()) return;
-		const minutes = Math.max(
-			1,
-			Math.round((this.#deps.turnMs ?? AGENT_TURN_MS) / 60_000),
-		);
+	/**
+	 * Past the time limit: the question held (if any) fails, the turn is
+	 * cancelled, and a turn that ignores the cancel has its process closed.
+	 */
+	async #overtime(): Promise<void> {
+		this.#deadline = null;
+		const { join } = this.#deps;
+		const ms = this.#deps.turnMs ?? AGENT_TURN_MS;
+		const minutes = Math.max(1, Math.round(ms / 60_000));
 		const turn = this.#turn;
 		if (turn) turn.stopped = true;
-		await this.#endHand(handed, {
-			stop: "error",
-			error: `The agent took longer than ${minutes} min`,
-		});
-		await turn?.agent.cancel();
+		const handed = join.isSpawned() ? join.handedOut() : null;
+		if (handed) {
+			await this.#endHand(handed, {
+				stop: "error",
+				error: `The agent took longer than ${minutes} min`,
+			});
+		}
+		if (!turn) return;
+		await turn.agent.cancel();
+		const ignored = setTimeout(() => {
+			if (this.#turn !== turn) return;
+			// It ignored the cancel: the process goes (the next question respawns).
+			this.#set("error", {
+				error: `The agent didn't stop after ${minutes} min: it was closed`,
+			});
+			void this.#stopProc();
+		}, CANCEL_GRACE_MS);
+		ignored.unref?.();
 	}
 
 	/**
@@ -608,10 +655,14 @@ export class AgentRunner {
 	async #endHand(
 		handed: { thread: string; asked: string | undefined },
 		how: { stop: AgentStop; error?: string },
+		captured?: { who: JoinIdentity | undefined; activity: AgentActivity[] },
 	): Promise<void> {
 		const { join } = this.#deps;
-		const who = join.view().joined;
-		const activity = this.activity(handed.thread);
+		const who = captured ? captured.who : join.view().joined;
+		const activity = captured?.activity ?? this.activity(handed.thread);
+		// Fenced until its message is in: a `next` meanwhile (the read and
+		// the write aren't serialised) never hands it out again.
+		this.#fenced.add(handed.thread);
 		join.release(handed.thread);
 		if (this.#hand?.thread === handed.thread) this.#clearHand();
 		const agent: AgentIdentity = who
@@ -631,6 +682,8 @@ export class AgentRunner {
 			this.#set("error", {
 				error: `Could not store the agent's stop: ${(error as Error).message}`,
 			});
+		} finally {
+			this.#fenced.delete(handed.thread);
 		}
 	}
 
@@ -810,16 +863,16 @@ export class AgentRunner {
 			await agent.close();
 			return null;
 		}
-		this.#identity = agent.info;
+		// The agent's own words: one line each, sanitised, capped (as a
+		// joined session's identity).
+		const who = cleanIdentity({
+			name: agent.info.name,
+			machine: hostname(),
+			harness: agent.info.version,
+		});
+		this.#identity = { name: who.name, version: who.harness ?? "" };
 		// Pressing Spawn is the approval: a request already approved.
-		const { request } = this.#deps.join.admit(
-			{
-				name: agent.info.name,
-				machine: hostname(),
-				...(agent.info.version ? { harness: agent.info.version } : {}),
-			},
-			secret,
-		);
+		const { request } = this.#deps.join.admit(who, secret);
 		this.#request = request;
 		this.#kicked = false;
 		this.#dry = 0;
@@ -839,6 +892,7 @@ export class AgentRunner {
 		// Its join ends with it: a question it held waits again.
 		if (proc.agent) this.#deps.join.spawnedGone("disconnected");
 		this.#clearHand();
+		this.#disarm();
 		await proc.agent?.close();
 	}
 
@@ -870,18 +924,28 @@ export class AgentRunner {
 		void this.#gone(reason);
 	}
 
-	/** The process went (a crash): the question it held shows why, then its join ends. */
+	/**
+	 * The process went (a crash): its join ends at once (before any await,
+	 * so a respawn's new join is never the one ended), then the question it
+	 * held shows why.
+	 */
 	async #gone(reason: string): Promise<void> {
 		const { join } = this.#deps;
 		const handed = join.isSpawned() ? join.handedOut() : null;
-		if (handed) {
-			await this.#endHand(handed, {
-				stop: "error",
-				error: reason.slice(0, 300),
-			});
-		}
+		const captured = handed
+			? { who: join.view().joined, activity: this.activity(handed.thread) }
+			: null;
+		if (handed) this.#fenced.add(handed.thread);
 		join.spawnedGone("lost");
 		this.#clearHand();
+		this.#disarm();
+		if (handed && captured) {
+			await this.#endHand(
+				handed,
+				{ stop: "error", error: reason.slice(0, 300) },
+				captured,
+			);
+		}
 	}
 
 	/** Whether `agent` is the one that should run now. */
@@ -903,7 +967,10 @@ export class AgentRunner {
 	async #waiting(): Promise<boolean> {
 		const threads = await this.#deps.facts.join(await this.#deps.store.read());
 		return threads.some(
-			(t) => t.waiting && (t.anchor.subject === "thread" || !t.resolved),
+			(t) =>
+				t.waiting &&
+				(t.anchor.subject === "thread" || !t.resolved) &&
+				!this.#fenced.has(t.id),
 		);
 	}
 
@@ -930,7 +997,13 @@ export class AgentRunner {
 			this.#kicked = true;
 			const mcp = this.#deps.mcp();
 			const request = this.#request;
-			if (!mcp || !request) return null;
+			if (!mcp || !request) {
+				this.#set("error", {
+					error:
+						"carbonless couldn't tell the agent how to attach (its own address is unknown)",
+				});
+				return null;
+			}
 			return {
 				kickoff: true,
 				text: kickoffLine({
@@ -956,10 +1029,19 @@ export class AgentRunner {
 				this.#dry = 0;
 				continue;
 			}
-			// Woken twice for nothing: quiet until a human asks.
-			if (this.#dry >= MAX_DRY_TURNS) return null;
-			if (await this.#waiting()) return { kickoff: false, text: WAKE_LINE };
+			const waits = await this.#waiting();
+			// Woken twice for nothing: quiet until a human asks, and red
+			// while a question still waits (the chip says so).
+			if (this.#dry >= MAX_DRY_TURNS) {
+				if (waits) this.#set("error", { error: IGNORED_WAKE });
+				return null;
+			}
+			if (waits) return { kickoff: false, text: WAKE_LINE };
 			this.#dry = 0;
+			// Nothing waits any more: the ignored-wake warning is over.
+			if (this.#state === "error" && this.#error === IGNORED_WAKE) {
+				this.#set("ready");
+			}
 			return null;
 		}
 	}
@@ -974,12 +1056,17 @@ export class AgentRunner {
 		this.#turn = turn;
 		join.setBusy(true);
 		this.#set("busy");
+		// Every turn has a ceiling, whatever it holds.
+		this.#arm();
 		let r: { text: string; stop: AgentStop; error?: string };
 		try {
 			r = await agent.prompt([{ type: "text", text: line.text }]);
 		} finally {
+			if (this.#turn === turn) {
+				this.#turn = null;
+				this.#disarm();
+			}
 			join.setBusy(false);
-			if (this.#turn === turn) this.#turn = null;
 		}
 		if (r.stop !== "error") this.#seen = this.#now();
 		const proc = this.#proc;

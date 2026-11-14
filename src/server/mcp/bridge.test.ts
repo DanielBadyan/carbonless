@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -69,6 +70,28 @@ describe("crb mcp-bridge", () => {
 		expect(r.isError).not.toBe(true);
 		const call = rec.calls.find((c) => c.tool === "threads");
 		expect(call?.headers["x-crb-spawn"]).toBe("s3cret");
+	});
+
+	it("exits when its stdin ends (its agent went away)", async () => {
+		const rec = await recorder();
+		stops.push(() => rec.close());
+		const { command, args } = bridgeCommand();
+		const child = spawn(command, [...args, "--url", rec.url], {
+			stdio: ["pipe", "pipe", "inherit"],
+		});
+		stops.push(async () => {
+			child.kill("SIGKILL");
+		});
+		const exited = new Promise<number | null>((r) =>
+			child.once("exit", (code) => r(code)),
+		);
+		// It is up (it answers a request), then its stdin ends.
+		child.stdin.write(
+			`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" })}\n`,
+		);
+		await new Promise<void>((r) => child.stdout.once("data", () => r()));
+		child.stdin.end();
+		expect(await exited).toBe(0);
 	});
 
 	it("the key goes in the query, never needed in argv; the URL must be crb's /mcp without credentials or a query", () => {

@@ -92,13 +92,17 @@ export async function runBridge(o: {
 			import("@modelcontextprotocol/sdk/server/stdio.js"),
 			import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
 		]);
-	const stdio = new StdioServerTransport(o.stdin, o.stdout);
+	const stdin = o.stdin ?? process.stdin;
+	const stdout = o.stdout ?? process.stdout;
+	const stdio = new StdioServerTransport(stdin, stdout);
 	const http = new StreamableHTTPClientTransport(o.url, {
 		requestInit: { headers: o.headers },
 	});
+	// Its agent going away closes its stdin: the bridge ends with it.
 	const done = new Promise<void>((resolveDone) => {
 		stdio.onclose = () => resolveDone();
-		o.stdin?.once("end", () => resolveDone());
+		stdin.once("end", () => resolveDone());
+		stdin.once("close", () => resolveDone());
 	});
 	stdio.onmessage = (message) => {
 		void http.send(message).catch((error: unknown) => {

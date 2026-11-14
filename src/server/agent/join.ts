@@ -307,6 +307,8 @@ export class JoinBroker {
 				if (this.#joined === joined && !joined.collected) this.leave("lost");
 			}, JOIN.expiryMs),
 		};
+		// Never what keeps the process alive.
+		this.#ticket.expiry.unref?.();
 		return { request: id };
 	}
 

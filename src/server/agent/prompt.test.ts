@@ -9,7 +9,6 @@ import {
 	anchorFor,
 	type GithubThreadFacts,
 	isSafePath,
-	mimeTypeOf,
 	type PromptEnvelope,
 	type PromptReview,
 	sanitizeEnvelope,
@@ -18,8 +17,6 @@ import {
 	threadEnvelope,
 } from "./prompt.js";
 
-const TREE =
-	"/home/me/.cache/carbonless/agents/01k9e6m2q8x4v7c3n5b0h1j2t6/tree";
 const review: PromptReview = {
 	repo: "acme/widget",
 	pr: 7,
@@ -27,7 +24,6 @@ const review: PromptReview = {
 	base: { ref: "main", commit: "b".repeat(40) },
 	head: { ref: "feature", commit: "h".repeat(40) },
 	mergeBase: "m".repeat(40),
-	tree: TREE,
 };
 const right: AgentAnchor = {
 	subject: "line",
@@ -66,29 +62,20 @@ describe("the preamble and anchors", () => {
 			expect(JOINED_PREAMBLE).toContain(part);
 	});
 
-	it("a RIGHT anchor keeps its commit; its file is under the tree", () => {
-		expect(anchorFor(right, review)).toEqual({
-			...right,
-			file: `${TREE}/src/x.ts`,
-		});
+	it("a RIGHT anchor keeps its commit, and names no path outside the PR", () => {
+		expect(anchorFor(right, review)).toEqual(right);
 	});
 
-	it("a LEFT anchor gets the base side's commit (the merge base) and its file under the tree", () => {
+	it("a LEFT anchor gets the base side's commit (the merge base)", () => {
 		const left = {
 			...right,
 			side: "LEFT" as const,
 			startSide: "LEFT" as const,
 		};
-		expect(anchorFor(left, review)).toMatchObject({
+		expect(anchorFor(left, review)).toEqual({
+			...left,
 			commit: review.mergeBase,
-			file: `${TREE}/src/x.ts`,
 		});
-	});
-
-	it("an unsafe path points at the tree, not outside it", () => {
-		expect(anchorFor({ ...right, path: "../../etc/passwd" }, review).file).toBe(
-			TREE,
-		);
 	});
 });
 
@@ -155,17 +142,12 @@ describe("sanitizeEnvelope", () => {
 		pr: { title: dirty, body: dirty, files: [dirty] },
 		notice: `The GitHub thread (${dirty}) is gone`,
 	};
-	env.thread.anchor = {
-		...env.thread.anchor,
-		path: dirty,
-		file: `${TREE}/${dirty}`,
-	};
+	env.thread.anchor = { ...env.thread.anchor, path: dirty };
 	const clean = sanitizeEnvelope(env);
 	it("cleans the base ref", () => expect(clean.review.base.ref).toBe("xy"));
 	it("cleans the head ref", () => expect(clean.review.head.ref).toBe("xy"));
-	it("cleans the anchor's path and file", () => {
+	it("cleans the anchor's path", () => {
 		expect(clean.thread.anchor.path).toBe("xy");
-		expect(clean.thread.anchor.file).toBe(`${TREE}/xy`);
 	});
 	it("cleans the PR's title, body and files", () =>
 		expect(clean.pr).toEqual({ title: "xy", body: "xy", files: ["xy"] }));
@@ -175,17 +157,12 @@ describe("sanitizeEnvelope", () => {
 		expect(clean.messages).toEqual(env.messages));
 });
 
-describe("isSafePath / mimeTypeOf", () => {
+describe("isSafePath", () => {
 	it("refuses absolute paths and .. segments", () => {
 		expect(isSafePath("src/x.ts")).toBe(true);
 		expect(isSafePath("a..b/c")).toBe(true);
 		for (const p of ["", "/etc/passwd", "../x", "a/../../x", "a/..", "a\0b"])
 			expect(isSafePath(p)).toBe(false);
-	});
-	it("names text types by extension", () => {
-		expect(mimeTypeOf("src/x.ts")).toBe("text/x-typescript");
-		expect(mimeTypeOf("README.md")).toBe("text/markdown");
-		expect(mimeTypeOf("Makefile")).toBe("text/plain");
 	});
 });
 
@@ -289,10 +266,8 @@ describe("thread conversations", () => {
 		expect(e.view).toEqual({ ...view, targetPatchset: 2, fromPatchset: 1 });
 		expect(e.current).toBe(oid("3"));
 		expect(e.patchsets).toEqual(patchsets);
-		expect(e.thread.anchor).toMatchObject({
-			subject: "thread",
-			file: `${TREE}/src/x.ts`,
-		});
+		expect(e.thread.anchor).toMatchObject({ subject: "thread" });
+		expect(e.thread.anchor).not.toHaveProperty("file");
 	});
 
 	it("without a github block (GitHub unread, or the thread gone) the notice says so and nothing is made up", () => {
