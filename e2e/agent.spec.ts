@@ -699,6 +699,12 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	test.slow();
 	const p = await pr(fixture);
 	const s = await agentCrb();
+	// Hold every seen mark for the whole test (the route outlives the
+	// gotos): an open card counts as seen after a second, so on a loaded
+	// machine the first answer could be seen before the push. Every answer
+	// on the line, the first one's and the later one's, stays new (no
+	// timer race).
+	await page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Asked on PS1");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
@@ -806,11 +812,7 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	const ps1 = fileSection(page, CALC);
 	await ps1.getByRole("button", { name: "Expand file" }).click();
 	await expect(row(ps1, 3)).toBeVisible();
-	// Hold every seen mark from here to the end (the route outlives the
-	// gotos): the open card would count as seen after a second, so both
-	// answers on the line, the first one's (never opened since) and this
-	// one's, stay new (no timer race).
-	await page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
+	// Every seen mark is held (from the test's start): see there.
 	const late = await ask(page, ps1, 3, "Asked on PS1 after PS2");
 	await expect(late).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(row(ps1, 3).getByTestId("agent-bubble")).toHaveAccessibleName(

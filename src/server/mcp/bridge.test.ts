@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
 	getDefaultEnvironment,
@@ -76,9 +77,16 @@ describe("crb mcp-bridge", () => {
 		const rec = await recorder();
 		stops.push(() => rec.close());
 		const { command, args } = bridgeCommand();
-		const child = spawn(command, [...args, "--url", rec.url], {
-			stdio: ["pipe", "pipe", "inherit"],
-		});
+		// A ref'd handle in the bridge: it would stay up for good unless the
+		// bridge itself ends when its stdin does.
+		const keepAlive = pathToFileURL(
+			resolve(import.meta.dirname, "../../../test/keep-alive.mjs"),
+		).href;
+		const child = spawn(
+			command,
+			["--import", keepAlive, ...args, "--url", rec.url],
+			{ stdio: ["pipe", "pipe", "inherit"] },
+		);
 		stops.push(async () => {
 			child.kill("SIGKILL");
 		});
