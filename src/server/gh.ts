@@ -690,8 +690,8 @@ const COMMIT_CHECKS = `statusCheckRollup { contexts(first: 100) { pageInfo { has
 /**
  * The overview's whole first paint in one round trip (fetchOverview): the
  * PR's fields, its description as GitHub renders it (HTML comments
- * dropped, emoji and images resolved), its requested reviewers (User,
- * Bot and Team, as `gh pr view` asks for them: gh 2.104), the first
+ * dropped, emoji and images resolved), its requested reviewers (users
+ * and teams, as `gh pr view --json` exports them), the first
  * and last 100 of its comments and reviews (joinEnds: up to 199 each in
  * this one call) and the checks: the head's, or as of a cutoff (`asOf`)
  * those of the snapshot head `$oid`. Light fields only: merging the review
@@ -704,7 +704,7 @@ const overviewQuery = (
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number title url ${AUTHOR} body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable
-      reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { name slug } } } }
+      reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name slug } } } }
       ${endPage("comments", "comments", "first", OVERVIEW_NODES.comments)}
       ${endPage("commentsLast", "comments", "last", OVERVIEW_NODES.comments)}
       ${endPage("reviews", "reviews", "first", OVERVIEW_NODES.reviews)}
@@ -1122,20 +1122,22 @@ export async function fetchOverview(
 			checks,
 		]);
 		// The PR's own fields as mapOverview reads them (`gh pr view`'s
-		// shapes: requested reviewers and checks as plain lists, a bot author
-		// as `app/<login>`, which is how the attention sets know a bot PR).
+		// shapes: requested reviewers and checks as plain lists, any author
+		// but a user (a bot, a mannequin, an organization) as `app/<login>`,
+		// which is how the attention sets know a bot PR).
 		const author = rec(p.author);
 		const view = {
 			...p,
 			author:
-				author.__typename === "Bot" && typeof author.login === "string"
+				author.__typename !== "User" && typeof author.login === "string"
 					? { ...author, login: `app/${author.login}` }
 					: p.author,
+			// Users and teams only, as gh's export keeps (a bot's request isn't listed).
 			reviewRequests: (
 				(rec(p.reviewRequests).nodes as unknown[] | undefined) ?? []
 			)
 				.map((n) => rec(n).requestedReviewer)
-				.filter((r) => r !== null && typeof r === "object"),
+				.filter((r) => ["User", "Team"].includes(String(rec(r).__typename))),
 			statusCheckRollup: asOf ? [] : contexts,
 		};
 		return mapOverview(

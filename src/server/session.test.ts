@@ -436,6 +436,29 @@ describe("Session", () => {
 			expect(threads[0]?.attention).toEqual([]);
 		});
 
+		it("lists requested users and teams, never a bot's request, as gh pr view does", async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							reviewRequests: [
+								{ __typename: "User", login: "rev2" },
+								{ __typename: "Bot", login: "copilot-pull-request-reviewer" },
+								{ __typename: "Team", name: "Core Team", slug: "core-team" },
+							],
+						}),
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			expect((await s.overview()).requestedReviewers).toEqual([
+				{ name: "rev2", team: false },
+				{ name: "Core Team", team: true },
+			]);
+		});
+
 		it("reads up to 199 reviews and comments in its one query, joined by id; past that, on from the first page's cursor", async () => {
 			const review = (i: number) => ({
 				author: { login: `rev${i}`, __typename: "User" },

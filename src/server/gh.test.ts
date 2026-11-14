@@ -557,7 +557,7 @@ describe("runGh with a fake gh", () => {
 			"number title url author { login __typename } body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable",
 		);
 		expect(log()).toContain(
-			"reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { name slug } } } }",
+			"reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name slug } } } }",
 		);
 		for (const alias of ["comments", "commentsLast"]) {
 			expect(log()).toMatch(
@@ -766,7 +766,7 @@ describe("runGh with a fake gh", () => {
 		expect(log()).toBe(before);
 	});
 
-	it("maps a Bot author to gh's app/<name>, and fails rather than show fewer checks", async () => {
+	it("maps any author but a user to gh's app/<name>, and fails rather than show fewer checks", async () => {
 		const gql = join(dir, "gql");
 		const { mkdirSync } = await import("node:fs");
 		mkdirSync(gql);
@@ -805,6 +805,20 @@ describe("runGh with a fake gh", () => {
 		const o = await fetchOverview(ref, "me");
 		expect(o.author).toBe("app/dependabot");
 		expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+		// Any author but a user, as gh: a mannequin, an organization.
+		for (const __typename of ["Mannequin", "Organization"]) {
+			writeFileSync(
+				join(gql, "overview-1.json"),
+				overviewAnswer({ author: { login: "old-acct", __typename } }),
+			);
+			expect((await fetchOverview(ref, "me")).author).toBe("app/old-acct");
+		}
+		// A user stays as is.
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({ author: { login: "octo", __typename: "User" } }),
+		);
+		expect((await fetchOverview(ref, "me")).author).toBe("octo");
 		// More checks, but no cursor to read on from.
 		writeFileSync(
 			join(gql, "overview-1.json"),

@@ -1314,7 +1314,7 @@ async function call(io) {
 				const login = v.author?.login ?? "";
 				const author = v.author
 					? login.startsWith("app/")
-						? { login: login.slice(4), __typename: "Bot" }
+						? { login: login.slice(4), __typename: v.author.__typename ?? "Bot" }
 						: { login, __typename: v.author.__typename ?? "User" }
 					: null;
 				const fieldsOfPr = {
