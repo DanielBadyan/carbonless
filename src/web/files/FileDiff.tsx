@@ -711,12 +711,14 @@ export function FileDiff(props: {
 					),
 				].filter((c) => c !== null);
 	const piecesLeft = sinceChange("reviewed").length > 0;
+	const left = unreviewed.length > 0 || piecesLeft;
 	// Each action is a toggle: it marks what's unreviewed; once nothing is
-	// (the file is finished), it resets its own kind of mark, asking first;
-	// with none of its kind there is nothing to do. A file finished by both
-	// kinds resets each kind from its own button.
+	// (the file is finished: no cluster and no piece left), it resets its
+	// own kind of mark, asking first; with none of its kind there is nothing
+	// to do. A file finished by both kinds resets each kind from its own
+	// button. Never a reset while anything is left (principle 2).
 	const resetOf = (kind: "reviewed" | "crossed-off") =>
-		piecesLeft
+		left
 			? []
 			: [
 					...resetChanges(file.clusters, kind),
@@ -726,7 +728,6 @@ export function FileDiff(props: {
 				];
 	const unCross = resetOf("crossed-off");
 	const unReview = resetOf("reviewed");
-	const left = unreviewed.length > 0 || piecesLeft;
 	const crossToggle = {
 		undo: unCross.length > 0,
 		none: !left && unCross.length === 0,
@@ -1409,7 +1410,7 @@ export function GoneFile(props: {
 			aria-label={props.path}
 			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
 		>
-			<header className="flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
+			<header className="@container flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
 				<button
 					type="button"
 					aria-expanded={expanded}

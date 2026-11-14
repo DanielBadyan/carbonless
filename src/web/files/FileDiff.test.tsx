@@ -519,6 +519,35 @@ describe("FileDiff", () => {
 			);
 		});
 
+		it.each([
+			["reviewed", "Unmark reviewed", "Mark remaining reviewed", "reviewed"],
+			["crossed", "Undo cross-off", "Cross off file", "crossed-off"],
+		] as const)(
+			"a cluster left with a piece already %s: no reset, the header marks only the cluster",
+			async (kind, resetName, markName, state) => {
+				const f = file([cluster("k2")]);
+				const { queryClient, posts, user } = setup(
+					f,
+					() => ({ status: 200, body: view(f) }),
+					hunks,
+					"clusters",
+					{ since: 1, sincePieces: [gonePiece] },
+				);
+				await act(async () => {
+					queryClient.setQueryData(reviewQuery().queryKey, {
+						...view(f),
+						sinceMarks: [goneMark(kind)],
+					});
+					await new Promise((r) => setTimeout(r, 0));
+				});
+				expect(screen.queryByRole("button", { name: resetName })).toBeNull();
+				await user.click(screen.getByRole("button", { name: markName }));
+				await waitFor(() =>
+					expect(posts()[0]?.body.changes).toEqual([{ key: "k2", state }]),
+				);
+			},
+		);
+
 		it("once the pieces are marked too, the reset takes back clusters and pieces of its kind", async () => {
 			const f = file([cluster("k1", { state: "reviewed" })]);
 			const { queryClient, posts, user } = setup(
