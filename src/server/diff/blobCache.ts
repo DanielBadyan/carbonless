@@ -1,11 +1,13 @@
 /**
- * What one cached entry costs beyond its bytes: the Buffer object, the
- * 40-char OID key and the Map slot. Measured on Node 24 with 100k entries:
- * about 200 B of heap each (about 600 B of RSS for an empty blob). Charging
- * it keeps many tiny or empty blobs bounded by the same byte cap, so no
- * separate entry-count limit is needed.
+ * What one cached entry costs beyond its bytes: the Buffer object, its own
+ * backing store (readBlobs copies each blob out of Node's shared pool), the
+ * 40-char OID key and the Map slot. Measured on Node 24, 100k entries of
+ * 0 B to 5 KB: about 290 B of heap each, and 700 to 970 B of RSS beyond the
+ * blob's bytes (allocator bookkeeping). Charged at 1 KiB, the RSS figure
+ * rounded up, so the cap bounds real memory. It also keeps many tiny or
+ * empty blobs within the same cap, so no entry-count limit is needed.
  */
-export const ENTRY_OVERHEAD_BYTES = 512;
+export const ENTRY_OVERHEAD_BYTES = 1024;
 
 /**
  * Blob contents by OID, least recently used first, held to `maxBytes` in

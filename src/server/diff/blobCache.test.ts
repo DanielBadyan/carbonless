@@ -18,16 +18,16 @@ const blobCosting = (cost: number) =>
 
 describe("BlobCache", () => {
 	it("evicts the least recently used blobs once their bytes pass the cap", () => {
-		const cache = new BlobCache(3000);
-		cache.set("a", blobCosting(1000));
-		cache.set("b", blobCosting(1000));
-		cache.set("c", blobCosting(1000));
+		const cache = new BlobCache(6000);
+		cache.set("a", blobCosting(2000));
+		cache.set("b", blobCosting(2000));
+		cache.set("c", blobCosting(2000));
 		expect(cache.keys()).toEqual(["a", "b", "c"]);
-		expect(cache.bytes).toBe(3000);
+		expect(cache.bytes).toBe(6000);
 
-		cache.set("d", blobCosting(1500));
+		cache.set("d", blobCosting(3000));
 		expect(cache.keys()).toEqual(["c", "d"]);
-		expect(cache.bytes).toBe(2500);
+		expect(cache.bytes).toBe(5000);
 	});
 
 	it("holds many small blobs where an entry count would have evicted them", () => {
@@ -47,44 +47,44 @@ describe("BlobCache", () => {
 	});
 
 	it("never caches a blob larger than the cap, and keeps what it held", () => {
-		const cache = new BlobCache(3000);
-		cache.set("a", blobCosting(1000));
-		cache.set("huge", blobCosting(3001));
+		const cache = new BlobCache(6000);
+		cache.set("a", blobCosting(2000));
+		cache.set("huge", blobCosting(6001));
 		expect(cache.has("huge")).toBe(false);
 		expect(cache.keys()).toEqual(["a"]);
-		expect(cache.bytes).toBe(1000);
+		expect(cache.bytes).toBe(2000);
 	});
 
 	it("a hit makes the blob the most recently used", () => {
-		const cache = new BlobCache(3000);
-		cache.set("a", blobCosting(1000));
-		cache.set("b", blobCosting(1000));
-		cache.set("c", blobCosting(1000));
-		expect(cache.get("a")?.length).toBe(1000 - ENTRY_OVERHEAD_BYTES);
+		const cache = new BlobCache(6000);
+		cache.set("a", blobCosting(2000));
+		cache.set("b", blobCosting(2000));
+		cache.set("c", blobCosting(2000));
+		expect(cache.get("a")?.length).toBe(2000 - ENTRY_OVERHEAD_BYTES);
 		expect(cache.keys()).toEqual(["b", "c", "a"]);
 
-		cache.set("d", blobCosting(1000));
+		cache.set("d", blobCosting(2000));
 		expect(cache.keys()).toEqual(["c", "a", "d"]);
 	});
 
 	it("clear forgets every blob and its bytes", () => {
-		const cache = new BlobCache(3000);
-		cache.set("a", blobCosting(1000));
-		cache.set("b", blobCosting(1000));
+		const cache = new BlobCache(6000);
+		cache.set("a", blobCosting(2000));
+		cache.set("b", blobCosting(2000));
 		cache.clear();
 		expect(cache.keys()).toEqual([]);
 		expect(cache.bytes).toBe(0);
 		expect(cache.get("a")).toBeUndefined();
 		// The cap applies afresh: three fit again.
-		for (const oid of ["c", "d", "e"]) cache.set(oid, blobCosting(1000));
+		for (const oid of ["c", "d", "e"]) cache.set(oid, blobCosting(2000));
 		expect(cache.keys()).toEqual(["c", "d", "e"]);
 	});
 
 	it("setting a cached OID again counts its bytes once", () => {
-		const cache = new BlobCache(3000);
-		cache.set("a", blobCosting(1000));
-		cache.set("a", blobCosting(1200));
-		expect(cache.bytes).toBe(1200);
+		const cache = new BlobCache(6000);
+		cache.set("a", blobCosting(2000));
+		cache.set("a", blobCosting(2400));
+		expect(cache.bytes).toBe(2400);
 		expect(cache.keys()).toEqual(["a"]);
 	});
 });
@@ -118,6 +118,14 @@ describe("readBlobs", () => {
 		expect(again.get(oids[0] as string)?.toString()).toBe(
 			first.get(oids[0] as string)?.toString(),
 		);
+	});
+
+	it("gives each blob its own allocation, never a slice of a shared pool slab", async () => {
+		const blobs = await readBlobs(fixture.path, oids.slice(0, 3));
+		for (const bytes of blobs.values()) {
+			expect(bytes.length).toBeGreaterThan(0);
+			expect(bytes.buffer.byteLength).toBe(bytes.length);
+		}
 	});
 
 	it("clearSnapshotCaches empties the blob cache: the next read needs git", async () => {
