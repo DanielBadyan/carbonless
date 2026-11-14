@@ -440,6 +440,8 @@ export async function buildApp(
 		async (request) => {
 			const agent = registry.peek(request.params.id)?.agent;
 			if (!agent) return {};
+			// A hidden tab is an open page: its spawned agent stays (no use).
+			agent.pageSeen();
 			const { joinRequest, left } = agent.join.view();
 			return {
 				...(joinRequest ? { joinRequest } : {}),
@@ -455,6 +457,8 @@ export async function buildApp(
 				"preHandler",
 				async (request) => {
 					sessions.set(request, await registry.get(request.params.id));
+					// The page is open: a spawned agent's idle clock restarts.
+					registry.pageSeen(request.params.id);
 				},
 			);
 			review.get("/session", async (request) => sessionOf(request).info());

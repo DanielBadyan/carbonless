@@ -198,6 +198,7 @@ export class JoinBroker {
 	#ticket: SpawnTicket | null = null;
 	/** The spawned agent is in an ACP turn (the runner says so). */
 	#busy = false;
+	#turnEnded: (() => void) | null = null;
 	#grace: Grace | null = null;
 
 	constructor(deps: JoinBrokerDeps) {
@@ -321,7 +322,19 @@ export class JoinBroker {
 
 	/** The spawned agent's ACP turn started (true) or ended (false): its presence. */
 	setBusy(busy: boolean): void {
+		const was = this.#busy;
 		this.#busy = busy;
+		if (was && !busy) this.#turnEnded?.();
+	}
+
+	/** The spawned agent is in an ACP turn. */
+	inTurn(): boolean {
+		return this.isSpawned() && this.#busy;
+	}
+
+	/** Called when a spawned agent's turn ends (the host's page-idle timer). */
+	onTurnEnd(fn: () => void): void {
+		this.#turnEnded = fn;
 	}
 
 	/** The spawned agent's process exited or was stopped: it leaves, no timers. */

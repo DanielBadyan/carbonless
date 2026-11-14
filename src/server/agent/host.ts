@@ -59,6 +59,9 @@ import {
 	UnknownAgentThreadError,
 } from "./store.js";
 
+/** No review page request this long ends a spawned agent (the registry's idle time). */
+export const PAGE_IDLE_MS = 30 * 60_000;
+
 /** The port this server listens on (serve.ts sets it): the claim names it. */
 let listeningPort = 0;
 export const setServerPort = (port: number): void => {
@@ -187,8 +190,71 @@ export class AgentHost {
 		private readonly github: AgentGithub,
 		readonly join: JoinBroker,
 		private readonly session?: SessionFacts,
+		opts: { now?: () => number; pageIdleMs?: number } = {},
 	) {
 		this.#restored = join.restore().catch(() => {});
+		this.#now = opts.now ?? Date.now;
+		this.#pageIdleMs = opts.pageIdleMs ?? PAGE_IDLE_MS;
+		this.#pageSeenAt = this.#now();
+		join.onTurnEnd(() => this.#turnEnded());
+		this.#armPage();
+	}
+
+	readonly #now: () => number;
+	readonly #pageIdleMs: number;
+	/** The review page's last request (ms): its status polls count, MCP doesn't. */
+	#pageSeenAt: number;
+	#pageTimer: ReturnType<typeof setTimeout> | null = null;
+	/** The page went idle during a turn: the spawned agent ends at its end. */
+	#idleDue = false;
+	#closed = false;
+
+	/**
+	 * A request from the review's page (its routes, its status polls):
+	 * the page is open. A spawned agent ends once none came for
+	 * pageIdleMs, between turns ("Closing the review page ends it").
+	 */
+	pageSeen(): void {
+		this.#pageSeenAt = this.#now();
+		this.#idleDue = false;
+		this.#armPage();
+	}
+
+	#armPage(): void {
+		if (this.#pageTimer) clearTimeout(this.#pageTimer);
+		this.#pageTimer = null;
+		if (this.#closed) return;
+		const left = this.#pageSeenAt + this.#pageIdleMs - this.#now();
+		this.#pageTimer = setTimeout(() => this.#pageIdle(), Math.max(0, left));
+		this.#pageTimer.unref?.();
+	}
+
+	#pageStale(): boolean {
+		return this.#now() - this.#pageSeenAt >= this.#pageIdleMs;
+	}
+
+	#pageIdle(): void {
+		this.#pageTimer = null;
+		if (this.#closed) return;
+		if (!this.#pageStale()) {
+			this.#armPage();
+			return;
+		}
+		// Only crb's own agent: an outside session keeps today's rules.
+		if (!this.join.spawned() && !this.join.isSpawned()) return;
+		// An answer in progress still lands: it ends at the turn's end.
+		if (this.join.inTurn()) {
+			this.#idleDue = true;
+			return;
+		}
+		void this.detach().catch(() => {});
+	}
+
+	#turnEnded(): void {
+		if (!this.#idleDue || this.#closed) return;
+		this.#idleDue = false;
+		if (this.#pageStale()) void this.detach().catch(() => {});
+		else this.#armPage();
 	}
 
 	/** The joined session (by `since`) and the head its last `next` saw. */
@@ -260,8 +326,20 @@ export class AgentHost {
 		return this.join.replaceGrace()?.thread ?? null;
 	}
 
-	/** In use by a joined session (or a request to join): the registry doesn't evict it. */
+	/**
+	 * In use by a joined session (or a request to join): the registry
+	 * doesn't evict it. A spawned agent counts only while its page was
+	 * seen within pageIdleMs, or while it is in a turn: its own MCP calls
+	 * never keep the review open.
+	 */
 	active(): boolean {
+		if (this.join.isSpawned()) {
+			return (
+				this.join.inTurn() ||
+				this.join.view().joinRequest !== undefined ||
+				!this.#pageStale()
+			);
+		}
 		return this.join.active();
 	}
 
@@ -420,6 +498,8 @@ export class AgentHost {
 	}
 
 	async close(): Promise<void> {
+		this.#closed = true;
+		if (this.#pageTimer) clearTimeout(this.#pageTimer);
 		await this.#restored;
 		this.join.close();
 		await this.runner.close();
@@ -906,6 +986,8 @@ export function buildAgentHost(o: {
 	now?: () => number;
 	/** What a joined session's tools read (none: those tools fail). */
 	session?: SessionFacts;
+	/** How long no page request ends a spawned agent (default PAGE_IDLE_MS). */
+	pageIdleMs?: number;
 }): AgentHost {
 	let runner: HostRunner | undefined;
 	// The thread a replaced spawned agent still answers isn't the session's.
@@ -942,7 +1024,10 @@ export function buildAgentHost(o: {
 		o.claim,
 		join,
 	);
-	return new AgentHost(runner, o.store, o.code, o.github, join, o.session);
+	return new AgentHost(runner, o.store, o.code, o.github, join, o.session, {
+		...(o.now ? { now: o.now } : {}),
+		...(o.pageIdleMs !== undefined ? { pageIdleMs: o.pageIdleMs } : {}),
+	});
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;

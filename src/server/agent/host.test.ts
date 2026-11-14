@@ -625,6 +625,154 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect((await host.status()).seen).toBe("2026-11-12T11:00:00.000Z");
 	});
 
+	describe("a spawned agent and the review page", () => {
+		let clock: number;
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		/** The host on a clock, its spawned agent attached: its token. */
+		const spawnedHost = async (): Promise<string> => {
+			await host.close();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			clock = Date.parse("2026-11-13T10:00:00.000Z");
+			host = buildAgentHost({
+				now: () => clock,
+				dir,
+				store,
+				code: async () => undefined,
+				github: {
+					threads: async () => ghThreads,
+					thread: async () => null,
+					patchsets: () => [],
+					base: () => "c".repeat(40),
+				},
+				session: { facts, viewer: "dan" },
+				pageIdleMs: 1000,
+				runner: (off) => {
+					acpOff = off;
+					return runner;
+				},
+			});
+			await host.join.setSpawned(true);
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			return (o as { token: string }).token;
+		};
+		const tick = async (ms: number) => {
+			clock += ms;
+			await vi.advanceTimersByTimeAsync(ms);
+		};
+
+		it("no page request for pageIdleMs ends it like Detach, though it keeps calling threads (its MCP calls aren't the page)", async () => {
+			const token = await spawnedHost();
+			for (let i = 0; i < 9; i++) {
+				await tick(100);
+				await host.sessionThreads(token);
+			}
+			expect(host.active()).toBe(true);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(150);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.isJoined()).toBe(false);
+			expect(host.active()).toBe(false);
+		});
+
+		it("a page request just before the time is up defers it by a whole period", async () => {
+			await spawnedHost();
+			await tick(999);
+			host.pageSeen();
+			await tick(900);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.active()).toBe(true);
+			await tick(200);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("never mid-turn: it waits for the turn's end", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1500);
+			expect(runner.detach).not.toHaveBeenCalled();
+			// In a turn: the review stays in use.
+			expect(host.active()).toBe(true);
+			host.join.setBusy(false);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("the page closes mid-turn, then reopens before the turn ends: no detach, and the timer restarts from the reopen (Review Focus 5)", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1200);
+			host.pageSeen();
+			await tick(100);
+			host.join.setBusy(false);
+			await tick(800);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(150);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("an outside joined session keeps today's rules: no page timer ends it", async () => {
+			await spawnedHost();
+			await host.join.setSpawned(false);
+			host.join.leave("disconnected");
+			await approve();
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+			expect(host.active()).toBe(true);
+		});
+
+		it("its own detach ends it like the reviewer's: flag cleared, runner detached; via acp while joined", async () => {
+			const token = await spawnedHost();
+			expect((await host.status()).via).toBe("acp");
+			await host.sessionDetach(token);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.view().left?.why).toBe("detached");
+		});
+
+		it("the reviewer's Disconnect of a spawned agent is its Detach", async () => {
+			await spawnedHost();
+			await host.disconnect();
+			expect(runner.detach).toHaveBeenCalledTimes(1);
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.isJoined()).toBe(false);
+		});
+
+		it("a human question wakes the spawned agent through the runner, never a watcher", async () => {
+			const token = await spawnedHost();
+			expect(host.join.watcher(token)).toBeNull();
+			await host.open({ clientId: "c1", text: "Why?", span });
+			expect(runner.asked).toHaveBeenCalled();
+		});
+
+		it("its reply is stored via acp with the runner's activity for that thread", async () => {
+			const token = await spawnedHost();
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			runner.activity = (t: string) =>
+				t === x.id ? [{ kind: "read", title: "Read a.txt" }] : [];
+			const q = await host.sessionNext(token);
+			expect(runner.handed).toHaveBeenCalledWith(x.id);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q?.replyTo as string,
+				text: "Because.",
+			});
+			const [t] = await host.threads();
+			expect(t?.messages[1]).toMatchObject({
+				agent: { name: "fake-acp", version: "1.0.0", via: "acp" },
+				activity: [{ kind: "read", title: "Read a.txt" }],
+			});
+			expect(runner.replied).toHaveBeenCalledWith(x.id);
+		});
+	});
+
 	it("detach of a joined session leaves a spawn flag set meanwhile (Spawn pressed elsewhere): ACP may start", async () => {
 		await approve();
 		// Another server's Spawn while this one's session is joined.

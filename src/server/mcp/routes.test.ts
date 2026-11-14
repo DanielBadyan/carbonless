@@ -339,6 +339,26 @@ describe("/mcp", () => {
 		});
 	});
 
+	it("the page's requests restart a spawned agent's page clock (the hidden tab's poll too); MCP calls don't", async () => {
+		const agent = registry.peek(id)?.agent;
+		if (!agent) throw new Error("no agent");
+		const client = await connect();
+		// Approving is a page request: the spy starts after.
+		const { token } = await join(client);
+		const seen = vi.spyOn(agent, "pageSeen");
+		await call(client, "threads", { token });
+		await call(client, "review", { token });
+		expect(seen).not.toHaveBeenCalled();
+		await status();
+		expect(seen).toHaveBeenCalledTimes(1);
+		await app.inject({
+			method: "GET",
+			url: `/api/r/${id}/agent/join`,
+			headers: { host },
+		});
+		expect(seen).toHaveBeenCalledTimes(2);
+	});
+
 	it("a spawned agent's request: attach with the spawn's secret header is approved at once, with a token and no watch line; without it, or with another, expired", async () => {
 		const agent = registry.peek(id)?.agent;
 		if (!agent) throw new Error("no agent");
