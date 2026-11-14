@@ -29,7 +29,7 @@ import type {
 	ReviewView,
 	SessionInfo,
 } from "../shared/types";
-import { agentConfigSaveCount } from "./agent/host";
+import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
@@ -1254,6 +1254,8 @@ describe("API", () => {
 				agent: { name: "fake-acp", version: "1.0.0" },
 				answers: [{ text: "Two writers race." }],
 			});
+			// The spawned agent answers through this server's /mcp.
+			setServerMcp({ url: `http://${host}/mcp`, key: null });
 			// Nothing spawns by itself: the reviewer's Spawn, in this review.
 			const start = await post("/api/agent/start");
 			expect(start.statusCode, start.body).toBe(200);
@@ -1262,6 +1264,7 @@ describe("API", () => {
 			// The agent goes with its session, before the env it ran in.
 			await registry.closeAll();
 			fake.restore();
+			setServerMcp(null);
 		});
 		const span = () => ({
 			subject: "line",
@@ -1310,13 +1313,19 @@ describe("API", () => {
 				stop: "end_turn",
 			});
 			expect(t?.code?.rows.length).toBeGreaterThan(0);
-			const status: AgentStatus = await get("/api/agent");
-			expect(status).toMatchObject({
-				state: "ready",
-				configured: true,
-				agent: { name: "fake-acp", version: "1.0.0" },
-				waiting: 0,
-			});
+			// Ready once its turn (next found none) ends.
+			await vi.waitFor(
+				async () => {
+					const status: AgentStatus = await get("/api/agent");
+					expect(status).toMatchObject({
+						state: "ready",
+						configured: true,
+						agent: { name: "fake-acp", version: "1.0.0", via: "acp" },
+						waiting: 0,
+					});
+				},
+				{ timeout: 20_000, interval: 20 },
+			);
 			const more = await post(`/api/agent/threads/${t?.id}/messages`, {
 				clientId: "m1",
 				text: "Both?",

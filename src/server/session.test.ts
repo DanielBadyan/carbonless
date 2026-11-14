@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	acpLog,
@@ -22,10 +23,13 @@ import {
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { agentsDir } from "./agent/checkout";
+import { setServerMcp } from "./agent/host";
 import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
+import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
+import type { SessionRegistry } from "./registry";
 import { answerRereview } from "./rereview/engine";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
@@ -2200,7 +2204,31 @@ describe("Session", () => {
 				hold: ["initialize"],
 			});
 		});
-		afterEach(() => fake.restore());
+		afterEach(() => {
+			fake.restore();
+			setServerMcp(null);
+		});
+
+		/** crb's /mcp for session `s` alone, where its spawned agent attaches. */
+		const serveMcp = async (s: Session) => {
+			const app = Fastify();
+			registerMcp(app, {
+				registry: {
+					get: async () => s,
+					peek: () => s,
+					touch: () => {},
+				} as unknown as SessionRegistry,
+				reviews: async () => [],
+				accessKey: null,
+				baseUrl: () => "http://127.0.0.1",
+				joinedOnDisk: () => false,
+			});
+			await app.listen({ port: 0, host: "127.0.0.1" });
+			const address = app.server.address();
+			if (!address || typeof address === "string") throw new Error("no port");
+			setServerMcp({ url: `http://127.0.0.1:${address.port}/mcp`, key: null });
+			return app;
+		};
 
 		it("a --viewer session has no agent host; an as-of one neither", async () => {
 			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
@@ -2304,6 +2332,7 @@ describe("Session", () => {
 			).map((m) => vi.spyOn(Session.prototype, m));
 			try {
 				const s = await Session.open(pr.arg, process.cwd());
+				const mcp = await serveMcp(s);
 				const host = s.agent;
 				if (!host) throw new Error("no agent");
 				// The reviewer's Spawn: nothing starts by itself.
@@ -2327,12 +2356,14 @@ describe("Session", () => {
 					by: "ai",
 					text: "Fixed in the viewed head.",
 					suggests: "resolve",
-					head,
+					agent: { via: "acp" },
 				});
-				const sent = acpLog(fake.log).find((e) => e.method === "session/prompt")
-					?.params as { prompt: Array<{ text?: string }> };
-				const text = sent.prompt[0]?.text ?? "";
-				const env = JSON.parse(text.slice(text.indexOf("\n\n{") + 2));
+				// The question came through next, never in a prompt.
+				const next = acpLog(fake.log).find((e) => e.method === "mcp/next")
+					?.response as { value: { envelope: Record<string, unknown> } };
+				const env = next.value.envelope as {
+					messages: { author: unknown }[];
+				};
 				expect(env).toMatchObject({
 					kind: "github_thread_conversation",
 					current: head,
@@ -2350,7 +2381,7 @@ describe("Session", () => {
 					},
 					placement: { kind: "placed" },
 				});
-				expect(env.messages[0].author).toEqual({
+				expect(env.messages[0]?.author).toEqual({
 					login: "octo-cat",
 					role: "reviewer",
 				});
@@ -2361,6 +2392,7 @@ describe("Session", () => {
 				);
 				expect(t?.resolved).toBe(false);
 				await s.close();
+				await mcp.close();
 			} finally {
 				for (const w of writes) w.mockRestore();
 			}
@@ -2368,6 +2400,7 @@ describe("Session", () => {
 
 		it("close() closes the host (checkout removed)", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
+			const mcp = await serveMcp(s);
 			const host = s.agent;
 			if (!host) throw new Error("no agent");
 			// The reviewer's Spawn: nothing starts by itself.
@@ -2378,7 +2411,11 @@ describe("Session", () => {
 			);
 			releaseAcp(fake.scenario, "initialize");
 			await vi.waitFor(
-				async () => expect((await host.status()).state).toBe("ready"),
+				async () =>
+					expect(await host.status()).toMatchObject({
+						state: "ready",
+						via: "acp",
+					}),
 				{ timeout: 20_000, interval: 20 },
 			);
 			const tree = join(agentsDir(), s.id, "tree");
@@ -2388,6 +2425,7 @@ describe("Session", () => {
 			expect(() => readFileSync(join(tree, "a.txt"))).toThrow();
 			expect(() => process.kill(pid, 0)).toThrow();
 			expect((await host.status()).state).toBe("off");
+			await mcp.close();
 		});
 	});
 });
