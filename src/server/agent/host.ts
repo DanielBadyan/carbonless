@@ -296,7 +296,7 @@ export class AgentHost {
 				agent: { name: joined.name, version: joined.harness ?? "", via },
 			};
 		}
-		// The spawned agent's live activity on the question it holds.
+		// An invited session: its presence, the question it holds.
 		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
 		return {
 			...rest,

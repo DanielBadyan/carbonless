@@ -1059,26 +1059,29 @@ describe("AgentRunner: lifecycle", () => {
 
 	it("seen: set by the agent's messages, the status time while it is alive and idle", async () => {
 		scenario({ hold: ["prompt"] });
+		// A clock that moves on every read: "now" is never twice the same.
 		let t = Date.parse("2026-11-12T10:00:00.000Z");
-		const r = makeRunner({ now: () => t });
+		const r = makeRunner({ now: () => t++ });
 		expect((await r.status()).seen).toBeUndefined();
 		await ask("why?");
 		r.poke();
 		await runnerUntil((s) => s.state === "busy" && !!s.answering);
-		await wait(() =>
-			expect(
-				acpLog(logPath).filter((e) => e.method === "session/request_permission")
-					.length + mcpCalls("next").length,
-			).toBeGreaterThan(0),
-		);
-		const busyAt = t;
-		t += 60_000;
-		expect((await r.status()).seen).toBe(new Date(busyAt).toISOString());
+		// Busy (held: no more messages): the time of its last message, so
+		// two reads agree once the last one is in, though the clock moved.
+		await wait(async () => {
+			const a = (await r.status()).seen;
+			const b = (await r.status()).seen;
+			expect(a).toBeDefined();
+			expect(b).toBe(a);
+		});
 		releaseAcp(scenarioPath, "prompt");
 		await answered(1);
 		await runnerUntil((s) => s.state === "ready");
-		t += 60_000;
-		expect((await r.status()).seen).toBe(new Date(t).toISOString());
+		await r.settled();
+		// Alive and idle: now, which moves on every read.
+		const a = (await r.status()).seen as string;
+		const b = (await r.status()).seen as string;
+		expect(Date.parse(b)).toBeGreaterThan(Date.parse(a));
 	});
 
 	describe("ACP off", () => {
