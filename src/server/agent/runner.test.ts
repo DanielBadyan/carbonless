@@ -470,8 +470,10 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		});
 		const t = await ask("why?");
 		makeRunner().poke();
+		// The call shows first, its decision once the permission is answered.
 		const busy = await until(
-			(s) => s.state === "busy" && (s.answering?.activity.length ?? 0) > 0,
+			(s) =>
+				s.state === "busy" && s.answering?.activity[0]?.decision !== undefined,
 		);
 		expect(busy.answering).toEqual({
 			thread: t.id,
