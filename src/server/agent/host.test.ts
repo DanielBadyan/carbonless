@@ -768,6 +768,16 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(existsSync(join(dir, "acp-on"))).toBe(true);
 		});
 
+		it("an outside join approved here while the runner still holds the claim (stop() keeps it until a status): the page timer leaves the session be (R2)", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			runner.holdsAgent.mockReturnValue(true);
+			await approve();
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+		});
+
 		it("this runner holds the claim (its agent starting or failed, not joined): the page timer ends it", async () => {
 			await clockedHost();
 			await host.join.setSpawned(true);

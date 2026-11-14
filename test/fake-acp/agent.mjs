@@ -108,9 +108,26 @@ async function connectMcp() {
 	return c;
 }
 
+/** The turn's session/update sender, while a turn runs (for `mcp.report`). */
+let reportCall = null;
+
 /** Calls crb's tool `name`: its JSON answer, logged (the token redacted). */
 async function tool(name, args) {
 	const c = await connectMcp();
+	// As Claude Code does: an MCP call is a tool_call too, named
+	// mcp__<server>__<tool> in its _meta and title.
+	if (reportCall) {
+		const full = `mcp__crb__${name}`;
+		await reportCall({
+			sessionUpdate: "tool_call",
+			toolCallId: `call-${++calls}`,
+			title: full,
+			kind: "other",
+			status: "pending",
+			rawInput: {},
+			_meta: { claudeCode: { toolName: full } },
+		});
+	}
 	const r = await c.callTool({ name, arguments: args });
 	const text = r.content?.[0]?.text ?? "{}";
 	let value;
@@ -202,6 +219,7 @@ async function mcpTurn(cx, sessionId, prompt) {
 	const update = (u) =>
 		cx.client.notify(methods.client.session.update, { sessionId, update: u });
 	const cfg = { attach: true, replies: "answer", ...(s.mcp ?? {}) };
+	reportCall = cfg.report ? update : null;
 	const text = prompt
 		.filter((b) => b.type === "text")
 		.map((b) => b.text)

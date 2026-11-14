@@ -164,11 +164,18 @@ const clean = (s: string): string => oneLine(s, MAX_IDENTITY);
  * `who` as every view shows it: one line each, sanitised, at most 80 code
  * points; an empty name falls back to the machine, then "session".
  */
-export function cleanIdentity(who: JoinIdentity): JoinIdentity {
+export function cleanIdentity(
+	who: JoinIdentity,
+	fallback?: string,
+): JoinIdentity {
 	const harness = who.harness === undefined ? "" : clean(who.harness);
 	const machine = clean(who.machine);
 	return {
-		name: clean(who.name) || machine || "session",
+		name:
+			clean(who.name) ||
+			(fallback === undefined ? "" : clean(fallback)) ||
+			machine ||
+			"session",
 		machine,
 		...(harness ? { harness } : {}),
 	};
@@ -284,12 +291,17 @@ export class JoinBroker {
 	 * Nothing is written to joined.json. Uncollected after JOIN.expiryMs,
 	 * the join ends (`lost`).
 	 */
-	admit(who: JoinIdentity, secret: string): { request: string } {
+	admit(
+		who: JoinIdentity,
+		secret: string,
+		/** A spawned agent's name when its own cleans to nothing: its command's. */
+		fallback?: string,
+	): { request: string } {
 		if (this.#joined) this.#end("replaced", { keepClaim: true });
 		const id = nextUlid().toLowerCase();
 		const token = randomBytes(32).toString("base64url");
 		const joined: Joined = {
-			who: cleanIdentity(who),
+			who: cleanIdentity(who, fallback),
 			since: this.#now(),
 			hash: hashOf(token),
 			collected: false,

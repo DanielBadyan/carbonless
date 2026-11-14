@@ -67,6 +67,8 @@ export interface AcpScenario {
 		strayReply?: string;
 		/** false: attaches but never calls next (an agent that ignores crb). */
 		next?: boolean;
+		/** Report each crb tool call as a tool_call update first, as Claude Code does (`mcp__crb__<tool>`). */
+		report?: boolean;
 	};
 }
 

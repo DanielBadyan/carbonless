@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type {
 	RequestPermissionRequest,
 	RequestPermissionResponse,
@@ -32,6 +32,7 @@ import type {
 	PromptPatchset,
 	PromptReview,
 } from "./prompt.js";
+import { oneLine } from "./prompt.js";
 import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 
 /**
@@ -98,8 +99,10 @@ export interface RunnerDeps {
 	port: number;
 	facts: RunnerFacts;
 	now?: () => number;
-	/** Each handed-out question's limit, from `next` to its `reply`. */
+	/** A turn's limit, from its start, restarted when `next` hands out a new thread. */
 	turnMs?: number;
+	/** The kickoff turn's limit (default turnMs). */
+	kickoffMs?: number;
 	viewer?: string;
 	/**
 	 * The review's ACP buddy is off (its spawn flag isn't set, or an
@@ -151,6 +154,51 @@ const kindOf = (kind: unknown): ActivityKind =>
 const titleOf = (title: unknown): string =>
 	typeof title === "string" ? title.slice(0, MAX_TITLE) : "";
 
+/** crb's own tools, as an agent reports a call to them. */
+const CRB_TOOLS = new Set([
+	"reviews",
+	"attach",
+	"next",
+	"reply",
+	"threads",
+	"review",
+	"detach",
+]);
+
+/**
+ * Whether a tool call is to crb's own MCP server (the `crb` server crb
+ * gave the agent): by the tool's name where the agent reports one
+ * (Claude Code's `_meta.claudeCode.toolName`, a `name` field), else its
+ * title. Claude Code names MCP tools `mcp__<server>__<tool>`; other
+ * agents title them `<tool> (crb MCP Server)` or `crb__<tool>`/`crb.<tool>`.
+ * Only crb's own tool names count, so another server's `next` doesn't.
+ */
+export function isCrbToolCall(call: {
+	title?: unknown;
+	_meta?: unknown;
+	[key: string]: unknown;
+}): boolean {
+	const meta =
+		call._meta && typeof call._meta === "object"
+			? (call._meta as Record<string, unknown>)
+			: {};
+	const claude =
+		meta.claudeCode && typeof meta.claudeCode === "object"
+			? (meta.claudeCode as Record<string, unknown>).toolName
+			: undefined;
+	const names = [claude, call.name, call.title].filter(
+		(n): n is string => typeof n === "string",
+	);
+	return names.some((raw) => {
+		const n = raw.trim();
+		const m =
+			/^mcp__crb__([a-z]+)$/.exec(n) ??
+			/^crb(?:__|\.|\/|:)([a-z]+)$/.exec(n) ??
+			/^([a-z]+) \(crb MCP Server\)$/.exec(n);
+		return m !== null && CRB_TOOLS.has(m[1] as string);
+	});
+}
+
 /** The wake-up: never the question itself (that comes through `next`). */
 export const WAKE_LINE =
 	"A question waits for you in the review: call crb's next tool, answer it with reply, and call next again until none waits.";
@@ -201,6 +249,8 @@ interface Turn {
 	replies: number;
 	/** Stop current, or the question's time limit: no wake-up follows it. */
 	stopped: boolean;
+	/** Past its limit with no question held: a dry turn, and an error. */
+	overran?: boolean;
 }
 
 /** The question `next` handed the spawned agent, as the runner sees it. */
@@ -257,6 +307,8 @@ export class AgentRunner {
 	 * the process closed if it ignores that.
 	 */
 	#deadline: ReturnType<typeof setTimeout> | null = null;
+	/** When the held question's limit runs out (ms): a hold reminder keeps it. */
+	#handDue: { thread: string; at: number } | null = null;
 	/**
 	 * Threads whose stop or error message is being stored: `next` and the
 	 * wake-up skip them, so a stopped question is never handed out again.
@@ -309,6 +361,14 @@ export class AgentRunner {
 			).length;
 		} catch {
 			// The count is a hint; the ref may be unreadable a moment.
+		}
+		// The ignored-wake warning ends once nothing waits.
+		if (
+			waiting === 0 &&
+			this.#state === "error" &&
+			this.#error === IGNORED_WAKE
+		) {
+			this.#set("ready");
 		}
 		// Questions asked elsewhere (another server showing `elsewhere`)
 		// reach the ref, not this runner: the holder wakes its agent on its
@@ -563,7 +623,9 @@ export class AgentRunner {
 	handed(thread: string): void {
 		if (this.#hand?.thread === thread) return;
 		this.#hand = { thread, activity: [], calls: new Map() };
-		this.#arm();
+		const ms = this.#deps.turnMs ?? AGENT_TURN_MS;
+		this.#handDue = { thread, at: this.#now() + ms };
+		this.#arm(ms);
 	}
 
 	/** Whether this runner holds the review's agent (its claim): it runs, or is starting, the agent. */
@@ -577,10 +639,9 @@ export class AgentRunner {
 	}
 
 	/** (Re)starts the time limit. */
-	#arm(): void {
+	#arm(ms: number): void {
 		this.#disarm();
-		const ms = this.#deps.turnMs ?? AGENT_TURN_MS;
-		this.#deadline = setTimeout(() => void this.#overtime(), ms);
+		this.#deadline = setTimeout(() => void this.#overtime(), Math.max(0, ms));
 		this.#deadline.unref?.();
 	}
 
@@ -614,6 +675,7 @@ export class AgentRunner {
 
 	#clearHand(): void {
 		this.#hand = null;
+		this.#handDue = null;
 	}
 
 	/**
@@ -626,8 +688,13 @@ export class AgentRunner {
 		const ms = this.#deps.turnMs ?? AGENT_TURN_MS;
 		const minutes = Math.max(1, Math.round(ms / 60_000));
 		const turn = this.#turn;
-		if (turn) turn.stopped = true;
 		const handed = join.isSpawned() ? join.handedOut() : null;
+		// With a question: it fails (red), no wake-up follows. Without one:
+		// a dry turn and an error (the cap and the ignored-wake rule apply).
+		if (turn) {
+			if (handed) turn.stopped = true;
+			else turn.overran = true;
+		}
 		if (handed) {
 			await this.#endHand(handed, {
 				stop: "error",
@@ -865,14 +932,19 @@ export class AgentRunner {
 		}
 		// The agent's own words: one line each, sanitised, capped (as a
 		// joined session's identity).
-		const who = cleanIdentity({
-			name: agent.info.name,
-			machine: hostname(),
-			harness: agent.info.version,
-		});
+		// A name that cleans to nothing goes by the command's name.
+		const fallback = oneLine(basename(config.command), 80) || "agent";
+		const who = cleanIdentity(
+			{
+				name: agent.info.name,
+				machine: hostname(),
+				harness: agent.info.version,
+			},
+			fallback,
+		);
 		this.#identity = { name: who.name, version: who.harness ?? "" };
 		// Pressing Spawn is the approval: a request already approved.
-		const { request } = this.#deps.join.admit(who, secret);
+		const { request } = this.#deps.join.admit(who, secret, fallback);
 		this.#request = request;
 		this.#kicked = false;
 		this.#dry = 0;
@@ -935,7 +1007,6 @@ export class AgentRunner {
 		const captured = handed
 			? { who: join.view().joined, activity: this.activity(handed.thread) }
 			: null;
-		if (handed) this.#fenced.add(handed.thread);
 		join.spawnedGone("lost");
 		this.#clearHand();
 		this.#disarm();
@@ -1056,8 +1127,14 @@ export class AgentRunner {
 		this.#turn = turn;
 		join.setBusy(true);
 		this.#set("busy");
-		// Every turn has a ceiling, whatever it holds.
-		this.#arm();
+		// Every turn has a ceiling, whatever it holds. A question already
+		// held keeps its own (a hold reminder doesn't extend it).
+		const held = join.handedOut();
+		const due = this.#handDue;
+		if (held && due?.thread === held.thread) this.#arm(due.at - this.#now());
+		else if (line.kickoff) {
+			this.#arm(this.#deps.kickoffMs ?? this.#deps.turnMs ?? AGENT_TURN_MS);
+		} else this.#arm(this.#deps.turnMs ?? AGENT_TURN_MS);
 		let r: { text: string; stop: AgentStop; error?: string };
 		try {
 			r = await agent.prompt([{ type: "text", text: line.text }]);
@@ -1097,6 +1174,17 @@ export class AgentRunner {
 			this.#set("error", { error: reason });
 			return false;
 		}
+		if (turn.overran) {
+			this.#dry++;
+			const minutes = Math.max(
+				1,
+				Math.round((this.#deps.turnMs ?? AGENT_TURN_MS) / 60_000),
+			);
+			this.#set("error", {
+				error: `The agent's turn ran past ${minutes} min`,
+			});
+			return false;
+		}
 		if (turn.stopped) {
 			this.#set("ready");
 			return false;
@@ -1112,6 +1200,9 @@ export class AgentRunner {
 		const a = this.#currentHand();
 		if (!a) return;
 		if (u.sessionUpdate === "tool_call") {
+			// Its own calls to crb's tools (next, reply…) are how it answers,
+			// not what it did for the answer.
+			if (isCrbToolCall(u)) return;
 			const entry: AgentActivity = {
 				kind: kindOf(u.kind),
 				title: titleOf(u.title),
@@ -1135,7 +1226,7 @@ export class AgentRunner {
 	#onPermission(req: RequestPermissionRequest): RequestPermissionResponse {
 		this.#seen = this.#now();
 		const d = decidePermission(req, this.#config?.leash ?? "open");
-		const a = this.#currentHand();
+		const a = isCrbToolCall(req.toolCall) ? null : this.#currentHand();
 		if (a) {
 			const known = a.calls.get(req.toolCall.toolCallId);
 			if (known) known.decision = d.decision;

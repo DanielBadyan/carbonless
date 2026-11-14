@@ -269,6 +269,9 @@ export class AgentHost {
 
 	/** This server runs the review's spawned agent (not just the shared flag). */
 	#runsSpawned(): boolean {
+		// An outside session joined here: whatever the runner still holds
+		// (its claim until a status winds it down), the timer leaves it be.
+		if (this.join.isJoined() && !this.join.isSpawned()) return false;
 		return this.join.isSpawned() || this.runner.holdsAgent();
 	}
 

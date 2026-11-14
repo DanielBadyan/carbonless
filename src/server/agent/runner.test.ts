@@ -34,6 +34,7 @@ import {
 	AgentRunner,
 	holdLine,
 	IGNORED_WAKE,
+	isCrbToolCall,
 	kickoffLine,
 	type RunnerDeps,
 	type RunnerFacts,
@@ -565,6 +566,52 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		expect(prompts().slice(2)).toEqual([WAKE_LINE, WAKE_LINE]);
 		expect((await threads())[0]?.waiting).toBe(true);
 		expect((await host?.status())?.error).toBe(IGNORED_WAKE);
+		// Nothing waits any more (resolved by hand): the red goes.
+		await store.setResolved(t.id, true);
+		const s = await host?.status();
+		expect(s?.error).toBeUndefined();
+		expect(s?.state).toBe("ready");
+	});
+
+	it("crb's own tool calls (next, reply) are not activity: the stored and live activity keep the rest, in call order", async () => {
+		scenario({
+			hold: ["prompt"],
+			mcp: { report: true },
+			requests: [
+				{ kind: "read", title: "Read a.txt" },
+				{ kind: "execute", title: "node -e 1" },
+			],
+		});
+		const t = await ask("why?");
+		makeRunner().poke();
+		const live = await until(
+			(x) => x.state === "busy" && (x.answering?.activity.length ?? 0) === 2,
+		);
+		expect(live.answering?.activity.map((a) => a.title)).toEqual([
+			"Read a.txt",
+			"node -e 1",
+		]);
+		releaseAcp(scenarioPath, "prompt");
+		await answered(1);
+		await runner.settled();
+		const stored = (await threads()).find((x) => x.id === t.id)?.messages[1];
+		expect(stored?.activity?.map((a) => a.title)).toEqual([
+			"Read a.txt",
+			"node -e 1",
+		]);
+	});
+
+	it("a name that cleans to nothing goes by the command's name, not the machine's (N7)", async () => {
+		scenario({ agent: { name: "\u202e\u200b", version: "1.0.0" } });
+		await ask("why?");
+		makeRunner().poke();
+		await answered(1);
+		const s = await until((x) => x.state === "ready" && x.via === "acp");
+		expect(s.agent?.name).toBe("claude-agent-acp");
+		expect((await runner.status()).agent?.name).toBe("claude-agent-acp");
+		expect((await threads())[0]?.messages[1]?.agent?.name).toBe(
+			"claude-agent-acp",
+		);
 	});
 
 	it("a stop message being stored fences its thread: next meanwhile hands nothing out, and no second error follows (S3)", async () => {
@@ -826,10 +873,9 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 	it("each handed-out question has its own time limit: past it, the question fails and the turn is cancelled", async () => {
 		scenario({ hold: ["prompt"] });
 		const t = await ask("why?");
-		// The kickoff's turn has the limit too: long enough to attach and
-		// take the question (the limit restarts there), and then it fires
-		// while the agent is held.
-		makeRunner({ turnMs: 5000 }).poke();
+		// The kickoff has its own limit, set high: the question's (from its
+		// next) is what fires, while the agent is held.
+		makeRunner({ turnMs: 50, kickoffMs: 10 * 60_000 }).poke();
 		await answered(1);
 		expect((await threads())[0]?.messages[1]).toMatchObject({
 			stop: "error",
@@ -911,6 +957,32 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		const s = await host?.status();
 		expect(s?.spawned).toBeUndefined();
 		expect(s?.left).toBeUndefined();
+	});
+});
+
+describe("isCrbToolCall", () => {
+	it("knows crb's own tools by Claude Code's tool name, a name field or the title; another server's or a plain tool isn't", () => {
+		const yes = [
+			{
+				title: "anything",
+				_meta: { claudeCode: { toolName: "mcp__crb__next" } },
+			},
+			{ title: "mcp__crb__reply" },
+			{ name: "mcp__crb__threads" },
+			{ title: "next (crb MCP Server)" },
+			{ title: "crb__detach" },
+			{ title: "crb.review" },
+		];
+		const no = [
+			{ title: "mcp__other__next" },
+			{ title: "mcp__crb__rm" },
+			{ title: "next" },
+			{ title: "Read crb/next.ts" },
+			{ title: "Bash", _meta: { claudeCode: { toolName: "Bash" } } },
+			{},
+		];
+		for (const c of yes) expect(isCrbToolCall(c), JSON.stringify(c)).toBe(true);
+		for (const c of no) expect(isCrbToolCall(c), JSON.stringify(c)).toBe(false);
 	});
 });
 
