@@ -1023,7 +1023,9 @@ describe("AgentRunner: lifecycle", () => {
 		await wait(() => expect(mcpCalls("attach")).toHaveLength(2));
 		const secondPid = spawns()[1]?.pid as number;
 		config = { agent: null, problems: [] };
-		expect((await runner.status()).state).toBe("off");
+		// The pump may read the change first (its kickoff turn just ended):
+		// off once either has.
+		await runnerUntil((x) => x.state === "off");
 		await runner.settled();
 		expect(() => process.kill(secondPid, 0)).toThrow();
 	});
