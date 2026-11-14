@@ -330,6 +330,10 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	const pop = page.getByTestId("agent-popover");
 	await expect(pop.getByTestId("agent-pop-name")).toHaveText(SESSION.name);
 	await expect(pop).toContainText(SESSION.machine);
+	// Agents spawned so far (the one from setup, replaced by the session).
+	const spawns = () =>
+		acpLog(acpLogPath).filter((e) => e.method === "spawn").length;
+	const spawnedBefore = spawns();
 	await pop.getByTestId("agent-disconnect").click();
 	const toast = page.getByTestId("join-toast");
 	await expect(toast).toContainText(`${SESSION.name} left`);
@@ -337,11 +341,15 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
 	// Two status polls later the ACP buddy is still off (the approved join
 	// cleared this review's spawn flag, and Disconnect doesn't set it): the
-	// question waits and the spawned agent (replaced right after its
-	// kickoff) was never woken for it.
-	for (let i = 0; i < 2; i++) await nextStatusPoll(page);
+	// question waits, no agent was started, and the spawned agent (replaced
+	// right after its kickoff) was never woken for it. The polls' answers,
+	// not the chip: each poll would start an agent left on.
+	for (let i = 0; i < 2; i++) {
+		expect((await nextStatusPoll(page)).state).toBe("off");
+	}
 	await expect(card.getByTestId("agent-waiting")).toBeVisible();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	expect(spawns()).toBe(spawnedBefore);
 	expect(wakes(acpLogPath)).toHaveLength(0);
 	// Spawn brings it back, and it answers. With no session joined the chip
 	// opens the modal (no popover Start), so the Spawn goes through the API.
