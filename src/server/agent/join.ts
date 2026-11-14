@@ -638,7 +638,8 @@ export class JoinBroker {
 		}
 		// A spawned join never wrote it (a joined session's may be there).
 		if (!j.spawned) rmSync(join(this.#deps.dir, JOINED_FILE), { force: true });
-		this.#left = { ...j.who, why, at: this.#now() };
+		// A spawned agent's end isn't a session leaving (no toast).
+		if (!j.spawned) this.#left = { ...j.who, why, at: this.#now() };
 		// A spawned agent's claim is its runner's.
 		if (!opts.keepClaim && !j.spawned) void this.#drop();
 		this.#deps.onLeft(why);

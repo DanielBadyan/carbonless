@@ -582,6 +582,11 @@ on failure, a refusal shown in `SyncNotices`.
 
 ### The runner
 
+> Superseded (2026-11-13): the runner no longer drains threads into
+> prompts. A spawned agent works through crb's MCP like a joined session;
+> the runner launches it, wakes it and feeds the spawned-only extras. See
+> `2026-11-13-spawned-agent-mcp-design.md`.
+
 `src/server/agent/` holds: `policy.ts` (the permission function, a table),
 `checkout.ts` (the shared clone), `acp.ts` (spawn, initialize, session,
 prompt, cancel; built on `@agentclientprotocol/sdk`'s `client()` and

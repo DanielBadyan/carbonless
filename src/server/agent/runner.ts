@@ -777,7 +777,9 @@ export class AgentRunner {
 				command: config.command,
 				args: config.args,
 				env: agentEnv(config.env),
-				cwd: this.#checkout.tree,
+				// The tree's parent, as before: a PR's own harness config (hooks,
+				// MCP servers, allow rules) in the tree is never the agent's.
+				cwd: this.#checkout.dir,
 				stderrFile: join(this.#checkout.dir, "agent.stderr.log"),
 				onUpdate: (u) => this.#onUpdate(u),
 				onPermission: (req) => this.#onPermission(req),

@@ -48,7 +48,7 @@ const REPLY = [
 	"| v2 | 2 |",
 ].join("\n");
 
-test("ask from a selection: the answer streams in, then the Markdown reply with a table", async ({
+test("ask from a selection: the spawned agent takes it through MCP, its activity live, then the Markdown reply with a table", async ({
 	page,
 	pr,
 	agentCrb,
@@ -59,22 +59,26 @@ test("ask from a selection: the answer streams in, then the Markdown reply with 
 	const s = await agentCrb({
 		scenario: {
 			agent: { name: "Fake Agent", version: "9.9.9" },
-			answers: [{ text: REPLY, chunks: 3 }],
+			answers: [{ text: REPLY }],
+			requests: [{ kind: "read", title: "Read src/calc.ts" }],
 			hold: ["prompt"],
 		},
 	});
 	const section = await openFile(page, s.url, CALC);
+	// Spawned, not invited: the chip says so.
+	await expect(chip(page)).toHaveAttribute("data-via", "acp");
 	await selectText(page, CALC, 3, 13, 18);
 	await expect(bar(page)).toBeVisible();
 	await shot(page, "agent-bar", isMobile);
 	const card = await ask(page, section, 3, "Does total add everything?");
-	// Held after its first chunk: the spinner, the text so far, Stop.
+	// Held after next handed it the question: the spinner, its tool
+	// calls so far, Stop.
 	const answering = card.getByTestId("agent-answering");
 	await expect(answering).toBeVisible();
 	await expect(
 		answering.getByRole("status", { name: "Answering" }),
 	).toBeVisible();
-	await expect(answering).toContainText("No: it adds");
+	await expect(answering.getByTestId("agent-activity")).toBeVisible();
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answering");
 	await expect(card.getByTestId("agent-waiting")).toHaveCount(0);
 	await expect(card.getByTestId("agent-stop")).toBeVisible();
@@ -85,6 +89,8 @@ test("ask from a selection: the answer streams in, then the Markdown reply with 
 	const reply = card.getByTestId("agent-message-ai");
 	await expect(reply.locator("table td")).toHaveText(["v1", "1", "v2", "2"]);
 	await expect(reply.locator("strong")).toHaveText("v1 and v2");
+	// The reply keeps what the agent did for it.
+	await expect(card.getByTestId("agent-activity")).toHaveCount(1);
 	await expect(card.getByTestId("agent-answering")).toHaveCount(0);
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	// The line's agent bubble counts it.
@@ -94,31 +100,38 @@ test("ask from a selection: the answer streams in, then the Markdown reply with 
 	await shot(page, "agent-answered", isMobile);
 });
 
-test("Stop keeps the partial reply with a stopped chip", async ({
+test("Stop current mid-answer: the question shows stopped, and no further turn follows", async ({
 	page,
 	pr,
 	agentCrb,
+	acpLogPath,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({
 		scenario: {
 			agent: { name: "Fake Agent", version: "9.9.9" },
-			answers: [{ text: "First half. Second half.", chunks: 2 }],
+			answers: [{ text: "Never stored." }],
 			hold: ["prompt"],
 		},
 	});
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Explain total");
-	await expect(card.getByTestId("agent-answering")).toContainText("First half");
+	await expect(card.getByTestId("agent-answering")).toBeVisible();
 	await card.getByTestId("agent-stop").click();
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(card.getByTestId("agent-stop-chip")).toHaveText("stopped");
-	await expect(card.getByTestId("agent-message-ai")).toContainText(
-		"First half",
-	);
 	await expect(card.getByTestId("agent-message-ai")).not.toContainText(
-		"Second half",
+		"Never stored.",
 	);
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	// Its kickoff, then the wake for this question: no turn after Stop.
+	const prompts = () =>
+		acpLog(acpLogPath).filter((e) => e.method === "session/prompt").length;
+	expect(prompts()).toBe(2);
+	await page.waitForResponse((r) =>
+		/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
+	);
+	expect(prompts()).toBe(2);
 });
 
 test("Resolve closes the card, still the agent's; it opens to Unresolve, kept across a reload", async ({
@@ -288,7 +301,7 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	}
 });
 
-test("the chip turns red when the agent crashes mid-answer; the partial reply stays", async ({
+test("the chip turns red when the agent crashes mid-answer; the question says why", async ({
 	page,
 	pr,
 	agentCrb,
@@ -297,14 +310,15 @@ test("the chip turns red when the agent crashes mid-answer; the partial reply st
 	const s = await agentCrb({
 		scenario: {
 			agent: { name: "Fake Agent", version: "9.9.9" },
-			answers: [{ text: "Partial then the rest", chunks: 2 }],
 			crashOnPrompt: true,
 		},
 	});
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Crash?");
 	await expect(card.getByTestId("agent-stop-chip")).toHaveText("failed");
-	await expect(card.getByTestId("agent-message-ai")).toContainText("Partial");
+	await expect(card.getByTestId("agent-message-error")).toContainText(
+		"exited with code 70",
+	);
 	await expect(chip(page)).toHaveAttribute("data-state", "error");
 	await expect(chip(page)).toHaveAccessibleName(/70/);
 });
@@ -333,7 +347,7 @@ test("a turn the agent fails says why: on the reply and in the chip", async ({
 	await expect(chip(page)).toHaveAccessibleName(/Rate limited; retry later/);
 });
 
-test("from the stream to the stored reply, the text never goes and waiting never shows", async ({
+test("from the answering view to the stored reply, the card never empties and waiting never shows", async ({
 	page,
 	pr,
 	agentCrb,
@@ -343,17 +357,18 @@ test("from the stream to the stored reply, the text never goes and waiting never
 	const s = await agentCrb({
 		scenario: {
 			agent: { name: "Fake Agent", version: "9.9.9" },
-			answers: [{ text: "Streamed first. Then the rest.", chunks: 2 }],
+			answers: [{ text: "Stored then shown." }],
+			requests: [{ kind: "read", title: "Read src/calc.ts" }],
 			hold: ["prompt"],
 		},
 	});
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Stream?");
-	await expect(card.getByTestId("agent-answering")).toContainText(
-		"Streamed first.",
-	);
+	await expect(
+		card.getByTestId("agent-answering").getByTestId("agent-activity"),
+	).toBeVisible();
 	// From here on, every change to the card is checked: it shows the
-	// stream or the reply, never neither, and never "waiting".
+	// answering view or the reply, never neither, and never "waiting".
 	await page.evaluate(() => {
 		const w = window as unknown as { crbSeen: string[] };
 		w.crbSeen = [];
@@ -364,11 +379,11 @@ test("from the stream to the stored reply, the text never goes and waiting never
 			if (!c) return w.crbSeen.push("no card");
 			if (c.querySelector('[data-testid="agent-waiting"]'))
 				w.crbSeen.push("waiting");
-			const text =
-				c.querySelector('[data-testid="agent-answering"]')?.textContent ??
-				c.querySelector('[data-testid="agent-message-ai"]')?.textContent ??
-				"";
-			if (!text.includes("Streamed first.")) w.crbSeen.push("lost");
+			if (
+				!c.querySelector('[data-testid="agent-answering"]') &&
+				!c.querySelector('[data-testid="agent-message-ai"]')
+			)
+				w.crbSeen.push("lost");
 		};
 		new MutationObserver(check).observe(document.body, {
 			subtree: true,
@@ -376,7 +391,7 @@ test("from the stream to the stored reply, the text never goes and waiting never
 			characterData: true,
 		});
 	});
-	// The threads read the end of the turn prompts is held.
+	// The threads read after the reply is held.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
 	await page.route("**/agent/threads", (route) => {
@@ -388,15 +403,13 @@ test("from the stream to the stored reply, the text never goes and waiting never
 	releaseAcp(acpScenario, "prompt");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	await expect.poll(() => held.length).toBeGreaterThan(0);
-	// The turn is over and stored; the read that brings it is held.
-	await expect(card.getByTestId("agent-answering")).toContainText(
-		"Streamed first.",
-	);
+	// The reply is stored; the read that brings it is held.
+	await expect(card.getByTestId("agent-answering")).toBeVisible();
 	await expect(card.getByTestId("agent-waiting")).toHaveCount(0);
 	holding = false;
 	for (const go of held.splice(0)) await go();
 	await expect(card.getByTestId("agent-message-ai")).toContainText(
-		"Then the rest.",
+		"Stored then shown.",
 	);
 	await expect(card.getByTestId("agent-answering")).toHaveCount(0);
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
@@ -484,14 +497,15 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	await expect(thread.getByTestId("agent-message-ai")).toHaveText(
 		"Answered after the restart",
 	);
-	// One prompt per process: the first's turn died with it, the second
-	// answered the backlog once.
+	// The first process: its kickoff, then the wake for this question (the
+	// turn died with it); the second: its kickoff, which answered the
+	// backlog once.
 	const prompts = acpLog(acpLogPath).filter(
 		(e) => e.method === "session/prompt",
 	);
 	const perPid = new Map<number, number>();
 	for (const p of prompts) perPid.set(p.pid, (perPid.get(p.pid) ?? 0) + 1);
-	expect([...perPid.values()]).toEqual([1, 1]);
+	expect([...perPid.values()]).toEqual([2, 1]);
 });
 
 /** The tracer's answer (GET /agent/placements), held: the review-bound route. */

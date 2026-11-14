@@ -734,7 +734,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			await host.sessionDetach(token);
 			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
 			expect(existsSync(join(dir, "acp-on"))).toBe(false);
-			expect(host.join.view().left?.why).toBe("detached");
+			expect(host.join.view().left).toBeUndefined();
 		});
 
 		it("the reviewer's Disconnect of a spawned agent is its Detach", async () => {

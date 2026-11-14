@@ -615,6 +615,10 @@ question would be on someone else's behalf, or about a past moment.
   on that review's pages; Deny, or no answer within 10 minutes, ends the
   request. The access key alone lets a session list reviews, never join
   one (spec 2026-11-10, `docs/faq.md` "Joining a review from a session").
+  For an agent carbonless spawns, pressing Spawn is the approval: its
+  join is approved before it asks, for that review and that process only
+  (a secret in its session's MCP config), and never shows a bar (spec
+  2026-11-13, spawned agent over MCP).
 - **No agent starts in a review the reviewer didn't ask for one in.** A
   configured ACP agent runs in a review only while that review's spawn
   flag is set (`acp-on` in its agent dir, kept across restarts; local

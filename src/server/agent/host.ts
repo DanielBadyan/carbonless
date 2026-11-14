@@ -280,8 +280,24 @@ export class AgentHost {
 		if (!joined) return out;
 		const handed = this.join.handedOut();
 		const via = view.via ?? "mcp";
+		if (via === "acp") {
+			// crb's own agent: the page shows it as spawned (no `joined`,
+			// which means an invited session there), with its live activity.
+			// A failed turn keeps its reason up (red) until the next one.
+			const { joined: _, elsewhere: __, ...rest } = out;
+			return {
+				...rest,
+				state:
+					presence === "busy"
+						? "busy"
+						: out.state === "error"
+							? "error"
+							: "ready",
+				agent: { name: joined.name, version: joined.harness ?? "", via },
+			};
+		}
 		// The spawned agent's live activity on the question it holds.
-		const { answering: acpTurn, error: __, elsewhere: ___, ...rest } = out;
+		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
 		return {
 			...rest,
 			state:
@@ -299,15 +315,12 @@ export class AgentHost {
 			since: joined.since,
 			...(handed
 				? {
-						answering:
-							acpTurn?.thread === handed.thread
-								? acpTurn
-								: {
-										thread: handed.thread,
-										text: "",
-										activity: [],
-										...(handed.asked ? { asked: handed.asked } : {}),
-									},
+						answering: {
+							thread: handed.thread,
+							text: "",
+							activity: [],
+							...(handed.asked ? { asked: handed.asked } : {}),
+						},
 					}
 				: {}),
 		};

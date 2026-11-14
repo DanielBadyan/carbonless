@@ -180,6 +180,8 @@ const E2E_MAP = [
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
 	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent", "agent-join"]],
+	// crb's MCP (joined sessions, and the spawned agent's tools and bridge).
+	[/^src\/server\/mcp\//, ["agent", "agent-join"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],
