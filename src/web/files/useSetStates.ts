@@ -92,8 +92,9 @@ export function useSyncState(): SyncState {
 /**
  * One part of the sync's state: the component renders again only when that
  * part changes, not on every notice (a save turning delayed, a retry's
- * wait). `select` returns a value kept across states (SyncState's maps and
- * `stale` are) or a primitive. The Files page and the review overlay read
+ * wait). `select` must return the same value while its part is unchanged:
+ * a value kept across states (SyncState's maps and `stale` are) or a
+ * primitive, never a new object per call. The Files page and the review overlay read
  * this way: a whole long file rendering again for a notice costs a
  * notification per highlighted line (CAR-147).
  */

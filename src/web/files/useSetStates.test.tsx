@@ -363,4 +363,79 @@ describe("the sync's notices", () => {
 		expect(renders.unsaved).toBe(before.unsaved);
 		expect(renders.stale).toBe(before.stale);
 	});
+
+	it("the page's readers render again with what changed: a new pending change, its stored write, a refusal for staleness", async () => {
+		const answers: ((r: Response) => void)[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				(_url: string, init?: RequestInit) =>
+					new Promise<Response>((resolve) => {
+						// Only the writes answer; the review read stays out.
+						if (init?.method === "POST") answers.push(resolve);
+					}),
+			),
+		);
+		const seen = {
+			pending: -1,
+			unsaved: false,
+			stale: null as { dropped: number } | null,
+		};
+		function View() {
+			seen.pending = useReviewView().pending.size;
+			return null;
+		}
+		function Unsaved() {
+			seen.unsaved = useUnsaved();
+			return null;
+		}
+		function Stale() {
+			seen.stale = useSyncStale();
+			return null;
+		}
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<View />
+				<Unsaved />
+				<Stale />
+			</QueryClientProvider>,
+		);
+		const sync = stateSyncFor(client);
+		expect(seen).toEqual({ pending: 0, unsaved: false, stale: null });
+		const answer = async (response: Response) => {
+			await act(async () => {
+				await vi.waitFor(() => expect(answers.length).toBe(1));
+				answers.shift()?.(response);
+				await new Promise((r) => setTimeout(r, 0));
+			});
+		};
+
+		await act(async () => {
+			void sync.apply("r1", "a.ts", [{ key: "k1", state: "reviewed" }]);
+		});
+		expect(seen).toEqual({ pending: 1, unsaved: true, stale: null });
+		await answer(
+			new Response(
+				JSON.stringify({
+					revision: "r1",
+					patchset: 1,
+					files: [],
+					progress: {},
+				}),
+			),
+		);
+		expect(seen).toEqual({ pending: 0, unsaved: false, stale: null });
+
+		await act(async () => {
+			void sync
+				.apply("r1", "a.ts", [{ key: "k2", state: "reviewed" }])
+				.catch(() => {});
+		});
+		expect(seen).toEqual({ pending: 1, unsaved: true, stale: null });
+		await answer(
+			new Response(JSON.stringify({ error: "moved" }), { status: 409 }),
+		);
+		expect(seen).toEqual({ pending: 0, unsaved: false, stale: { dropped: 1 } });
+	});
 });
