@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
@@ -19,9 +18,9 @@ import {
 	withTree,
 } from "./files-ui";
 import {
+	type Crb,
 	expect,
 	expectLoadingThen,
-	OWNER_REPO,
 	type Pr,
 	type PrOptions,
 	test,
@@ -161,13 +160,12 @@ const reworkCore = {
 };
 
 /** The review's refs in crb's clone (the progress ref and the patch set pins), one per line. */
-const reviewRefs = (workdir: string) => {
-	const [owner, repo] = OWNER_REPO.split("/") as [string, string];
-	return execFileSync(
+const reviewRefs = (s: Pick<Crb, "cloneOf">, p: { ownerRepo: string }) =>
+	execFileSync(
 		"git",
 		["for-each-ref", "--format=%(refname) %(objectname)", "refs/crb/reviews/"],
 		{
-			cwd: join(workdir, "cache", "carbonless", "repos", owner, `${repo}.git`),
+			cwd: s.cloneOf(p.ownerRepo),
 			encoding: "utf8",
 			env: testGitEnv(),
 		},
@@ -176,7 +174,6 @@ const reviewRefs = (workdir: string) => {
 		.filter((l) => l.includes("/reviewers/"))
 		.sort()
 		.join("\n");
-};
 
 const chips = (section: Locator) =>
 	section.locator('[data-testid="since-chips"] [data-testid="kind-chip"]');
@@ -187,16 +184,10 @@ const toRead = (page: Page) => page.getByTestId("to-read");
  * PS1 fully reviewed, then `push`, the page reloaded on PS1 with the head
  * newer. Returns the refs as they stand (nothing may change them but a mark).
  */
-async function pushed(
-	page: Page,
-	workdir: string,
-	s: { url: string },
-	p: { moveHead: (c: FixtureCommit) => string },
-	push: FixtureCommit = rework,
-) {
+async function pushed(page: Page, s: Crb, p: Pr, push: FixtureCommit = rework) {
 	await openFiles(page, s.url);
 	await reviewAll(page);
-	const refs = reviewRefs(workdir);
+	const refs = reviewRefs(s, p);
 	expect(refs).toContain("/patchsets/1 ");
 	p.moveHead(push);
 	await page.reload();
@@ -206,14 +197,13 @@ async function pushed(
 
 test("View lands on the since view: the reworked and new clusters with their chips, carried ones absent here and marked in the full diff, nothing written; the first mark starts PS2 with the carries", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
-	const refs = await pushed(page, workdir, s, p);
+	const refs = await pushed(page, s, p);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 	await expect(
@@ -276,7 +266,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	).toHaveCount(0);
 	await utilS.getByRole("button", { name: "Collapse file" }).click();
 	// Nothing written: viewing is not a lasting action.
-	expect(reviewRefs(workdir)).toBe(refs);
+	expect(reviewRefs(s, p)).toBe(refs);
 
 	// The full diff (the base on the branch dot): the carried clusters
 	// green and marked, with their chip; the others unreviewed.
@@ -295,7 +285,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 		coreS.getByTestId("diff-line").filter({ hasText: "core 30 changed" }),
 	).toHaveAttribute("data-reviewed", "true");
 	await expect(toRead(page)).toHaveText(/2 to read/);
-	expect(reviewRefs(workdir)).toBe(refs);
+	expect(reviewRefs(s, p)).toBe(refs);
 
 	// The first mark starts PS2 with the carries: the rail gains PS2 (viewed,
 	// up to date), the refs a second patch set; the carried marks stay.
@@ -309,7 +299,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	).toBeVisible();
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	const after = reviewRefs(workdir);
+	const after = reviewRefs(s, p);
 	expect(after).not.toBe(refs);
 	expect(after).toContain("/patchsets/2 ");
 	expect(after).toContain("/patchsets/2-base ");
@@ -350,13 +340,12 @@ test("View lands on the since view: the reworked and new clusters with their chi
 
 test("a gone cluster is a red block with its chip, markable on its own (reverted) and to read until marked; an old patch set opens read-only with its marks", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
-	await pushed(page, workdir, s, p);
+	await pushed(page, s, p);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	const utilS = fileSection(page, "src/util.ts");
 	await expect(chips(utilS).filter({ hasText: "1 new" })).toBeVisible();
@@ -386,7 +375,7 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
-	const refs = reviewRefs(workdir);
+	const refs = reviewRefs(s, p);
 
 	// Push 3 undoes util.ts's first cluster: gone since PS2.
 	p.moveHead(undo);
@@ -420,7 +409,7 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 	// and the gone one, both to read.
 	await expect(progress(page)).toContainText("0 / 2 clusters reviewed");
 	await expect(toRead(page)).toHaveText(/2 to read/);
-	expect(reviewRefs(workdir)).toBe(refs);
+	expect(reviewRefs(s, p)).toBe(refs);
 	await expectNoPageOverflow(page);
 
 	// Back to PS1 (two steps left): as reviewed, read-only, every box
@@ -456,18 +445,17 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page.getByTestId("read-only-note")).toHaveCount(0);
-	expect(reviewRefs(workdir)).toBe(refs);
+	expect(reviewRefs(s, p)).toBe(refs);
 });
 
 test("the tree's dots say which files need eyes; the needs-eyes filter hides fully carried files, never a cluster", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
-	await pushed(page, workdir, s, p, reworkCore);
+	await pushed(page, s, p, reworkCore);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	const coreS = fileSection(page, "src/core.ts");
 	const utilS = fileSection(page, "src/util.ts");
@@ -533,7 +521,6 @@ test("the tree's dots say which files need eyes; the needs-eyes filter hides ful
 
 test("a since view the engine can't count says so in the bar, never the full diff's numbers", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 	expectConsoleError,
@@ -550,7 +537,7 @@ test("a since view the engine can't count says so in the bar, never the full dif
 			body: JSON.stringify({ error: "boom" }),
 		});
 	});
-	await pushed(page, workdir, s, p);
+	await pushed(page, s, p);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(progress(page)).toHaveAttribute(
 		"data-state",
@@ -565,14 +552,13 @@ test("a since view the engine can't count says so in the bar, never the full dif
 
 test("an empty since view says so once the engine has answered, with a spinner until then", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
 	// An empty commit: a new head with the same tree, everything carries.
-	await pushed(page, workdir, s, p, { message: "empty", files: {} });
+	await pushed(page, s, p, { message: "empty", files: {} });
 	let release = () => {};
 	const held = new Promise<void>((r) => {
 		release = r;
@@ -895,7 +881,6 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 
 test("Comparison Base on a dot right of the target moves both markers side by side, and the address follows; the ends are disabled with why", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
@@ -903,7 +888,7 @@ test("Comparison Base on a dot right of the target moves both markers side by si
 	test.setTimeout(120_000);
 	const p = await pr(fixture);
 	const s = await startCrb();
-	await pushed(page, workdir, s, p);
+	await pushed(page, s, p);
 	// The first mark on the head starts PS2.
 	await toast(page).getByRole("button", { name: "View" }).click();
 	const utilS = fileSection(page, "src/util.ts");
@@ -1242,7 +1227,7 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		threadOn(h1, "src/util.ts", 3, "util 3 looks fine"),
 	);
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) graph.reviewThreads = threads;
 	});
 	const s = await startCrb();
@@ -1462,7 +1447,7 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 		threadOn(p.head(), "src/legacy.ts", 3, "Clear the timer here too"),
 	);
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) graph.reviewThreads = threads;
 	});
 	const s = await startCrb();
@@ -1540,7 +1525,7 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	// unresolved: the full row again.
 	const setResolved = (resolved: boolean) =>
 		p.editScenario((sc) => {
-			const t = sc.prs[7]?.graphql?.reviewThreads?.[0] as
+			const t = sc.prs[p.number]?.graphql?.reviewThreads?.[0] as
 				| { isResolved: boolean }
 				| undefined;
 			if (t) t.isResolved = resolved;
@@ -1571,7 +1556,7 @@ test("a resolved thread keeps carrying: on a later head it shows on its traced l
 	const settled = threadOn(p.head(), "src/util.ts", 3, "Settled already");
 	settled.isResolved = true;
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) graph.reviewThreads = [settled];
 	});
 	const s = await startCrb();
@@ -1629,7 +1614,7 @@ async function threadsPushed(
 			t.isResolved = true;
 	}
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) graph.reviewThreads = threads;
 	});
 	// A fresh read of GitHub (the page reuses a recent one): the new thread in.
@@ -1657,7 +1642,7 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 		const sc = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
 			prs: Record<string, { graphql?: { reviewThreads?: unknown[] } }>;
 		};
-		const t = (sc.prs[7]?.graphql?.reviewThreads ?? []).find((x) =>
+		const t = (sc.prs[p.number]?.graphql?.reviewThreads ?? []).find((x) =>
 			JSON.stringify(x).includes("Is core 30 needed?"),
 		) as { isResolved?: boolean } | undefined;
 		return t?.isResolved;
@@ -1848,7 +1833,7 @@ const storedReviews = (p: Pr) =>
 				{ graphql?: { reviews?: { state: string; commit: { oid: string } }[] } }
 			>;
 		}
-	).prs[7]?.graphql?.reviews ?? [];
+	).prs[p.number]?.graphql?.reviews ?? [];
 
 const verdictCard = (page: Page) => page.getByTestId("verdict-card-tab");
 
@@ -1886,7 +1871,6 @@ async function approvedThenPushed(
 
 test("the verdict tab says what changed since your approval, with the patch set's meter; Approve goes on the new head", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 	isMobile,
@@ -1922,7 +1906,9 @@ test("the verdict tab says what changed since your approval, with the patch set'
 		.getByRole("link", { name: ps1.slice(0, 7) });
 	await expect(link).toHaveAttribute(
 		"href",
-		/^https:\/\/github\.com\/acme\/widget\/pull\/7#pullrequestreview-\d+$/,
+		new RegExp(
+			`^https://github\\.com/${p.ownerRepo}/pull/${p.number}#pullrequestreview-\\d+$`,
+		),
 	);
 	if (isMobile) {
 		await page.setViewportSize({ width: 360, height: 740 });
@@ -1946,7 +1932,7 @@ test("the verdict tab says what changed since your approval, with the patch set'
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	expect(reviewRefs(workdir)).toContain("/patchsets/2 ");
+	expect(reviewRefs(s, p)).toContain("/patchsets/2 ");
 	await page.getByRole("link", { name: "Final Verdict" }).click();
 	await expect(card.getByTestId("verdict-since-meter")).toHaveText(
 		/\d+ \/ \d+ on PS2/,
@@ -1966,7 +1952,6 @@ test("the verdict tab says what changed since your approval, with the patch set'
 
 test("an identical diff force-pushed (a squash on the same base): same diff · nothing to re-read; Approve again posts on the new head and starts PS2", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
@@ -1993,7 +1978,7 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(again).toBeVisible();
 	expect((await again.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
 	await expectNoPageOverflow(page);
-	const before = reviewRefs(workdir);
+	const before = reviewRefs(s, p);
 	expect(before).not.toContain("/patchsets/2 ");
 
 	await again.click();
@@ -2002,7 +1987,7 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	expect(posted?.state).toBe("APPROVED");
 	expect(posted?.commit.oid).toBe(head);
 	// The verdict started PS2 on the new head, every mark carried.
-	expect(reviewRefs(workdir)).toContain("/patchsets/2 ");
+	expect(reviewRefs(s, p)).toContain("/patchsets/2 ");
 	await expect(card.getByTestId("verdict-since")).toHaveCount(0);
 	await page.getByRole("link", { name: "Files changed" }).click();
 	await expect(
@@ -2015,16 +2000,15 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 
 test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
-	await pushed(page, workdir, s, p);
+	await pushed(page, s, p);
 	await page.keyboard.press("Control+]");
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/, GIT_WAIT);
-	expect(reviewRefs(workdir)).not.toContain("/patchsets/2 ");
+	expect(reviewRefs(s, p)).not.toContain("/patchsets/2 ");
 	const section = fileSection(page, "src/util.ts");
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await section.getByRole("button", { name: "Comment on file" }).click();
@@ -2032,7 +2016,7 @@ test("a new thread on the viewed head starts PS2 and the page follows: the PS2 d
 	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(section.getByTestId("new-thread")).toHaveCount(0);
-	await expect.poll(() => reviewRefs(workdir)).toContain("/patchsets/2 ");
+	await expect.poll(() => reviewRefs(s, p)).toContain("/patchsets/2 ");
 	// No reload: the thread's answer brings the session and the review in.
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
@@ -2391,7 +2375,7 @@ async function sinceGaps(
 		]),
 	);
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) graph.reviewThreads = threads;
 	});
 	const s = await startCrb();
