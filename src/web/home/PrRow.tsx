@@ -30,7 +30,7 @@ import { Tooltip } from "../Tooltip";
 import { hashTint, TINTS } from "../threads/people";
 import { safeHref } from "../ui";
 import { useMedia } from "../useMedia";
-import { prPath } from "./homeApi";
+import { leaveHome, prPath } from "./homeApi";
 
 /** An icon (or a few) that means something: a tooltip and an accessible name. */
 export function Sign(props: {
@@ -327,7 +327,11 @@ function TitleLink({ row }: { row: HomeRow }) {
 	}
 	const review = mainReview(row.reviews);
 	return (
-		<a href={review ? `/r/${review.id}` : prPath(row)} className={linkClass}>
+		<a
+			href={review ? `/r/${review.id}` : prPath(row)}
+			onClick={leaveHome}
+			className={linkClass}
+		>
 			{inner}
 		</a>
 	);
@@ -526,6 +530,7 @@ function SubRow({ review }: { review: RowReview }) {
 		>
 			<a
 				href={`/r/${review.id}`}
+				onClick={leaveHome}
 				className="flex min-w-0 items-center gap-1.5 rounded-sm text-ink-soft after:absolute after:inset-0 after:content-[''] hover:text-link focus-visible:outline-2 focus-visible:outline-accent"
 			>
 				{review.pinnedHead ? (

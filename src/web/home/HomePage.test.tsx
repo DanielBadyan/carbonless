@@ -1,14 +1,27 @@
 // @vitest-environment jsdom
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+
+import { QueryClientProvider } from "@tanstack/react-query";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { newQueryClient } from "../queryClient";
 import { HomePage } from "./HomePage";
+import { HOME_STORAGE_KEY, persistHome } from "./homePersist";
 import {
 	ago,
 	fakeApi,
+	held,
 	inOrder,
 	person,
 	renderWithQuery,
+	repoAnswer,
 	row,
 	shownTooltip,
 	view,
@@ -17,7 +30,27 @@ import {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	for (const stop of stops.splice(0)) stop();
+	sessionStorage.clear();
 });
+
+const stops: (() => void)[] = [];
+
+/**
+ * Home in a new page that kept the tab's saved answers, as main.tsx does:
+ * restored before it renders, then saved as they change.
+ */
+async function renderPersisted() {
+	const client = newQueryClient();
+	stops.push(
+		await persistHome(client, { storage: sessionStorage, throttleTime: 0 }),
+	);
+	return render(
+		<QueryClientProvider client={client}>
+			<HomePage />
+		</QueryClientProvider>,
+	);
+}
 
 const section = (name: string) =>
 	screen.getByRole("region", { name: new RegExp(`^${name}`) });
@@ -639,5 +672,104 @@ describe("HomePage", () => {
 		expect(turn).toHaveTextContent("you");
 		await userEvent.hover(turn);
 		expect(await shownTooltip()).toHaveTextContent("No reviewer: request one");
+	});
+
+	it("back on Home, the last visit's rows show at once while they're read again; the answer replaces them in place", async () => {
+		const first = view({ mine: [row({ title: "Old title" })] });
+		fakeApi(first);
+		await renderPersisted();
+		await screen.findByText("Old title");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		// Saved for the tab, as answers come.
+		await waitFor(() =>
+			expect(sessionStorage.getItem(HOME_STORAGE_KEY)).toContain("Old title"),
+		);
+		cleanup();
+
+		// A new page: every read held.
+		const gate = held();
+		const next = view({ mine: [row({ title: "New title" })] });
+		const { calls } = fakeApi(next, {
+			"GET /api/home": async () => {
+				await gate.gate;
+				const { sections: _, repos: __, ...rest } = next;
+				return rest;
+			},
+			"GET /api/home/repos/acme/api": async () => {
+				await gate.gate;
+				return repoAnswer(next, "acme/api");
+			},
+			"GET /api/home/repos/acme/console": async () => {
+				await gate.gate;
+				return repoAnswer(next, "acme/console");
+			},
+		});
+		await renderPersisted();
+		// At once: the rows, their counts, the busy spinner; no section waits.
+		expect(screen.getByText("Old title")).toBeInTheDocument();
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent("1");
+		expect(screen.queryAllByRole("img", { name: "Loading" })).toHaveLength(0);
+		expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+		// Every read asked again, though younger than its stale time.
+		await waitFor(() =>
+			expect(calls.map((c) => c.url).sort()).toEqual([
+				"/api/home",
+				"/api/home/repos/acme/api",
+				"/api/home/repos/acme/console",
+			]),
+		);
+		act(() => gate.release());
+		await screen.findByText("New title");
+		expect(screen.queryByText("Old title")).toBeNull();
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+	});
+
+	it("back on Home, a failed re-read keeps the saved rows and warns", async () => {
+		fakeApi(view({ mine: [row({ title: "Saved row" })] }));
+		await renderPersisted();
+		await screen.findByText("Saved row");
+		await waitFor(() =>
+			expect(sessionStorage.getItem(HOME_STORAGE_KEY)).toContain("Saved row"),
+		);
+		cleanup();
+
+		fakeApi(view(), {
+			"GET /api/home/repos/acme/api": () =>
+				new Response(JSON.stringify({ error: "gh is down" }), {
+					status: 502,
+				}),
+		});
+		await renderPersisted();
+		expect(screen.getByText("Saved row")).toBeInTheDocument();
+		const status = screen.getByTestId("refresh-status");
+		await waitFor(() =>
+			within(status).getByRole("img", {
+				name: "Refresh failed: acme/api: gh is down",
+			}),
+		);
+		expect(screen.getByText("Saved row")).toBeInTheDocument();
+	});
+
+	it("a first open with nothing saved shows the sections loading, never empty", async () => {
+		const gate = held();
+		const home = view({ mine: [row({ title: "Only" })] });
+		fakeApi(home, {
+			"GET /api/home/repos/acme/api": async () => {
+				await gate.gate;
+				return repoAnswer(home, "acme/api");
+			},
+		});
+		renderWithQuery(<HomePage />);
+		// The view is in, a repo's rows aren't.
+		await screen.findByRole("heading", { name: "My PRs" });
+		const mine = section("Mine");
+		expect(within(mine).getByRole("img", { name: "Loading" })).toBeVisible();
+		expect(within(mine).queryByTestId("section-none")).toBeNull();
+		act(() => gate.release());
+		await screen.findByText("Only");
 	});
 });

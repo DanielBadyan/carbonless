@@ -25,6 +25,8 @@ export interface HelperCommand {
 	command: string;
 	args: string[];
 	env?: Record<string, string>;
+	/** Where it runs (default: the caller's cwd). */
+	cwd?: string;
 }
 
 /** How the helper starts crb again: node on the new package's cli.js. */
@@ -152,11 +154,13 @@ export function runCommand(
 						shell: true,
 						windowsHide: true,
 						env,
+						...(c.cwd ? { cwd: c.cwd } : {}),
 					})
 				: spawn(c.command, c.args, {
 						stdio: ["ignore", "pipe", "pipe"],
 						windowsHide: true,
 						env,
+						...(c.cwd ? { cwd: c.cwd } : {}),
 					});
 		} catch (error) {
 			fail((error as Error).message);
@@ -202,7 +206,10 @@ function versionAt(pkg: string): string | null {
 }
 
 /** The cli.js of the installed `version`, or null when none is found. */
-export function findInstalled(r: Relaunch, version: string): string | null {
+export function findInstalled(
+	r: Pick<Relaunch, "packages" | "scan">,
+	version: string,
+): string | null {
 	const candidates = [...r.packages];
 	for (const dir of r.scan) {
 		let entries: string[] = [];

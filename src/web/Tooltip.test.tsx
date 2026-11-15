@@ -182,6 +182,52 @@ describe("Tooltip dismissal and clicks", () => {
 		}
 	});
 
+	it("a tap elsewhere closes a tap-opened one, though focus stays on it", () => {
+		render(
+			<>
+				<Host onAction={() => {}} />
+				<p>Elsewhere</p>
+			</>,
+		);
+		const button = screen.getByRole("button", { name: "Go" });
+		fireEvent.pointerDown(button, { pointerType: "touch" });
+		act(() => button.focus());
+		expect(screen.getByRole("tooltip")).toBeInTheDocument();
+		// A tap on the trigger itself keeps it.
+		fireEvent.pointerDown(button, { pointerType: "touch" });
+		expect(screen.getByRole("tooltip")).toBeInTheDocument();
+		fireEvent.pointerDown(screen.getByText("Elsewhere"), {
+			pointerType: "touch",
+		});
+		expect(screen.queryByRole("tooltip")).toBeNull();
+		expect(button).toHaveFocus();
+	});
+
+	it("a tapped link closes its tip and lets go of focus (it opened elsewhere); a key's keeps both", () => {
+		render(
+			<Tooltip content="What's new" describe={false}>
+				{(trigger) => (
+					<a {...trigger} href="#release" target="_blank" rel="noreferrer">
+						v1
+					</a>
+				)}
+			</Tooltip>,
+		);
+		const link = screen.getByRole("link", { name: "v1" });
+		fireEvent.pointerDown(link, { pointerType: "touch" });
+		act(() => link.focus());
+		expect(screen.getByRole("tooltip", { hidden: true })).toBeVisible();
+		fireEvent.click(link);
+		expect(screen.getByRole("tooltip", { hidden: true })).not.toBeVisible();
+		expect(link).not.toHaveFocus();
+		// Enter on a focused link: the keyboard's, it stays.
+		fireEvent.keyDown(window, { key: "Tab" });
+		act(() => link.focus());
+		fireEvent.click(link);
+		expect(screen.getByRole("tooltip", { hidden: true })).toBeVisible();
+		expect(link).toHaveFocus();
+	});
+
 	it("stays open on mouse leave while keyboard focus is on it", async () => {
 		vi.useRealTimers();
 		const user = userEvent.setup({ delay: null });

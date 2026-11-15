@@ -20,7 +20,7 @@ export function ThreadStatus(props: {
 	 * button that brings the thread back.
 	 */
 	onCounter?: () => void;
-	/** Beside an agent button: 40px tall on a phone, as it is. */
+	/** With a thread agent: 40px tall on a phone, as the counter is once it is a button (no jump on open). */
 	tall?: boolean;
 }) {
 	const { thread } = props;

@@ -2,6 +2,7 @@ import { AlertIcon, ClockIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
+import { AgentHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import {
 	standingSuggestion,
@@ -74,7 +75,13 @@ export function Conversation(props: {
 }) {
 	const { thread } = props;
 	if (thread.unavailable !== undefined || thread.id === "")
-		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
+		return (
+			<>
+				<UnavailableText reason={thread.unavailable ?? "unreadable"} />
+				{/* Unreadable, the agent is still there: its handle at the bottom. */}
+				<AgentHandleRow />
+			</>
+		);
 	return (
 		<div className="space-y-2">
 			{/* The thread's agent conversation slides over the comments alone. */}
@@ -99,8 +106,10 @@ export function useCanAct(thread: ReviewThread): boolean {
 }
 
 /**
- * The reply box with the Resolve button beside it (below it on a phone):
- * each only where the viewer may, nothing when they may do neither.
+ * The reply box with the Resolve button beside it (below it on a phone
+ * while the box is open) and the thread agent's handle at the row's
+ * right end: each only where the
+ * viewer may; the handle alone when they may do neither.
  */
 export function ThreadActions(props: {
 	thread: ReviewThread;
@@ -116,26 +125,49 @@ export function ThreadActions(props: {
 	const agent = useThreadAgentContext();
 	const asking = agent?.open === true;
 	const canAct = useCanAct(thread);
-	if (!canAct && !asking) return null;
+	// Nothing to do here but the agent: its handle alone, at the row's end.
+	if (!canAct && !asking) return agent ? <AgentHandleRow /> : null;
 	const box = asking ? !thread.resolved : on && thread.viewerCan.reply;
+	// One row on a phone too, closed: the box narrow beside Resolve and the
+	// agent's handle (its hint clipped inside it), the full width once
+	// tapped (owner, 2026-11-15: "One row, narrow box").
+	const stacked = box && boxOpen;
 	return (
 		<div
 			data-testid="thread-actions"
 			data-box-open={(box && boxOpen) || undefined}
-			className={`flex gap-2 ${box && boxOpen ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
+			className={`flex gap-2 ${stacked ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
 		>
 			{box && (
 				<div className="min-w-0 flex-1">
 					<ReplyBox thread={thread} onOpenChange={setBoxOpen} />
 				</div>
 			)}
-			<ResolveButton
-				thread={thread}
-				onToggle={props.onToggle}
-				suggested={
-					standingSuggestion(agent?.conversation, thread) !== undefined
-				}
-			/>
+			{/* Resolve, then the agent's handle at the row's right end. */}
+			<div className="ml-auto flex shrink-0 items-end gap-2 self-end">
+				<ResolveButton
+					thread={thread}
+					onToggle={props.onToggle}
+					suggested={
+						standingSuggestion(agent?.conversation, thread) !== undefined
+					}
+				/>
+				<AgentHandle />
+			</div>
+		</div>
+	);
+}
+
+/**
+ * The bottom row holding only the agent's handle, at its right end: for
+ * a card whose actions row is closed or empty. Nothing without an agent.
+ */
+export function AgentHandleRow() {
+	const agent = useThreadAgentContext();
+	if (!agent) return null;
+	return (
+		<div data-testid="agent-handle-row" className="flex justify-end">
+			<AgentHandle />
 		</div>
 	);
 }

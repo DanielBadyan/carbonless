@@ -247,7 +247,22 @@ export function setRow(client: QueryClient, row: HomeRow) {
 export const prPath = (row: RowKey) =>
 	`/pr/${encodeURIComponent(row.owner)}/${encodeURIComponent(row.repo)}/${row.number}`;
 
+/** What runs as Home is left for another page (homePersist's save). */
+const leaving = new Set<() => void>();
+
+/** Runs `fn` whenever Home is left by a row or the open box; returns its removal. */
+export function onLeaveHome(fn: () => void): () => void {
+	leaving.add(fn);
+	return () => leaving.delete(fn);
+}
+
+/** Home is about to load another page: a row's link, the open box. */
+export function leaveHome(): void {
+	for (const fn of leaving) fn();
+}
+
 /** Leaves Home for `path` (`/pr/...` shows the PR loading, then its review). */
 export const goTo = (path: string) => {
+	leaveHome();
 	window.location.assign(path);
 };

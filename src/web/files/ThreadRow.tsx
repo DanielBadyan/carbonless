@@ -13,7 +13,6 @@ import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { AgentUnplaced } from "../agent/AgentUnplaced";
 import { agentStatusQuery } from "../agent/api";
 import { useAgentPlacing } from "../agent/placeable";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
@@ -91,14 +90,6 @@ export function ThreadBlock(props: {
 							tall={agent !== null}
 							onCounter={agent?.open ? agent.close : undefined}
 						/>
-						{agent && (
-							<ThreadAgentButton
-								thread={thread}
-								conversation={agent.conversation}
-								open={agent.open}
-								onToggle={agent.toggle}
-							/>
-						)}
 						{thread.outdated && (
 							<Badge tone="gray" icon={HistoryIcon}>
 								outdated

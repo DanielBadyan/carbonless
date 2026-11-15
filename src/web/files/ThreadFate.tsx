@@ -35,7 +35,7 @@ import type {
 	ReviewThread,
 	ThreadAnchorRef,
 } from "../../shared/types";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -52,6 +52,7 @@ import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
+	AgentHandleRow,
 	COMMENT_SURFACE,
 	commentSurface,
 	ThreadActions,
@@ -453,16 +454,6 @@ export function UnplacedRow(props: {
 				movedTo={props.movedTo}
 				link={props.link}
 				handle={props.handle}
-				agent={
-					agent && (
-						<ThreadAgentButton
-							thread={thread}
-							conversation={agent.conversation}
-							open={agent.open}
-							onToggle={agent.toggle}
-						/>
-					)
-				}
 			>
 				<UnplacedReplies
 					thread={thread}
@@ -494,8 +485,6 @@ export function UnplacedShell(props: {
 	movedTo?: string;
 	link?: ReactNode;
 	handle?: ReactNode;
-	/** The thread's agent button, beside the link. */
-	agent?: ReactNode;
 	testId?: string;
 	children: ReactNode;
 }) {
@@ -601,7 +590,6 @@ export function UnplacedShell(props: {
 					)}
 				</span>
 				{props.link}
-				{props.agent}
 				{thread.resolved && (
 					<Tooltip content="Collapse" describe={false}>
 						{(trigger) => (
@@ -649,6 +637,8 @@ function UnplacedReplies({
 	const replies = useReplyCount(thread, readId);
 	const canAct = useCanAct(thread);
 	const readable = thread.unavailable === undefined && thread.id !== "";
+	const actions = (open || asking) && readable;
+	const more = readable && (replies.n > 0 || canAct);
 	return (
 		<>
 			<AgentCover>
@@ -663,9 +653,10 @@ function UnplacedReplies({
 					</div>
 				)}
 			</AgentCover>
-			{(open || asking) && readable && <ThreadActions thread={thread} />}
-			{readable && (replies.n > 0 || canAct) && (
-				<div className="flex justify-center">
+			{actions && <ThreadActions thread={thread} />}
+			{more ? (
+				// The agent's handle at the row's right end while the actions row is closed.
+				<CentredWithHandle handle={!actions}>
 					<MoreToggle
 						open={open}
 						onClick={() => setOpen((o) => !o)}
@@ -673,7 +664,9 @@ function UnplacedReplies({
 						replies={replies}
 						kind="more"
 					/>
-				</div>
+				</CentredWithHandle>
+			) : (
+				!actions && <AgentHandleRow />
 			)}
 		</>
 	);

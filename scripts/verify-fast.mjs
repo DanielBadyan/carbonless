@@ -178,7 +178,7 @@ const E2E_MAP = [
 	],
 	// crb's self-update: the toast, Global settings, the gear's row to it.
 	[
-		/^src\/(server|shared)\/update|^src\/web\/(UpdateToast|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
+		/^src\/(server|shared)\/update|^src\/web\/(UpdateToast|UpdateByHand|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
 		["update"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
