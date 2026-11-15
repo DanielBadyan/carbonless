@@ -132,7 +132,7 @@ async function setup(
 	const head = p.repo.shas.at(-1) ?? "";
 	const older = p.repo.shas.at(-2) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = threads(head, older);
 		Object.assign(s, scenario);
@@ -314,6 +314,56 @@ test("a thread on an older commit shows on its traced line once placed", async (
 		.filter({ hasText: "From before" });
 	await expect(card).toBeVisible();
 	await expect(card.getByTestId("placement-changed")).toHaveCount(0);
+	await expect(card.getByTestId("placement-fate")).toHaveCount(0);
+});
+
+test("a thread with no commit of its own sits on GitHub's line; an outdated one is listed under its file as outdated", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	// GitHub gave no originalCommit: nothing to trace from but its line now.
+	p.editScenario((s) => {
+		// The test's own PR (the shared crb serve gives each test its number).
+		const graph = s.prs[p.number]?.graphql;
+		if (!graph?.reviewThreads) throw new Error("no PR threads in the scenario");
+		graph.reviewThreads.push(
+			reviewThread({ path: CORE, line: 7, subjectType: "LINE" }, [
+				threadComment({ login: "rev3", text: "No commit here" }),
+			]),
+			reviewThread(
+				{
+					path: CORE,
+					line: null,
+					originalLine: 3,
+					isOutdated: true,
+					subjectType: "LINE",
+				},
+				[threadComment({ login: "rev3", text: "Outdated, no commit" })],
+			),
+		);
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// expand waits for the placements (core.ts's unplaced list).
+	const section = await expand(page, CORE);
+	const bubble = row(section, "new", 7).getByRole("button", {
+		name: "1 comment on line 7",
+	});
+	await expect(bubble).toBeVisible();
+	const unplaced = section.getByTestId("unplaced-thread");
+	await expect(unplaced.filter({ hasText: "No commit here" })).toHaveCount(0);
+	const outdated = unplaced.filter({ hasText: "Outdated, no commit" });
+	await expect(outdated).toHaveAttribute("data-fate", "outdated");
+	await expect(outdated.getByTestId("unplaced-fate")).toHaveText(
+		"GitHub marks the commented line outdated",
+	);
+	await bubble.click();
+	const card = section
+		.getByTestId("files-thread")
+		.filter({ hasText: "No commit here" });
+	await expect(card).toBeVisible();
 	await expect(card.getByTestId("placement-fate")).toHaveCount(0);
 });
 
@@ -620,7 +670,7 @@ test("the open file's comments are read first", async ({
 	pr,
 	startCrb,
 }) => {
-	await setup(pr, { commentsDelayMs: 1500 });
+	const p = await setup(pr, { commentsDelayMs: 1500 });
 	const s = await startCrb();
 	const asked: string[][] = [];
 	page.on("request", (r) => {
@@ -635,9 +685,9 @@ test("the open file's comments are read first", async ({
 	);
 	await expect.poll(() => asked.length).toBeGreaterThan(0);
 	const ids = asked.flat();
-	// T7-5 is util.ts's file comment.
-	expect(ids[0]).toBe("T7-5");
-	await expect.poll(() => asked.flat()).toContain("T7-0");
+	// T<n>-5 is util.ts's file comment.
+	expect(ids[0]).toBe(`T${p.number}-5`);
+	await expect.poll(() => asked.flat()).toContain(`T${p.number}-0`);
 });
 
 test("a commented range is marked on added rows too, unlike a landed line", async ({
@@ -839,7 +889,10 @@ test("an opened thread survives a Refresh", async ({ page, pr, startCrb }) => {
 	).toBeEnabled({
 		timeout: 20_000,
 	});
-	await page.waitForTimeout(500);
+	// Refresh is enabled once the answer is in: a frame later it is drawn.
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => done(null))),
+	);
 	expect(
 		await page.evaluate(() => (window as unknown as { lost: boolean }).lost),
 	).toBe(false);
@@ -877,7 +930,7 @@ test("a thread on a file's last line opens below its no-newline marker", async (
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/end.ts", line: 3, subjectType: "LINE" }, [
@@ -923,7 +976,7 @@ test("a thread deep in a large gap loads only the lines around it", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/big.ts", line: 450, subjectType: "LINE" }, [
@@ -978,7 +1031,7 @@ test("comments of the file opened next go first", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = names.flatMap((path) =>
 			Array.from({ length: 40 }, (_, i) =>
@@ -1055,7 +1108,7 @@ test("below an opened thread the cluster's controls float again", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/long.ts", line: 15, subjectType: "LINE" }, [

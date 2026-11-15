@@ -1,12 +1,19 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { DELETE_UNDO_MS } from "../src/web/threads/threadWrites";
 import {
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	type Pr,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 /**
  * Writes GitHub refuses (the fake gh's `failNext`, used up once) are listed
@@ -39,7 +46,7 @@ async function setup(
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "new.txt", line: 1, subjectType: "LINE" }, [
@@ -78,7 +85,7 @@ interface StoredThread {
 /** The fake gh's threads as stored. */
 function storedThreads(p: Pr): StoredThread[] {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	return (s.prs[7]?.graphql?.reviewThreads ?? []) as StoredThread[];
+	return (s.prs[p.number]?.graphql?.reviewThreads ?? []) as StoredThread[];
 }
 
 /** Comment bodies on GitHub (the fake's), deleted ones left out. */
@@ -190,6 +197,9 @@ const KINDS: Kind[] = [
 				.getByRole("alertdialog", { name: "Delete this comment?" })
 				.getByRole("button", { name: "Delete" })
 				.click();
+			// Sent once its undo window is over (the test installed the clock).
+			await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+			await page.clock.fastForward(DELETE_UNDO_MS);
 		},
 		landed: (p) => !bodies(p).includes("My take"),
 	},
@@ -224,6 +234,7 @@ for (const kind of KINDS) {
 			failNext: { op: kind.op, status: 403, message: "Not allowed here" },
 		});
 		const s = await startCrb();
+		await installClock(page);
 		await page.goto(s.url);
 		await kind.write(page);
 		// Newly refused: the chip, its list open.
@@ -316,6 +327,7 @@ test("a refused delete survives a reload, and its Retry deletes it", async ({
 		failNext: { op: "delete", status: 403, message: "Not allowed here" },
 	});
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	await KINDS[3]?.write(page);
 	await expect(item(page)).toContainText("Delete · new.txt:1");
