@@ -8,7 +8,14 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	render,
+	renderHook,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,14 +26,16 @@ import { parseFilesSearch } from "../files/landing";
 import { parseOverviewSearch } from "../overview/threadLink";
 import { parseSearch, stringifySearch } from "../search";
 import { AgentMarkdown } from "./AgentMarkdown";
-import { AgentThreadCard } from "./AgentThreadCard";
+import { AgentThreadCard, LANDED_MS } from "./AgentThreadCard";
 import { resetAgentWrites } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import {
 	conversationLabel,
 	conversationSearch,
+	LANDING_TTL_MS,
 	requestConversationOpen,
 	resetConversationLanding,
+	usePendingLanding,
 } from "./conversationLinks";
 import { ReRow } from "./ReRow";
 import { stubIntersection } from "./threadAgentFixtures";
@@ -388,14 +397,24 @@ describe("in a conversation", () => {
 		]);
 		const card = await screen.findByTestId("agent-thread");
 		expect(card.dataset.closed).toBe("true");
-		act(() => requestConversationOpen(REQ, REQ_MSG));
-		await waitFor(() =>
-			expect(screen.getByTestId("agent-thread").dataset.closed).toBeUndefined(),
-		);
-		const landed = document.querySelector(`[data-message-id="${REQ_MSG}"]`);
-		await waitFor(() =>
-			expect(landed?.getAttribute("data-landed")).toBe("true"),
-		);
+		// The outline's fade is a timer: fake time, so a slow render can't
+		// outlast it (CLAUDE.md, no wall clock).
+		vi.useFakeTimers();
+		try {
+			act(() => requestConversationOpen(REQ, REQ_MSG));
+			expect(screen.getByTestId("agent-thread").dataset.closed).toBeUndefined();
+			const landed = () =>
+				document
+					.querySelector(`[data-message-id="${REQ_MSG}"]`)
+					?.getAttribute("data-landed");
+			expect(landed()).toBe("true");
+			act(() => vi.advanceTimersByTime(LANDED_MS - 1));
+			expect(landed()).toBe("true");
+			act(() => vi.advanceTimersByTime(1));
+			expect(landed()).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -488,5 +507,36 @@ describe("while the review's files load (CAR-80 fix 2)", () => {
 		await waitFor(() =>
 			expect(router.state.location.pathname).toBe("/r/RV1/files"),
 		);
+	});
+});
+
+describe("a landing no card takes", () => {
+	it("is dropped after LANDING_TTL_MS, so it never opens a card later (CAR-80 nit 9)", () => {
+		vi.useFakeTimers();
+		try {
+			const { result } = renderHook(() => usePendingLanding());
+			act(() => requestConversationOpen(A));
+			expect(result.current?.conversation).toBe(A);
+			act(() => vi.advanceTimersByTime(LANDING_TTL_MS - 1));
+			expect(result.current?.conversation).toBe(A);
+			act(() => vi.advanceTimersByTime(1));
+			expect(result.current).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a newer landing isn't dropped by the older one's timer", () => {
+		vi.useFakeTimers();
+		try {
+			const { result } = renderHook(() => usePendingLanding());
+			act(() => requestConversationOpen(A));
+			act(() => vi.advanceTimersByTime(LANDING_TTL_MS - 10));
+			act(() => requestConversationOpen(B));
+			act(() => vi.advanceTimersByTime(10));
+			expect(result.current?.conversation).toBe(B);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

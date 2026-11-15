@@ -115,6 +115,13 @@ const emit = () => {
 	for (const l of listeners) l();
 };
 
+/**
+ * How long a landing waits to be taken. One no card takes (its
+ * conversation isn't placed in this comparison) is dropped then, so it
+ * never opens that card later, out of the blue.
+ */
+export const LANDING_TTL_MS = 30_000;
+
 /** A page landed on a conversation link: the conversation opens where it shows. */
 export function requestConversationOpen(
 	conversation: string,
@@ -122,12 +129,18 @@ export function requestConversationOpen(
 ): void {
 	if (!ULID.test(conversation)) return;
 	seq += 1;
+	const mine = seq;
 	landing = {
 		conversation,
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
 		seq,
 	};
 	emit();
+	setTimeout(() => {
+		if (landing?.seq !== mine) return;
+		landing = null;
+		emit();
+	}, LANDING_TTL_MS);
 }
 
 /** The landing for conversation `id`, until it is taken (`done`). */
