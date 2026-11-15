@@ -1105,6 +1105,11 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expect(setup.getByTestId("join-line")).toBeVisible();
 	await expectNoPageOverflow(page);
 	await setup.getByRole("tab", { name: "Spawn" }).click();
+	// Spawned before: its one-time setup folded (CAR-160), then opened.
+	const fold = setup.getByRole("button", { name: /^One-time setup/ });
+	await expect(fold).toHaveAttribute("aria-expanded", "false");
+	await expectNoPageOverflow(page);
+	await fold.click();
 	await expect(
 		setup.getByRole("radiogroup", { name: "Harness" }),
 	).toBeVisible();
