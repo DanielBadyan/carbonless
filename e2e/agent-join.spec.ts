@@ -162,6 +162,14 @@ function startWatcher(watch: string, token: string): Watcher {
 /** Every watcher a test started: afterEach kills them, whatever the test did. */
 const running = new Set<Watcher>();
 
+/** The spawned agent's prompts after its kickoff (wake-ups, reminders). */
+const wakes = (log: string) =>
+	acpLog(log).filter(
+		(e) =>
+			e.method === "session/prompt" &&
+			!JSON.stringify(e.params).includes('\\"request\\":'),
+	);
+
 test.afterEach(() => {
 	for (const w of running) w.drop();
 	running.clear();
@@ -323,7 +331,8 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
 	// Two status polls later the ACP buddy is still off (the approved join
 	// cleared this review's spawn flag, and Disconnect doesn't set it): the
-	// question waits and the fake agent was never prompted.
+	// question waits and the spawned agent (replaced right after its
+	// kickoff) was never woken for it.
 	for (let i = 0; i < 2; i++) {
 		await page.waitForResponse((r) =>
 			/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
@@ -331,9 +340,7 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	}
 	await expect(card.getByTestId("agent-waiting")).toBeVisible();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	expect(
-		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
-	).toHaveLength(0);
+	expect(wakes(acpLogPath)).toHaveLength(0);
 	// Spawn brings it back, and it answers. With no session joined the chip
 	// opens the modal (no popover Start), so the Spawn goes through the API.
 	await spawnAgent(s.url);
@@ -420,10 +427,8 @@ test("the full loop: the watcher wakes the session for a question, its reply lan
 		"Because the sum is needed.",
 	);
 	await expect(card).toContainText(SESSION.name);
-	// The ACP buddy never answered: it was off from the Approve.
-	expect(
-		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
-	).toHaveLength(0);
+	// The spawned agent never answered: it was stopped at the Approve.
+	expect(wakes(acpLogPath)).toHaveLength(0);
 	// Listening again.
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	// The watcher drops (no line, not crb's doing): reconnecting at once…

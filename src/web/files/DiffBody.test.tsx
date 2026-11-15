@@ -48,6 +48,14 @@ import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
 import type { Placements } from "./threadPlacement";
+import {
+	CHUNK,
+	configureWordWork,
+	markPairs,
+	type Runner,
+	resetWordWork,
+	SYNC_BUDGET_MS,
+} from "./wordWork";
 
 vi.mock("./hiddenLines", async (original) => {
 	const real = await original<typeof import("./hiddenLines")>();
@@ -2286,7 +2294,7 @@ describe("DiffBody: the agent's threads", () => {
 		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
 	});
 
-	it("an agent thread whose line was rewritten since: on the new line with the changed chip and its old lines, as a review thread", async () => {
+	it("an agent thread whose line was rewritten since: on the new line with the changed chip and the code it was asked on, never the lines it sits on now", async () => {
 		const { user } = setup({
 			router: true,
 			threads: [],
@@ -2300,6 +2308,27 @@ describe("DiffBody: the agent's threads", () => {
 						line: 5,
 						startSide: "RIGHT",
 						startLine: 5,
+					},
+					// The code it was asked on (PS1's lines 3–7).
+					code: {
+						anchor: {
+							path: PATH,
+							commit: "e".repeat(40),
+							side: "RIGHT",
+							line: 5,
+							startSide: "RIGHT",
+							startLine: 5,
+							at: "2026-11-07T10:00:00Z",
+						},
+						rows: [3, 4, 5, 6, 7].map((n) => ({
+							kind: "context" as const,
+							oldNo: n,
+							newNo: n,
+							text: n === 5 ? "was five" : `old ${n}`,
+							marked: n === 5,
+						})),
+						source: "clone",
+						snapshot: { same: true },
 					},
 				}),
 			],
@@ -2332,12 +2361,17 @@ describe("DiffBody: the agent's threads", () => {
 		);
 		expect(
 			within(opened)
-				.getAllByTestId("placement-changed-line")
+				.getAllByTestId("original-code-line")
 				.map((l) => l.textContent),
 		).toEqual([
+			expect.stringContaining("old 3"),
+			expect.stringContaining("old 4"),
 			expect.stringContaining("was five"),
-			expect.stringContaining("line 11"),
+			expect.stringContaining("old 6"),
+			expect.stringContaining("old 7"),
 		]);
+		// The line it sits on now is the diff's row, not in the thread.
+		expect(within(opened).queryByText(/line 11/)).toBeNull();
 		expect(within(opened).getByTestId("placement-fate-line")).toHaveTextContent(
 			"Line rewritten",
 		);
@@ -2623,6 +2657,7 @@ describe("DiffBody word marks", () => {
 		showInvisibles.reset();
 		ignoreWhitespace.reset();
 		sideBySide.reset();
+		resetWordWork();
 	});
 
 	/** One hunk: context, then `dels` removed and `adds` added lines, then context. */
@@ -2685,6 +2720,134 @@ describe("DiffBody word marks", () => {
 		await shown("memberCount");
 		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
 		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	/** A word-marks runner whose jobs wait for `release` (or `fail`), keeping what it was sent. */
+	const heldMarks = () => {
+		const sent: (readonly [string, string])[][] = [];
+		let open: () => void = () => {};
+		let refuse: (error: unknown) => void = () => {};
+		const gate = new Promise<void>((resolve, reject) => {
+			open = resolve;
+			refuse = reject;
+		});
+		const runner: Runner = async (pairs) => {
+			sent.push([...pairs]);
+			await gate;
+			return markPairs(pairs);
+		};
+		return {
+			runner,
+			sent,
+			release: () => open(),
+			fail: () => refuse(new Error("no")),
+		};
+	};
+	const pendingSigns = () =>
+		screen.queryAllByRole("img", { name: "Marking changed words" });
+	const failedSigns = () =>
+		screen.queryAllByRole("img", { name: "Couldn't mark changed words" });
+	const code = (kind: string) =>
+		rowOf(kind).querySelector('td[data-testid="code"]') as HTMLElement;
+
+	// CAR-135: a pair too costly to mark in render is marked later.
+	it("shows a pair's lines with a spinner in the sign's place while its marks are on their way; a toggle keeps them", async () => {
+		const { runner, sent, release } = heldMarks();
+		// Nothing marked in render: every pair is later.
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(words()).toEqual([]);
+		expect(pendingSigns()).toHaveLength(2);
+		// No live region per line: the cell is busy.
+		expect(screen.queryAllByRole("status")).toEqual([]);
+		expect(code("del")).toHaveAttribute("aria-busy", "true");
+		expect(code("add")).toHaveAttribute("aria-busy", "true");
+		release();
+		await waitFor(() =>
+			expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]),
+		);
+		expect(marked(rowOf("del"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(pendingSigns()).toEqual([]);
+		expect(code("add")).not.toHaveAttribute("aria-busy");
+		// Side by side, then Ignore whitespace: marked at once, not sent again.
+		act(() => sideBySide.set(true));
+		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSigns()).toEqual([]);
+		act(() => ignoreWhitespace.set(true));
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSigns()).toEqual([]);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("warns on a pair whose marks failed: no spinner left, no marks", async () => {
+		const { runner, sent, fail } = heldMarks();
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(pendingSigns()).toHaveLength(2);
+		fail();
+		await waitFor(() => expect(failedSigns()).toHaveLength(2));
+		expect(pendingSigns()).toEqual([]);
+		expect(words()).toEqual([]);
+		expect(code("add")).not.toHaveAttribute("aria-busy");
+		// Its line's own: in the sign's place.
+		expect(
+			within(code("add")).getByRole("img", { name: /^Couldn't/ }),
+		).toBeVisible();
+		// Side by side too.
+		act(() => sideBySide.set(true));
+		expect(
+			within(cellOf("RIGHT")).getAllByRole("img", { name: /^Couldn't/ }),
+		).toHaveLength(1);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("stops asking once the diff is gone: a queued chunk is never sent", async () => {
+		const { runner, sent, release } = heldMarks();
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		// One more pair than a chunk holds: two chunks, the second queued.
+		const n = CHUNK + 1;
+		setup({
+			hunks: block(
+				Array.from({ length: n }, (_, i) => `const a${i} = 1;`),
+				Array.from({ length: n }, (_, i) => `const a${i} = 2;`),
+			),
+			clusters: [cluster("c")],
+		});
+		await shown(`const a${CHUNK} = 2;`);
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(sent[0]).toHaveLength(CHUNK);
+		cleanup();
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(sent).toHaveLength(1);
+	});
+
+	it("marks a cheap pair in render, by the budget's clock: no spinner, nothing sent", async () => {
+		const { runner, sent } = heldMarks();
+		// The real budget, on a clock where a pair takes 0.05 ms.
+		let t = 0;
+		let reads = 0;
+		const now = () => {
+			reads++;
+			if (reads % 2 === 0) t += 0.05;
+			return t;
+		};
+		configureWordWork({ budgetMs: SYNC_BUDGET_MS, now, runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSigns()).toEqual([]);
+		expect(sent).toEqual([]);
 	});
 
 	it("pairs a block whose removed and added lines are in two clusters", async () => {
@@ -3218,7 +3381,7 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		expect(contextCalls(calls)).toHaveLength(1);
 	});
 
-	it("a thread bubble on the row opens its thread and loads only around it, never the arrow's lines", async () => {
+	it("a thread bubble on the row opens its thread under the row and loads nothing", async () => {
 		const { calls, user } = setup({
 			hunks: twoHunks(),
 			clusters: twoClusters,
@@ -3232,12 +3395,40 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		fireEvent.pointerMove(bubble);
 		expect(between.dataset.hot).toBe("");
 		await user.click(bubble);
-		await screen.findByText("line 35");
-		// Only the thread's window: not lines 12–31 (↓) nor 40–59 (↑) whole.
-		const loads = contextCalls(calls);
-		expect(loads).toHaveLength(1);
-		expect(loads[0]).not.toContain("newFrom=12&newTo=31");
-		expect(loads[0]).not.toContain("newFrom=40&newTo=59");
+		const opened = await screen.findByTestId("thread-row");
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(bubble).toHaveAttribute("aria-controls", opened.id);
+		// Right under the hidden row, which stays as it was: nothing loaded.
+		expect(between.nextElementSibling).toBe(opened);
+		expect(gapRows()[1]).toBe(between);
+		expect(screen.queryByText("line 35")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
+		// Closing leaves the row as it was.
+		await user.click(bubble);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		expect(bubble).toHaveAttribute("aria-expanded", "false");
+		expect(contextCalls(calls)).toHaveLength(0);
+	});
+
+	it("an agent bubble on the row opens its threads under the row and loads nothing", async () => {
+		const { calls, user } = setup({
+			hunks: twoHunks(),
+			clusters: twoClusters,
+			threads: [],
+			agentThreads: [agentThread(35)],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const bubble = within(between).getByTestId("agent-bubble");
+		await user.click(bubble);
+		const opened = await screen.findByTestId("agent-thread-row");
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(between.nextElementSibling).toBe(opened);
+		expect(screen.queryByText("line 35")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
+		await user.click(bubble);
+		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
 	});
 
 	it("a row with no arrow (its lines loading) doesn't react", async () => {

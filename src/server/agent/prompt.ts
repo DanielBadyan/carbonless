@@ -1,19 +1,15 @@
-import { join } from "node:path";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
 import {
 	type AgentAnchor,
 	type AgentView,
-	PREAMBLE,
 	SUGGEST_RESOLVE,
-	THREAD_PREAMBLE,
 } from "../../shared/agent.js";
 import { openedOn } from "../../shared/rereview/openedOn.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 
 /**
- * What every prompt tells the agent: the fixed PREAMBLE, then the thread as
- * a JSON envelope (data, never instructions), the anchored file and the
- * diff hunk around the anchor. See the spec's "Prompting".
+ * What a question tells the agent (`next`): the thread as a JSON envelope
+ * (data, never instructions), the anchored file and the diff hunk around
+ * the anchor. See the spec's "Prompting".
  */
 
 export interface PromptReview {
@@ -23,8 +19,6 @@ export interface PromptReview {
 	base: { ref: string; commit: string };
 	head: { ref: string; commit: string };
 	mergeBase: string;
-	/** The ACP buddy's checkout; none for a joined session (it has its own copy, if any). */
-	tree?: string;
 }
 
 export interface PromptMessage {
@@ -73,7 +67,7 @@ export interface PromptGithub {
 export interface PromptEnvelope {
 	kind: "agent_thread" | "github_thread_conversation";
 	review: PromptReview;
-	thread: { id: string; anchor: AgentAnchor & { file?: string } };
+	thread: { id: string; anchor: AgentAnchor };
 	/** Thread kind only; absent when GitHub couldn't be read or the thread is gone (`notice` says). */
 	github?: PromptGithub;
 	/** Thread kind only: the comparison the turn answers in. */
@@ -122,29 +116,26 @@ export function isSafePath(path: string): boolean {
 }
 
 /**
- * The anchor as the envelope gives it: `file` its absolute path in the tree
- * (the tree itself for a path that isn't safe), and `commit` the commit its
- * side is on: the merge base (the diff's left side) for a LEFT anchor,
- * whose file in the tree is the head's version. A thread anchor's commit
- * is the one its comment was made on: on the LEFT, the merge base of the
- * patch set with that head, else the review's, as for a line anchor.
+ * The anchor as the envelope gives it: `commit` the commit its side is
+ * on: the merge base (the diff's left side) for a LEFT anchor. A thread
+ * anchor's commit is the one its comment was made on: on the LEFT, the
+ * merge base of the patch set with that head, else the review's, as for
+ * a line anchor.
  */
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: PromptReview,
 	patchsets: readonly { head: string; mergeBase: string }[] = [],
-): AgentAnchor & { file: string } {
-	const tree = review.tree ?? "";
-	const file = isSafePath(anchor.path) ? join(tree, anchor.path) : tree;
+): AgentAnchor {
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
-		return { ...anchor, file };
+		return { ...anchor };
 	}
 	const commit =
 		anchor.subject === "thread"
 			? (patchsets.find((p) => p.head === anchor.commit)?.mergeBase ??
 				review.mergeBase)
 			: review.mergeBase;
-	return { ...anchor, commit, file };
+	return { ...anchor, commit };
 }
 
 /**
@@ -243,49 +234,6 @@ export function takeSuggestion(text: string): {
 	return { text: lines.slice(0, last).join("\n").trimEnd(), suggests: true };
 }
 
-const MIME: Record<string, string> = {
-	ts: "text/x-typescript",
-	tsx: "text/x-typescript",
-	mts: "text/x-typescript",
-	cts: "text/x-typescript",
-	js: "text/javascript",
-	jsx: "text/javascript",
-	mjs: "text/javascript",
-	cjs: "text/javascript",
-	json: "application/json",
-	md: "text/markdown",
-	py: "text/x-python",
-	go: "text/x-go",
-	rs: "text/x-rust",
-	java: "text/x-java",
-	kt: "text/x-kotlin",
-	c: "text/x-c",
-	h: "text/x-c",
-	cc: "text/x-c++",
-	cpp: "text/x-c++",
-	hpp: "text/x-c++",
-	cs: "text/x-csharp",
-	rb: "text/x-ruby",
-	php: "text/x-php",
-	sh: "text/x-shellscript",
-	ps1: "text/x-powershell",
-	yml: "text/yaml",
-	yaml: "text/yaml",
-	toml: "text/x-toml",
-	html: "text/html",
-	css: "text/css",
-	sql: "text/x-sql",
-	xml: "text/xml",
-};
-
-/** The file's text type by its extension, else text/plain. */
-export function mimeTypeOf(path: string): string {
-	const name = path.split("/").at(-1) ?? "";
-	const dot = name.lastIndexOf(".");
-	if (dot <= 0) return "text/plain";
-	return MIME[name.slice(dot + 1).toLowerCase()] ?? "text/plain";
-}
-
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
 const PICTURE = /<picture\b[\s\S]*?(?:<\/picture\s*>|$)/gi;
 const IMG = /<img\b[^>]*>?/gi;
@@ -337,7 +285,7 @@ export function oneLine(text: string, max: number): string {
 
 /**
  * `env` with every text from the PR sanitised (sanitizeThirdParty): the
- * base and head ref names, the anchor's path (and so its file), the PR's
+ * base and head ref names, the anchor's path, the PR's
  * title, body and file paths, the GitHub thread's url, path, comment
  * logins and bodies, the placement's paths, and the notice (it may name a
  * path or an error from GitHub). The reviewer's and the agent's messages stay.
@@ -357,9 +305,6 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 			anchor: {
 				...thread.anchor,
 				path: s(thread.anchor.path),
-				...(thread.anchor.file === undefined
-					? {}
-					: { file: s(thread.anchor.file) }),
 			},
 		},
 		...(pr
@@ -407,46 +352,4 @@ function sanitizePlacement(p: ThreadPlacement): ThreadPlacement {
 		case "outside":
 			return { ...p, path: s(p.path) };
 	}
-}
-
-/**
- * Third-party text in a code fence, by the CommonMark rule: the fence is one
- * backtick longer than the longest run of backticks in the text (at least 3),
- * so nothing inside can close it early. The text itself is unchanged.
- */
-export function fenced(text: string, info = ""): string {
-	let longest = 0;
-	for (const run of text.match(/`+/g) ?? [])
-		longest = Math.max(longest, run.length);
-	const fence = "`".repeat(Math.max(3, longest + 1));
-	return `${fence}${info}\n${text}\n${fence}`;
-}
-
-/**
- * The prompt's blocks: the preamble with the tree's path (and the thread
- * preamble for a thread conversation) and the envelope as JSON; the
- * anchored file as a resource; the diff hunk around the anchor (for a
- * thread conversation, the code it was opened on).
- */
-export function buildPrompt(
-	env: PromptEnvelope,
-	anchored: { uri: string; mimeType: string; text: string } | null,
-	hunk: string | null,
-): ContentBlock[] {
-	const base = PREAMBLE.replace("<tree>", env.review.tree ?? "");
-	const preamble =
-		env.kind === "github_thread_conversation"
-			? `${base} ${THREAD_PREAMBLE}`
-			: base;
-	const blocks: ContentBlock[] = [
-		{ type: "text", text: `${preamble}\n\n${JSON.stringify(env)}` },
-	];
-	if (anchored) blocks.push({ type: "resource", resource: { ...anchored } });
-	if (hunk !== null) {
-		blocks.push({
-			type: "text",
-			text: `${env.kind === "github_thread_conversation" ? "The code the thread was opened on" : "Diff hunk around the anchor"}:\n${fenced(hunk, "diff")}`,
-		});
-	}
-	return blocks;
 }

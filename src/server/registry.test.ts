@@ -3,6 +3,7 @@ import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
 import { prView } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { setServerMcp } from "./agent/host";
 import { parseAsOf } from "./asOf";
 import {
 	RefusedReviewError,
@@ -80,6 +81,7 @@ describe("SessionRegistry", () => {
 				agent: { name: "fake-acp", version: "1.0.0" },
 				hold: ["initialize"],
 			});
+			setServerMcp({ url: "http://127.0.0.1:9/mcp", key: null });
 			try {
 				const { session } = await registry().open({ pr: pr.arg });
 				const host = session.agent;
@@ -96,14 +98,20 @@ describe("SessionRegistry", () => {
 					{ timeout: 20_000, interval: 20 },
 				);
 				releaseAcp(fake.scenario, "initialize");
+				// It starts: its session opens with crb's /mcp (no server
+				// answers there in this test, so it goes no further).
 				await vi.waitFor(
-					async () => expect((await host.status()).state).toBe("ready"),
+					() =>
+						expect(
+							acpLog(fake.log).filter((e) => e.method === "session/new"),
+						).toHaveLength(1),
 					{ timeout: 20_000, interval: 20 },
 				);
 				expect(
 					acpLog(fake.log).filter((e) => e.method === "initialize"),
 				).toHaveLength(1);
 			} finally {
+				setServerMcp(null);
 				await Promise.all(registries.splice(0).map((r) => r.closeAll()));
 				fake.restore();
 			}
@@ -111,6 +119,20 @@ describe("SessionRegistry", () => {
 		},
 		GIT_TEST_TIMEOUTS.testTimeout,
 	);
+
+	it("pageSeen restarts the review agent's page clock (and is a use); touch, as /mcp does, isn't a page", async () => {
+		const r = registry();
+		const { id, session } = await r.open({ pr: pr.arg });
+		const host = session.agent;
+		if (!host) throw new Error("no agent");
+		const seen = vi.spyOn(host, "pageSeen");
+		r.touch(id);
+		expect(seen).not.toHaveBeenCalled();
+		r.pageSeen(id);
+		expect(seen).toHaveBeenCalledTimes(1);
+		r.pageSeen("01k9e6m2q8x4v7c3n5b0h1j2zz");
+		expect(seen).toHaveBeenCalledTimes(1);
+	});
 
 	it("concurrent opens of one PR share one session", async () => {
 		const r = registry();
