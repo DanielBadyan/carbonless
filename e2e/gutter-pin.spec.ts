@@ -259,6 +259,52 @@ test("scrolled sideways, the row scrolls whole and only the cluster's controls f
 	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
 	await expectNoPageOverflow(page);
 
+	// Unscrolled sideways: back in their slot, exactly as they were.
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 0;
+	});
+	await expect(controls).not.toHaveAttribute("data-stuck");
+	expect(await x(controls)).toBe(await x(slot));
+	expect(await xs(cells)).toEqual(before);
+});
+
+test("scrolled sideways and down a long cluster, its controls float at the code's top-left corner", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	await pr(tallFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const line = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const first = line(3);
+	const slot = first.locator("[data-sticky-slot]");
+	const controls = first.locator("[data-sticky-controls]");
+	const box = first.getByTestId("cluster-box-target");
+	const checkbox = first.getByRole("checkbox");
+	const tap = async (l: Locator) => {
+		if (isMobile) await l.tap();
+		else await l.click();
+	};
+	const shot = async (name: string) => {
+		if (shots) {
+			await page.screenshot({
+				path: `${shots}/gutter-${testInfo.project.name}-${name}.png`,
+			});
+		}
+	};
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const scroller = diffScroller(section);
+	const edge = await x(scroller);
+	const slotX = await x(slot);
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
 	// Down the cluster, under the file header: the top-left corner of the code.
 	await underStack(line(20));
 	await expect(controls).toHaveAttribute("data-stuck", "fixed");
@@ -282,12 +328,6 @@ test("scrolled sideways, the row scrolls whole and only the cluster's controls f
 	await expect
 		.poll(async () => Math.abs((await x(controls)) - slotX))
 		.toBeLessThan(1);
-
-	// Back in view and unscrolled: in their slot, exactly as they were.
-	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
-	await expect(controls).not.toHaveAttribute("data-stuck");
-	expect(await x(controls)).toBe(await x(slot));
-	expect(await xs(cells)).toEqual(before);
 });
 
 test("scrolled sideways, the floating controls never cover the rename label", async ({

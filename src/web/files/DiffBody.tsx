@@ -497,7 +497,11 @@ export function numberDigits(data: FileHunks | undefined): number {
  * and `--num-pad`), the controls column `--controls-w`, and `--gutter` the
  * rail and the controls together (a gap row's arrows span them), and
  * `--pair-w` the cluster's two controls side by side (where a file label
- * sticks right of them). Roomy when
+ * sticks right of them). On touch the controls column is one 40px target
+ * wide while every cluster's controls stack (StackControls), two when any
+ * lies side by side (a slot without `data-stacked`: CSS, no measuring), so
+ * the side-by-side view's fixed `col`, the gap's label reserve and the min
+ * widths all count the pair. Roomy when
  * the diff has room; cramped (`data-tight`, useTight: the diff's box under
  * TIGHT_BELOW, or a touch screen) with half the number padding, the
  * controls column at its content, and the sign closer to the code. On
@@ -508,7 +512,7 @@ export function numberDigits(data: FileHunks | undefined): number {
  * wish, and the number pair's 40px tap target counts on them.
  */
 const TABLE_VARS =
-	"[--num-pad:1rem] [--controls-w:2.75rem] data-[tight]:[--num-pad:0.5rem] data-[tight]:pointer-fine:[--controls-w:2.375rem] pointer-coarse:[--controls-w:2.5rem] [--gutter:calc(0.25rem+var(--controls-w))] [--pair-w:2.25rem] pointer-coarse:[--pair-w:5rem]";
+	"[--num-pad:1rem] [--controls-w:2.75rem] data-[tight]:[--num-pad:0.5rem] data-[tight]:pointer-fine:[--controls-w:2.375rem] pointer-coarse:[--controls-w:2.5rem] pointer-coarse:has-[[data-sticky-slot]:not([data-stacked])]:[--controls-w:5rem] [--gutter:calc(0.25rem+var(--controls-w))] [--pair-w:2.25rem] pointer-coarse:[--pair-w:5rem]";
 /** The diff's box narrower than this is cramped (useTight). */
 const TIGHT_BELOW = 640;
 const NUMBER_W = "w-[var(--num-w,3rem)] min-w-[var(--num-w,3rem)]";
@@ -526,7 +530,7 @@ const SIGN_MR = "mr-2 group-data-[tight]/diff:mr-1";
  * has at least four rows and none of its first three has anything under
  * it (a thread's card, a composer, a bubble row, "No newline"), so the
  * cross-off reaches only into its own cluster's empty controls cells.
- * Elsewhere they sit side by side (the column grows to 80px). Decided from
+ * Elsewhere they sit side by side (the column is 80px: TABLE_VARS). Decided from
  * the run's rows when they render (StackControls), never by measuring.
  */
 const STACK_ROWS = 4;
