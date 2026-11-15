@@ -32,6 +32,7 @@ import {
 } from "../agent/placeable";
 import { comparisonView, SendViewProvider } from "../agent/threadAgent";
 import {
+	ApiError,
 	hunksQuery,
 	overviewQuery,
 	placementsQuery,
@@ -56,7 +57,7 @@ import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
-import { FileTree } from "./FileTree";
+import { FileTree, type SidebarTab } from "./FileTree";
 import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
@@ -81,6 +82,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { sidebarKey, useSidebarState } from "./sidebarState";
 import {
 	carriedCount,
 	eyesOf,
@@ -99,8 +101,10 @@ import {
 	PlacementProvider,
 	usePlacementMap,
 } from "./ThreadFate";
+import { openCount, ShowResolvedToggle, ThreadsPanel } from "./ThreadsPanel";
 import { TreeColumn } from "./TreeResizer";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
+import { agentRows, githubRows, type PanelRow } from "./threadRows";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -300,6 +304,12 @@ function useDiffThreads(
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
 	all: ReviewThread[] | undefined;
+	/**
+	 * The read's threads this view lists, wherever they show: those
+	 * deleted here and (on an earlier patch set) those published after it
+	 * left out.
+	 */
+	listed: ReviewThread[] | undefined;
 	failed: Error | null;
 	/** Still on their way: nothing failed and none are in yet. */
 	loading: boolean;
@@ -448,6 +458,7 @@ function useDiffThreads(
 	return {
 		threads,
 		all: view?.threads,
+		listed: visible,
 		failed,
 		loading: !threads && !failed,
 		outside,
@@ -1078,6 +1089,7 @@ export function FilesPage() {
 	const {
 		threads,
 		all: allThreads,
+		listed: listedThreads,
 		failed: threadsFailed,
 		loading: threadsLoading,
 		outside,
@@ -1134,10 +1146,11 @@ export function FilesPage() {
 	// The reviewer's agent threads (their own read, beside GitHub's): the
 	// tree's second dot; the diffs read them from this query's cache.
 	const agentOn = useAgentOn();
-	const agentThreads = useQuery({
+	const agentThreadsRead = useQuery({
 		...agentThreadsQuery,
 		enabled: agentOn,
-	}).data?.threads;
+	});
+	const agentThreads = agentThreadsRead.data?.threads;
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
 	const agentIds = useMemo(
@@ -1238,6 +1251,69 @@ export function FilesPage() {
 
 	// Folded folders are kept per PR, once it's known.
 	const pr = session?.pr;
+	// The tree's Threads tab: every conversation, People's and AI's, each
+	// row going to its thread. Its tab, folds and toggle are kept per PR.
+	const [sidebar, setSidebar] = useSidebarState(pr ? sidebarKey(pr) : null);
+	const shownById = useMemo(
+		() => new Map((threads?.threads ?? []).map((t) => [t.id, t])),
+		[threads],
+	);
+	const peopleRows = useMemo(
+		() => (listedThreads ? githubRows(listedThreads, shownById) : null),
+		[listedThreads, shownById],
+	);
+	// No agent on this review (writes off, or the server has none: 404):
+	// none, known once the overview says so. Until then, loading.
+	const overviewKnown =
+		useQuery({ ...overviewQuery, enabled: false }).data !== undefined;
+	const noAgent =
+		(overviewKnown && !agentOn) ||
+		(agentThreadsRead.error instanceof ApiError &&
+			agentThreadsRead.error.status === 404);
+	const aiFailed = !noAgent && agentThreadsRead.error !== null;
+	const agentShownById = useMemo(
+		() => new Map(agentShown.map((p) => [p.thread.id, p])),
+		[agentShown],
+	);
+	const aiRows = useMemo(() => {
+		if (noAgent) return [];
+		if (!agentThreads) return null;
+		// On an earlier patch set, as the diff shows them: those asked on
+		// it or before the next one started.
+		const kept =
+			threadsCutoff === null
+				? agentThreads
+				: agentThreads.filter(
+						(t) =>
+							t.anchor.commit === agentHead || Date.parse(t.at) < threadsCutoff,
+					);
+		return agentRows(kept, agentShownById, shownById);
+	}, [
+		noAgent,
+		agentThreads,
+		threadsCutoff,
+		agentHead,
+		agentShownById,
+		shownById,
+	]);
+	const peopleFailed = threadsFailed !== null;
+	/** A row picked: its thread in Files changed, as a thread link lands. */
+	const jumpTo = (row: PanelRow) => {
+		setMovedOn(null);
+		if (sheetOpen) setSheetOpen(false);
+		void navigate({
+			to: "/r/$id/files",
+			params: { id },
+			// The comparison stays; the landing is the thread's.
+			search: (prev: FilesSearch) => ({
+				ps: prev.ps,
+				head: prev.head,
+				from: prev.from,
+				...row.target,
+			}),
+			resetScroll: false,
+		});
+	};
 	const tree = data && (
 		<FileTree
 			files={files}
@@ -1255,6 +1331,31 @@ export function FilesPage() {
 			eyesOf={byFile ? (f) => eyesOf(f, byFile.get(f.index)) : undefined}
 			filter={byFile ? { on: eyesOnly, onChange: setEyesOnly } : undefined}
 			find={findMarks ? find.tree : undefined}
+			tabs={{
+				tab: sidebar.tab,
+				onTab: (tab: SidebarTab) => setSidebar({ tab }),
+				open: openCount(peopleRows, aiRows, {
+					people: peopleFailed,
+					ai: aiFailed,
+				}),
+				panel: (
+					<ThreadsPanel
+						people={peopleRows}
+						peopleError={peopleFailed}
+						ai={aiRows}
+						aiError={aiFailed}
+						state={sidebar}
+						onState={setSidebar}
+						onJump={jumpTo}
+					/>
+				),
+				controls: (
+					<ShowResolvedToggle
+						on={sidebar.showResolved}
+						onChange={(showResolved) => setSidebar({ showResolved })}
+					/>
+				),
+			}}
 		/>
 	);
 	// "5 to read": the comparison's unreviewed reworked and new clusters,
