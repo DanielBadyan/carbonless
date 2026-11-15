@@ -3994,7 +3994,13 @@ function HunkRows(props: {
 						</tbody>
 					);
 				}
-				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
+				// Whitespace only: the server's flag on the cluster (its git hunk's
+				// whitespace-only run, CAR-156), or every row of the run paired.
+				if (
+					state &&
+					ignoreWhitespace &&
+					(cluster?.whitespaceOnly || whitespaceOnly(rows))
+				) {
 					// A bubble, a pick, a landed-on line or the find's current hit
 					// (once a step showed it: typing never changes the layout)
 					// must never be hidden by the setting: the cluster stays open
