@@ -3,7 +3,7 @@ import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { agentPlaceable } from "../agent/placeable";
 import { conversation, reviewThread } from "../agent/threadAgentFixtures";
-import { openCount } from "./ThreadsPanel";
+import { threadsCount } from "./ThreadsPanel";
 import { agentRows, githubRows, listedRows } from "./threadRows";
 
 const span = (more: Partial<AgentThread> = {}): AgentThread =>
@@ -106,7 +106,7 @@ describe("agentRows", () => {
 			new Map(),
 			new Map(),
 		);
-		expect(answered?.at).toBe("2026-11-11T10:01:00Z");
+		expect(answered?.at).toBe("2026-11-11T10:03:00Z");
 		expect(answered?.last).toEqual({ kind: "agent", by: "ai" });
 		expect(asked?.at).toBe("2026-11-12T00:00:00Z");
 		// No message: whoever opened it.
@@ -232,7 +232,7 @@ describe("listedRows", () => {
 	});
 });
 
-describe("openCount", () => {
+describe("threadsCount", () => {
 	const people = githubRows(
 		[reviewThread({ id: "a" }), reviewThread({ id: "b", resolved: true })],
 		new Map(),
@@ -242,17 +242,29 @@ describe("openCount", () => {
 		new Map(),
 		new Map(),
 	);
+	const ok = { people: false, ai: false };
 
 	it("counts the unresolved conversations of both regions", () => {
-		expect(openCount(people, ai, { people: false, ai: false })).toBe(2);
+		expect(threadsCount(people, ai, ok)).toEqual({ state: "open", n: 2 });
 	});
 
-	it("is unknown while either region loads, never a partial count", () => {
-		expect(openCount(null, ai, { people: false, ai: false })).toBeNull();
-		expect(openCount(people, null, { people: false, ai: false })).toBeNull();
+	it("is loading while either region loads, never a partial count", () => {
+		expect(threadsCount(null, ai, ok)).toEqual({ state: "loading" });
+		expect(threadsCount(people, null, ok)).toEqual({ state: "loading" });
 	});
 
-	it("counts what came when a region failed", () => {
-		expect(openCount(people, null, { people: false, ai: true })).toBe(1);
+	it("names a failed region rather than counting without it", () => {
+		expect(threadsCount(people, null, { people: false, ai: true })).toEqual({
+			state: "failed",
+			what: "AI",
+		});
+		expect(threadsCount(null, ai, { people: true, ai: false })).toEqual({
+			state: "failed",
+			what: "People",
+		});
+		expect(threadsCount(null, null, { people: true, ai: true })).toEqual({
+			state: "failed",
+			what: "People and AI",
+		});
 	});
 });

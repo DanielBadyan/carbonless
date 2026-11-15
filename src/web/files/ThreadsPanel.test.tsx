@@ -5,7 +5,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView } from "../../shared/types";
 import { conversation, reviewThread } from "../agent/threadAgentFixtures";
-import { FileTree, type SidebarTab } from "./FileTree";
+import { FileTree, type SidebarTab, type ThreadsCount } from "./FileTree";
 import {
 	readSidebar,
 	SIDEBAR_DEFAULT,
@@ -137,7 +137,7 @@ describe("ThreadsPanel", () => {
 	it("folds a region from its header", async () => {
 		const user = userEvent.setup();
 		render(<Panel people={people} ai={ai} />);
-		const header = within(region("AI")).getByRole("button", { name: /AI/ });
+		const header = within(region("AI")).getByRole("button", { name: "AI, 1" });
 		expect(header.getAttribute("aria-expanded")).toBe("true");
 		await user.click(header);
 		expect(header.getAttribute("aria-expanded")).toBe("false");
@@ -156,6 +156,9 @@ describe("ThreadsPanel", () => {
 			const r = region(name);
 			expect(r.getAttribute("aria-busy")).toBe("true");
 			expect(
+				within(r).getByRole("button", { name: `${name}, loading` }),
+			).toBeTruthy();
+			expect(
 				within(r).getByRole("status", { name: `Loading ${name}` }),
 			).toBeTruthy();
 			expect(within(r).queryByTestId("threads-count")).toBeNull();
@@ -169,6 +172,9 @@ describe("ThreadsPanel", () => {
 			within(region("People")).getByTestId("threads-count").textContent,
 		).toBe("0");
 		expect(region("People").textContent).toBe("People0");
+		expect(
+			within(region("People")).getByRole("button", { name: "People, 0" }),
+		).toBeTruthy();
 	});
 
 	it("a failed region says so in its count's place", () => {
@@ -177,6 +183,11 @@ describe("ThreadsPanel", () => {
 			within(region("People")).getByRole("img", { name: "Couldn't load" }),
 		).toBeTruthy();
 		expect(region("People").getAttribute("aria-busy")).toBeNull();
+		expect(
+			within(region("People")).getByRole("button", {
+				name: "People, couldn't load",
+			}),
+		).toBeTruthy();
 	});
 });
 
@@ -195,7 +206,7 @@ const files: FileView[] = [
 	} as unknown as FileView,
 ];
 
-function Tree(props: { open: number | null }) {
+function Tree(props: { count: ThreadsCount }) {
 	const [tab, setTab] = useState<SidebarTab>("files");
 	return (
 		<FileTree
@@ -206,7 +217,7 @@ function Tree(props: { open: number | null }) {
 			tabs={{
 				tab,
 				onTab: setTab,
-				open: props.open,
+				count: props.count,
 				panel: <p>the panel</p>,
 				controls: <button type="button">resolved toggle</button>,
 			}}
@@ -217,7 +228,7 @@ function Tree(props: { open: number | null }) {
 describe("FileTree's tabs", () => {
 	it("switches between Files and Threads, each with its own controls", async () => {
 		const user = userEvent.setup();
-		render(<Tree open={3} />);
+		render(<Tree count={{ state: "open", n: 3 }} />);
 		const tabs = screen.getByRole("tablist", { name: "Sidebar" });
 		const filesTab = within(tabs).getByRole("tab", { name: "Files" });
 		const threadsTab = within(tabs).getByRole("tab", {
@@ -240,8 +251,17 @@ describe("FileTree's tabs", () => {
 	});
 
 	it("the Threads tab spins while its count is unknown, never 0", () => {
-		render(<Tree open={null} />);
+		render(<Tree count={{ state: "loading" }} />);
 		const tab = screen.getByRole("tab", { name: "Threads, loading" });
+		expect(within(tab).queryByTestId("threads-open")).toBeNull();
+	});
+
+	it("the Threads tab names a region that failed, never a count without it", () => {
+		render(<Tree count={{ state: "failed", what: "People" }} />);
+		const tab = screen.getByRole("tab", {
+			name: "Threads, couldn't load People",
+		});
+		expect(within(tab).getByTestId("threads-failed")).toBeTruthy();
 		expect(within(tab).queryByTestId("threads-open")).toBeNull();
 	});
 });

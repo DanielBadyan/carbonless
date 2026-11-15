@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
 	CommentDiscussionIcon,
@@ -858,11 +859,17 @@ function TreeAction(props: {
 /** The sidebar's tabs: the file tree, and the PR's conversations (ThreadsPanel). */
 export type SidebarTab = "files" | "threads";
 
+/** The Threads tab's count: open conversations, or loading, or which region failed. */
+export type ThreadsCount =
+	| { state: "loading" }
+	| { state: "failed"; what: string }
+	| { state: "open"; n: number };
+
 export interface TreeTabs {
 	tab: SidebarTab;
 	onTab: (tab: SidebarTab) => void;
-	/** Open (unresolved) conversations, on the Threads tab; null while they load. */
-	open: number | null;
+	/** What the Threads tab counts (ThreadsPanel's threadsCount). */
+	count: ThreadsCount;
 	/** The Threads tab's panel. */
 	panel: ReactNode;
 	/** The Threads tab's own controls in the bar (Show resolved). */
@@ -877,19 +884,31 @@ function TabButton(props: {
 	panel: string;
 	tab: SidebarTab;
 	selected: boolean;
-	open: number | null;
+	count: ThreadsCount;
 	onSelect: (tab: SidebarTab) => void;
 	onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
 }) {
 	const files = props.tab === "files";
 	const Icon = files ? FileDirectoryIcon : CommentDiscussionIcon;
+	const { count } = props;
 	const name = files
 		? "Files"
-		: props.open === null
+		: count.state === "loading"
 			? "Threads, loading"
-			: `Threads, ${props.open} open`;
+			: count.state === "failed"
+				? `Threads, couldn't load ${count.what}`
+				: `Threads, ${count.n} open`;
 	return (
-		<Tooltip content={files ? "Files" : "Threads"} describe={false}>
+		<Tooltip
+			content={
+				files
+					? "Files"
+					: count.state === "failed"
+						? `Threads: couldn't load ${count.what}`
+						: "Threads"
+			}
+			describe={false}
+		>
 			{(trigger) => (
 				<button
 					type="button"
@@ -911,11 +930,18 @@ function TabButton(props: {
 				>
 					<Icon size={16} aria-hidden />
 					{!files &&
-						(props.open === null ? (
+						(count.state === "loading" ? (
 							<SpinnerIcon size={12} />
+						) : count.state === "failed" ? (
+							<AlertIcon
+								size={12}
+								aria-hidden
+								data-testid="threads-failed"
+								className="text-bad"
+							/>
 						) : (
 							<span data-testid="threads-open" className="tabular-nums">
-								{props.open}
+								{count.n}
 							</span>
 						))}
 				</button>
@@ -1105,7 +1131,7 @@ export function FileTree(props: {
 							panel={panelId}
 							tab={t}
 							selected={shownTab === t}
-							open={tabs.open}
+							count={tabs.count}
 							onSelect={tabs.onTab}
 							onKeyDown={onTabKey}
 						/>

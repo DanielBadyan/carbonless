@@ -522,7 +522,6 @@ export interface ReviewThread {
 	viewerCan: { reply: boolean; resolve: boolean; unresolve: boolean };
 }
 
-/** Someone who commented on a thread. */
 /** A commenter, as a thread's row shows them. */
 export interface ThreadAuthor {
 	login: string;
@@ -531,6 +530,7 @@ export interface ThreadAuthor {
 	bot: boolean;
 }
 
+/** Someone who commented on a thread. */
 export interface ThreadParticipant {
 	login: string;
 	/** Their avatar image ("" when the host gave none). */

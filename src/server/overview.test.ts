@@ -1061,7 +1061,7 @@ describe("mapThreads: the attention set and the anchor", () => {
 		};
 		expect(one(node)?.lastAuthor.login).toBe("octo-author");
 		// As of a cutoff, the unlisted latest is past it: not counted.
-		expect(one(node, { asOf: at(60) })?.lastAuthor.login).toBe("rev");
+		expect(one(node, { asOf: at(59) })?.lastAuthor.login).toBe("rev");
 	});
 
 	it("a bot PR author never joins the set", () => {

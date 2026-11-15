@@ -101,7 +101,7 @@ import {
 	PlacementProvider,
 	usePlacementMap,
 } from "./ThreadFate";
-import { openCount, ShowResolvedToggle, ThreadsPanel } from "./ThreadsPanel";
+import { ShowResolvedToggle, ThreadsPanel, threadsCount } from "./ThreadsPanel";
 import { TreeColumn } from "./TreeResizer";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
 import { agentRows, githubRows, type PanelRow } from "./threadRows";
@@ -1334,7 +1334,7 @@ export function FilesPage() {
 			tabs={{
 				tab: sidebar.tab,
 				onTab: (tab: SidebarTab) => setSidebar({ tab }),
-				open: openCount(peopleRows, aiRows, {
+				count: threadsCount(peopleRows, aiRows, {
 					people: peopleFailed,
 					ai: aiFailed,
 				}),

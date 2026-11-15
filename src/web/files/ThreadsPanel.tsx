@@ -13,6 +13,7 @@ import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { Avatar } from "../threads/people";
+import type { ThreadsCount } from "./FileTree";
 import type { SidebarState } from "./sidebarState";
 import { type LastSpeaker, listedRows, type PanelRow } from "./threadRows";
 
@@ -78,7 +79,7 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 			data-testid="threads-row"
 			data-key={row.key}
 			data-resolved={row.resolved || undefined}
-			className={`flex min-w-0 items-center gap-1 rounded-md pr-1 hover:bg-overlay ${
+			className={`relative flex min-w-0 items-center gap-1 rounded-md pr-1 hover:bg-overlay ${
 				row.resolved ? "opacity-60 hover:opacity-100" : ""
 			}`}
 		>
@@ -105,7 +106,9 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 						{...trigger}
 						aria-label={label}
 						onClick={() => props.onJump(row)}
-						className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 pl-1 text-left text-sm text-ink-soft focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10"
+						// Its area covers the whole row: a tap on the date (which
+						// takes no taps on touch) goes to the thread too.
+						className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 pl-1 text-left text-sm text-ink-soft after:absolute after:inset-0 after:rounded-md focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10"
 					>
 						<Speaker last={row.last} />
 						<span
@@ -161,9 +164,11 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 					</button>
 				)}
 			</Tooltip>
+			{/* Above the row's area with a mouse (its exact date on hover and
+			    focus); on touch a tap goes through it to the thread. */}
 			<RelativeTime
 				iso={row.at}
-				className="shrink-0 text-xs text-muted tabular-nums"
+				className="relative z-[1] shrink-0 text-xs text-muted tabular-nums pointer-coarse:pointer-events-none"
 			/>
 		</li>
 	);
@@ -201,6 +206,13 @@ function Region(props: {
 			<h3 className="m-0">
 				<button
 					type="button"
+					aria-label={`${props.label}, ${
+						listed !== null
+							? listed.length
+							: props.error
+								? "couldn't load"
+								: "loading"
+					}`}
 					aria-expanded={!props.folded}
 					aria-controls={body}
 					onClick={() => props.onFold(!props.folded)}
@@ -227,7 +239,7 @@ function Region(props: {
 				</button>
 			</h3>
 			<div id={body} hidden={props.folded}>
-				{listed !== null && listed.length > 0 && (
+				{!props.folded && listed !== null && listed.length > 0 && (
 					<ul className="mt-0.5 mb-1">
 						{listed.map((row) => (
 							<Row key={row.key} row={row} onJump={props.onJump} />
@@ -287,17 +299,25 @@ export function ThreadsPanel(props: {
 }
 
 /**
- * How many conversations are open (unresolved) across both regions; null
- * while either still loads (a failed one counts none).
+ * What the Threads tab says: how many conversations are open (unresolved)
+ * across both regions; a failed region, by name, over any count (a count
+ * missing a region would read as complete); loading while either still is.
  */
-export function openCount(
+export function threadsCount(
 	people: PanelRow[] | null,
 	ai: PanelRow[] | null,
 	failed: { people: boolean; ai: boolean },
-): number | null {
-	if ((people === null && !failed.people) || (ai === null && !failed.ai))
-		return null;
-	return [...(people ?? []), ...(ai ?? [])].filter((r) => !r.resolved).length;
+): ThreadsCount {
+	const what = [
+		...(failed.people ? ["People"] : []),
+		...(failed.ai ? ["AI"] : []),
+	];
+	if (what.length > 0) return { state: "failed", what: what.join(" and ") };
+	if (people === null || ai === null) return { state: "loading" };
+	return {
+		state: "open",
+		n: [...people, ...ai].filter((r) => !r.resolved).length,
+	};
 }
 
 /** The Threads tab's toggle: resolved conversations listed too (muted), or not. */

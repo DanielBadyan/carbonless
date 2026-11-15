@@ -2,7 +2,12 @@ import type { Locator, Page } from "@playwright/test";
 import { release, reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fixture as agentFixture, ask, CALC, openFile, test } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, openFiles } from "./files-ui";
-import { expect, expectLoadingThen, type PrOptions } from "./fixtures";
+import {
+	expect,
+	expectLoadingThen,
+	installClock,
+	type PrOptions,
+} from "./fixtures";
 
 /**
  * The tree's Threads tab (owner, 2026-11-15): every conversation on the
@@ -101,6 +106,8 @@ test.describe("on GitHub's threads", () => {
 			s.hold = ["threads"];
 		});
 		const s = await startCrb();
+		// The page's clock: a landing's highlight lasts until the test moves it.
+		await installClock(page);
 		await openFiles(page, s.url);
 		let side = await sidebar(page);
 		await tabs(side)
@@ -160,7 +167,7 @@ test.describe("on GitHub's threads", () => {
 		await expect(rowNames(people)).toHaveText(["b.ts:3", "a.ts:2"]);
 
 		// Fold People: its rows go, its count stays.
-		const header = people.getByRole("button", { name: /^People/ });
+		const header = people.getByRole("button", { name: "People, 2" });
 		await header.click();
 		await expect(header).toHaveAttribute("aria-expanded", "false");
 		await expect(people.getByTestId("threads-row")).toHaveCount(0);
@@ -174,13 +181,26 @@ test.describe("on GitHub's threads", () => {
 		).toHaveAttribute("aria-selected", "true");
 		const again = region(side, "People");
 		await expect(
-			again.getByRole("button", { name: /^People/ }),
+			again.getByRole("button", { name: "People, 2" }),
 		).toHaveAttribute("aria-expanded", "false");
-		await again.getByRole("button", { name: /^People/ }).click();
+		await again.getByRole("button", { name: "People, 2" }).click();
 
 		// A row goes to its thread: the file opens, the line lands (the
 		// sheet closes on a phone).
-		await again.getByRole("button", { name: /^src\/deep\/b\.ts:3/ }).click();
+		const jump = again.getByRole("button", { name: /^src\/deep\/b\.ts:3/ });
+		if (narrow(page)) {
+			// On touch a tap on the row's date goes to the thread too (no
+			// tooltip in the way).
+			const date = again
+				.getByTestId("threads-row")
+				.filter({
+					has: page.getByRole("button", { name: /^src\/deep\/b\.ts:3/ }),
+				})
+				.locator("time");
+			const at = await date.boundingBox();
+			if (!at) throw new Error("no date on the row");
+			await page.touchscreen.tap(at.x + at.width / 2, at.y + at.height / 2);
+		} else await jump.click();
 		if (narrow(page)) {
 			await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
 		}
@@ -211,6 +231,7 @@ test.describe("on the reviewer's agent threads", () => {
 	}) => {
 		await pr(agentFixture);
 		const s = await agentCrb();
+		await installClock(page);
 		const section = await openFile(page, s.url, CALC);
 		const card = await ask(page, section, 3, "Why?");
 		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
@@ -232,8 +253,10 @@ test.describe("on the reviewer's agent threads", () => {
 			tabs(side).getByRole("tab", { name: "Threads, 1 open" }),
 		).toBeVisible();
 		await row.click();
-		await expect(
-			section.locator('tr[data-testid="diff-line"][data-new-no="3"]'),
-		).toHaveAttribute("data-landed", "true");
+		const line = section.locator(
+			'tr[data-testid="diff-line"][data-new-no="3"]',
+		);
+		await expect(line).toHaveAttribute("data-landed", "true");
+		await expect(line).toBeInViewport();
 	});
 });
