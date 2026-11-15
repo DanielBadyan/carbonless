@@ -42,6 +42,8 @@ const SERVE_ONLY = ["port", "host", "api-only", "new-key"] as const;
 const CLIENT_ONLY = ["open", "head", "as-of", "viewer"] as const;
 
 async function main(): Promise<void> {
+	// A spawned agent's stdio MCP server (bridge.ts): crb's /mcp over stdio.
+	if (process.argv[2] === "mcp-bridge") return mcpBridge(process.argv.slice(3));
 	const { values, positionals } = parseArgs({
 		allowPositionals: true,
 		allowNegative: true,
@@ -105,6 +107,18 @@ async function main(): Promise<void> {
 		viewer,
 		open: values.open,
 	});
+}
+
+async function mcpBridge(argv: string[]): Promise<void> {
+	const { bridgeArgs, bridgeHeaders, bridgeUrl, runBridge } = await import(
+		"./server/mcp/bridge.js"
+	);
+	const { url } = bridgeArgs(argv);
+	await runBridge({
+		url: bridgeUrl(url, process.env.CRB_MCP_KEY),
+		headers: bridgeHeaders(process.env.CRB_MCP_HEADERS),
+	});
+	process.exit(0);
 }
 
 async function serve(values: {

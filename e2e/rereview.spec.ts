@@ -4,11 +4,14 @@ import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
+	clicksReady,
 	expectNoPageOverflow,
+	fileActionButton,
 	fileSection,
 	marksReady,
 	openFiles,
 	progress,
+	resetFile,
 	rowTop,
 	sideBySide,
 	tapHeight,
@@ -1219,7 +1222,7 @@ const rewriteAndDelete = {
 const unplacedRows = (section: Locator) =>
 	section.getByTestId("unplaced-thread");
 
-test("threads: a rewritten line is changed with its old lines, a deleted one unplaced under its file with its code, in both views; a drag places it and a reload keeps it; the Overview's chips", async ({
+test("threads: a rewritten line is changed with the code it was written on, a deleted one unplaced under its file with its code, in both views; a drag places it and a reload keeps it; the Overview's chips", async ({
 	page,
 	pr,
 	startCrb,
@@ -1289,10 +1292,17 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		await expect(card.getByTestId("placement-changed")).toHaveText(
 			"changed since",
 		);
-		await expect(card.getByTestId("placement-changed-line")).toHaveText([
-			/core 5 changed/,
-			/core 5 reworked/,
-		]);
+		// The code it was written on (PS1's), never the line it sits on now.
+		await expect(card.getByTestId("original-code-label")).toHaveText(
+			"PS1 · src/core.ts · line 5",
+		);
+		await expect(
+			card
+				.getByTestId("original-code-line")
+				.filter({ hasText: "core 5 changed" }),
+		).toHaveAttribute("data-marked", "true");
+		await expect(card.getByTestId("original-code-line")).toHaveCount(5);
+		await expect(card.getByText(/core 5 reworked/)).toHaveCount(0);
 		await expect(card.getByTestId("placement-fate-line")).toContainText(
 			"Line rewritten since PS1",
 		);
@@ -1411,6 +1421,11 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	await expect(card.getByTestId("placement-fate-line")).toContainText(
 		"Line rewritten since PS1",
 	);
+	// Its code pane: PS1's line, never the one it sits on now.
+	await expect(
+		card.getByTestId("thread-code-line").filter({ hasText: "core 5 changed" }),
+	).toHaveCount(1);
+	await expect(card.getByText(/core 5 reworked/)).toHaveCount(0);
 	const fine = page
 		.getByTestId("thread")
 		.filter({ hasText: "util 3 looks fine" });
@@ -2435,20 +2450,35 @@ async function sinceGaps(
 	};
 }
 
-/** Opens core.ts's gap by core 30's thread: the PR's line, unchanged since PS1, with the thread open. */
+/**
+ * Opens core 30's thread from its hidden-lines row (the lines stay hidden),
+ * then loads the gap by its own buttons, up to core 30: the PR's line,
+ * unchanged since PS1, with the thread open on it.
+ */
 async function openCore30(coreS: Locator) {
 	await coreS.getByRole("button", { name: "Expand file" }).click();
-	await coreS
+	const gap = coreS
 		.getByTestId("gap-row")
-		.filter({ hasText: "32 hidden lines" })
+		.filter({ hasText: "32 hidden lines" });
+	await gap
 		.getByRole("button", { name: "1 comment on hidden lines 9–40" })
 		.click(GIT_WAIT);
-	await expect(
-		coreS.locator("tr").filter({ hasText: "core 30 changed" }).first(),
-	).toBeVisible();
-	await expect(
-		coreS.getByTestId("files-thread").filter({ hasText: "Is core 30 needed?" }),
-	).toBeVisible();
+	const thread = coreS
+		.getByTestId("files-thread")
+		.filter({ hasText: "Is core 30 needed?" });
+	await expect(thread).toBeVisible();
+	const core30 = coreS.locator("tr").filter({ hasText: "core 30 changed" });
+	await expect(core30).toHaveCount(0);
+	await expect(gap).toHaveCount(1);
+	// The row's ↓ twice: 9–28, then the rest, 29–40.
+	await gap.getByRole("button", { name: "Load 20 lines below" }).click();
+	await coreS
+		.getByTestId("gap-row")
+		.filter({ hasText: "12 hidden lines" })
+		.getByRole("button", { name: /^Load (all )?12 lines/ })
+		.click();
+	await expect(core30.first()).toBeVisible();
+	await expect(thread).toBeVisible();
 }
 
 test("the since view's gaps load the interdiff's lines: a line the PR added at PS1 and left alone, a thread on it, a file untouched since; a LEFT thread on a line the PR changed stays off its rows", async ({
@@ -2462,7 +2492,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	const { coreS, utilS } = await sinceGaps(page, pr, startCrb);
 
 	// core.ts: the gap below the reworked line holds core 30's thread;
-	// opening it loads that line (the PR's, unchanged since PS1).
+	// its lines load that line (the PR's, unchanged since PS1).
 	await openCore30(coreS);
 	const core30 = coreS
 		.getByTestId("diff-line")
@@ -2472,9 +2502,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	await expect(
 		core30.getByRole("button", { name: "1 comment on line 30" }),
 	).toHaveAttribute("aria-expanded", "true");
-	// The rest of the gap opens by its buttons, every line of it.
-	// (The thread loaded 27–40, near the gap's end; 9–26 and line 1 are left.)
-	await coreS.getByRole("button", { name: "Load all 18 lines" }).click();
+	// The rest of the file opens by its buttons, every line of it.
 	await coreS.getByRole("button", { name: "Load 1 line above" }).click();
 	await expect(coreS.getByTestId("gap-row")).toHaveCount(0);
 	for (const n of [9, 29, 31, 40]) {
@@ -2501,6 +2529,14 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	await whole
 		.getByRole("button", { name: "1 comment on hidden lines 1–10" })
 		.click();
+	await expect(
+		utilS.getByTestId("files-thread").filter({ hasText: "util 3 looks fine" }),
+	).toBeVisible();
+	await expect(whole).toHaveText(/10 hidden lines/);
+	await whole
+		.getByRole("button", { name: /^Load / })
+		.first()
+		.click();
 	const util3 = utilS
 		.getByTestId("diff-line")
 		.filter({ hasText: "util 3 changed" });
@@ -2518,7 +2554,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	).toHaveCount(0);
 });
 
-test("the since view's gaps side by side: core 30's thread opens its gap onto its line", async ({
+test("the since view's gaps side by side: core 30's thread opens under its gap, then on its line", async ({
 	page,
 	pr,
 	startCrb,
@@ -2529,4 +2565,90 @@ test("the since view's gaps side by side: core 30's thread opens its gap onto it
 	await sideBySide(page, true);
 	await openCore30(coreS);
 	await sideBySide(page, false);
+});
+
+/** PS1 also adds src/extra.ts; the next push deletes it: gone since PS1. */
+const extraFixture: PrOptions = {
+	base: fixture.base,
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+				"src/util.ts": edit(util, { 3: "util 3 changed" }),
+				"src/extra.ts": text(["extra 1", "extra 2", "extra 3"]),
+			},
+		},
+	],
+};
+
+test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ marks its pieces reviewed and the counts move, ⊘ crosses them off; a reload keeps it (CAR-155)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(extraFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1 fully reviewed from the closed headers (no move-on).
+	for (const path of ["src/core.ts", "src/extra.ts", "src/util.ts"]) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({ message: "drop extra", files: {}, delete: ["src/extra.ts"] });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const extra = fileSection(page, "src/extra.ts");
+	await expect(extra).toHaveAttribute("data-gone-file", "src/extra.ts");
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expectNoPageOverflow(page);
+
+	// ✓ on the closed header: every piece reviewed, the counts move.
+	const review = fileActionButton(extra, "Mark remaining reviewed");
+	await expect(fileActionButton(extra, "Cross off file")).toBeEnabled();
+	await clicksReady(page, review);
+	await review.click();
+	await expect(fileActionButton(extra, "Unmark reviewed")).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await extra.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(extra)).toHaveCount(1, GIT_WAIT);
+	await expect(boxes(extra)).toBeChecked();
+
+	// Reset, then ⊘: every piece crossed off.
+	await resetFile(page, extra, "Unmark reviewed");
+	await expect(boxes(extra)).not.toBeChecked();
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	const cross = fileActionButton(extra, "Cross off file");
+	await clicksReady(page, cross);
+	await cross.click();
+	await expect(fileActionButton(extra, "Undo cross-off")).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(
+		extra.getByRole("checkbox", { name: "Undo cross-off" }),
+	).toBeVisible();
+	await page.reload();
+	await expect(
+		fileActionButton(fileSection(page, "src/extra.ts"), "Undo cross-off"),
+	).toBeVisible(GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });

@@ -109,6 +109,12 @@ re-read" show only when the engine's answer says so: an identical diff
 with no reworked, new or gone cluster. Approving again on an identical
 diff posts a review only on the reviewer's press.
 
+A carried thread sits where it is placed now, but shows the code it was
+written on (owner, 2026-11-14): a rewritten line's card has its own
+patch set's lines in the "Original Reviewed Change" box, never the lines
+it sits on now (those are the diff's own row); while that code loads, its
+frame.
+
 ## A thread with nothing to trace from sits on GitHub's line
 
 Thread placement traces each thread from the commit it was written on
@@ -585,9 +591,9 @@ question would be on someone else's behalf, or about a past moment.
   resolved ones after the rest, muted, counted nowhere. It keeps its agent
   bubble and card, and never counts as a GitHub thread; otherwise it shows
   as a review thread does (owner, 2026-11-10): a rewritten line's "changed
-  since" chip and old lines, an unplaced one in the review threads' own
-  unplaced row (fate, "near N", Original Reviewed Change, the quiet
-  resolved line). While the placements load, one asked on another head
+  since" chip and the code it was asked on, an unplaced one in the review
+  threads' own unplaced row (fate, "near N", Original Reviewed Change, the
+  quiet resolved line). While the placements load, one asked on another head
   waits: its file's agent bubble and the tree spin, as for comments (never
   outdated first); an answer for another snapshot is asked once more. If
   they fail, the failure shows with a Retry and those threads as
@@ -609,6 +615,10 @@ question would be on someone else's behalf, or about a past moment.
   on that review's pages; Deny, or no answer within 10 minutes, ends the
   request. The access key alone lets a session list reviews, never join
   one (spec 2026-11-10, `docs/faq.md` "Joining a review from a session").
+  For an agent carbonless spawns, pressing Spawn is the approval: its
+  join is approved before it asks, for that review and that process only
+  (a secret in its session's MCP config), and never shows a bar (spec
+  2026-11-13, spawned agent over MCP).
 - **No agent starts in a review the reviewer didn't ask for one in.** A
   configured ACP agent runs in a review only while that review's spawn
   flag is set (`acp-on` in its agent dir, kept across restarts; local
