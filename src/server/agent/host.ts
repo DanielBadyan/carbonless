@@ -18,6 +18,7 @@ import {
 	MAX_OPENED_PER_REQUEST,
 	type OpenAgentThreadRequest,
 	startedBy,
+	REVIEW_PREAMBLE,
 } from "../../shared/agent.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
@@ -44,8 +45,10 @@ import {
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
+	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
+	type PromptReviewEnvelope,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
 	takeSuggestion,
@@ -811,22 +814,6 @@ export class AgentHost {
 		const spawned = this.join.isSpawned();
 		const rejected = spawned ? this.runner.takeNotice(thread.id) : undefined;
 		if (spawned) this.runner.handed(thread.id);
-		const head = facts.review().head.commit;
-		const seen = this.#seen?.since === joined.since ? this.#seen : null;
-		const moved =
-			joinNotices([
-				rejected,
-				seen && seen.head !== head
-					? `The PR's head moved from ${seen.head} to ${head} since your last question.`
-					: undefined,
-			]) ?? undefined;
-		let pr: PromptEnvelope["pr"];
-		if (!seen) {
-			pr = await facts.prFacts().then(
-				(p) => ({ title: p.title, body: p.body, files: p.files }),
-				() => undefined,
-			);
-		}
 		const role = viewer ? await facts.authorOf(viewer) : undefined;
 		const requestText = (o: AgentOrigin) =>
 			threads
@@ -850,11 +837,41 @@ export class AgentHost {
 							text: m.text,
 						},
 		);
+		// The review conversation: generic instructions and its own messages,
+		// no review data (no PR facts, head, file or hunk); the head this
+		// session saw stays as it was.
+		if (thread.anchor.subject === "review") {
+			return {
+				preamble: REVIEW_PREAMBLE,
+				thread: thread.id,
+				replyTo: asked,
+				envelope: sessionReviewTurn(thread, messages, rejected),
+				anchoredFile: null,
+				hunk: null,
+			};
+		}
+		const head = facts.review().head.commit;
+		const seen = this.#seen?.since === joined.since ? this.#seen : null;
+		const moved =
+			joinNotices([
+				rejected,
+				seen && seen.head !== head
+					? `The PR's head moved from ${seen.head} to ${head} since your last question.`
+					: undefined,
+			]) ?? undefined;
+		let pr: PromptCodeEnvelope["pr"];
+		if (!seen) {
+			pr = await facts.prFacts().then(
+				(p) => ({ title: p.title, body: p.body, files: p.files }),
+				() => undefined,
+			);
+		}
 		const turn =
 			thread.anchor.subject === "thread"
 				? await sessionThreadTurn(facts, thread, messages, moved, pr)
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
 		const { envelope } = turn;
+		const anchor = envelope.thread.anchor;
 		// The head this question showed.
 		this.#seen = {
 			since: joined.since,
@@ -870,10 +887,10 @@ export class AgentHost {
 			replyTo: asked,
 			envelope,
 			anchoredFile:
-				turn.anchored && envelope.thread.anchor.subject !== "review"
+				turn.anchored && anchor.subject !== "review"
 					? {
-							path: envelope.thread.anchor.path,
-							commit: envelope.thread.anchor.commit,
+							path: anchor.path,
+							commit: anchor.commit,
 							text: turn.anchored.text,
 						}
 					: null,
@@ -1324,9 +1341,27 @@ export class AgentHost {
 
 /** A joined session's turn: the envelope, the anchored file and the code block. */
 interface SessionTurn {
-	envelope: PromptEnvelope;
+	envelope: PromptCodeEnvelope;
 	anchored: { text: string } | null;
 	hunk: string | null;
+}
+
+/**
+ * The review conversation's question for a joined (or spawned) session:
+ * the thread and its own messages, nothing about the review (owner,
+ * 2026-11-15); `notice` only a refused tool call's reason.
+ */
+function sessionReviewTurn(
+	thread: AgentThreadFold,
+	messages: PromptMessage[],
+	notice: string | undefined,
+): PromptReviewEnvelope {
+	return sanitizeEnvelope({
+		kind: "review_conversation",
+		thread: { id: thread.id, anchor: { subject: "review" } },
+		messages,
+		...(notice ? { notice } : {}),
+	});
 }
 
 /**
@@ -1339,12 +1374,12 @@ async function sessionSpanTurn(
 	thread: AgentThreadFold,
 	messages: PromptMessage[],
 	moved: string | undefined,
-	pr: PromptEnvelope["pr"],
+	pr: PromptCodeEnvelope["pr"],
 ): Promise<SessionTurn> {
 	const review = facts.review();
-	const a = thread.anchor;
+	const a = thread.anchor as AgentSpanAnchor;
 	const notice = joinNotices([
-		thread.orphaned && a.subject !== "review"
+		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
 			: undefined,
 		moved,
@@ -1360,8 +1395,6 @@ async function sessionSpanTurn(
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
-	// The review conversation has no file and no hunk.
-	if (a.subject === "review") return { envelope, anchored: null, hunk: null };
 	const [anchored, hunk] = await Promise.all([
 		facts.anchored(a).catch(() => null),
 		facts.hunk(a).catch(() => null),
@@ -1381,7 +1414,7 @@ async function sessionThreadTurn(
 	thread: AgentThreadFold,
 	messages: PromptMessage[],
 	moved: string | undefined,
-	pr: PromptEnvelope["pr"],
+	pr: PromptCodeEnvelope["pr"],
 ): Promise<SessionTurn> {
 	const anchor = thread.anchor as Extract<AgentAnchor, { subject: "thread" }>;
 	const checked = await facts.checkHead().then(
@@ -1428,7 +1461,7 @@ async function sessionThreadTurn(
 			...(pr ? { pr } : {}),
 		}),
 	);
-	const envelope: PromptEnvelope = env;
+	const envelope: PromptCodeEnvelope = env;
 	const anchored = await facts.anchored(anchor).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }

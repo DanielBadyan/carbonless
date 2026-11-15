@@ -14,6 +14,8 @@ import {
 	JOIN,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
+	REVIEW_PREAMBLE,
+	SUGGEST_RESOLVE,
 } from "../../shared/agent.js";
 import type { ReviewThread, Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
@@ -30,16 +32,25 @@ import {
 	NotHandedError,
 	NotHoldingError,
 	OwnThreadError,
+	type SessionQuestion,
 	SessionTokenError,
 	ThreadUnavailableError,
 	TooManyOpenedError,
 	threadFacts,
 } from "./host.js";
-import type { GithubThreadFacts, PromptPatchset } from "./prompt.js";
+import type {
+	GithubThreadFacts,
+	PromptCodeEnvelope,
+	PromptPatchset,
+} from "./prompt.js";
 import type { RunnerFacts } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+/** A span or GitHub thread question's envelope (not the review conversation's). */
+const codeOf = (q: SessionQuestion | null | undefined) =>
+	q?.envelope as PromptCodeEnvelope | undefined;
 
 // Every git call the host makes, to prove an unsafe anchor makes none.
 const gitCalls = vi.hoisted(() => [] as string[][]);
@@ -484,6 +495,107 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect((await host.threads())[0]).not.toHaveProperty("githubUnknown");
 			expect(threads).not.toHaveBeenCalled();
 		});
+
+		/** Nothing about the review in what next gave: the stub facts' values. */
+		const noReviewData = (q: unknown) => {
+			const json = JSON.stringify(q);
+			for (const leak of [
+				"Cache",
+				"Body",
+				"a.txt",
+				"PRRT_1",
+				"acme/widget",
+				"b".repeat(40),
+				"c".repeat(40),
+				"d".repeat(40),
+				"e".repeat(40),
+			]) {
+				expect(json).not.toContain(leak);
+			}
+		};
+
+		it("next hands out a review question with no review data (joined)", async () => {
+			listGh(false);
+			// A span question first, answered: the session has seen a head.
+			const x = await host.open({ clientId: "c0", text: "Why?", span });
+			const token = await approve();
+			const first = await host.sessionNext(token);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: first?.replyTo as string,
+				text: "Because.",
+			});
+			// The head moves: a review question still names no commit.
+			head = "e".repeat(40);
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			const q = await host.sessionNext(token);
+			expect(q).toMatchObject({
+				preamble: REVIEW_PREAMBLE,
+				thread: t.id,
+				replyTo: t.messages[0]?.id,
+				anchoredFile: null,
+				hunk: null,
+			});
+			expect(q?.envelope).toEqual({
+				kind: "review_conversation",
+				thread: { id: t.id, anchor: { subject: "review" } },
+				messages: [
+					expect.objectContaining({
+						author: { login: "dan", role: "reviewer" },
+						text: "q",
+					}),
+				],
+			});
+			expect(q?.envelope.messages.at(-1)?.text).toBe("q");
+			noReviewData(q);
+		});
+
+		it("next hands out a review question with no review data (spawned)", async () => {
+			listGh(false);
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			const q = await host.sessionNext((o as { token: string }).token);
+			expect(q).toMatchObject({
+				preamble: REVIEW_PREAMBLE,
+				thread: t.id,
+				anchoredFile: null,
+				hunk: null,
+				envelope: {
+					kind: "review_conversation",
+					thread: { id: t.id, anchor: { subject: "review" } },
+				},
+			});
+			expect(q?.envelope.messages.at(-1)?.text).toBe("q");
+			expect(q?.envelope).not.toHaveProperty("review");
+			expect(q?.envelope).not.toHaveProperty("pr");
+			noReviewData(q);
+		});
+
+		it("reply answers the review question", async () => {
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			const answered = await host.sessionReply(token, {
+				thread: t.id,
+				replyTo: q?.replyTo as string,
+				text: `See a.txt:1.\n${SUGGEST_RESOLVE}`,
+			});
+			expect(answered).toMatchObject({ waiting: false, resolved: false });
+			const ai = answered.messages.at(-1);
+			expect(ai).toMatchObject({
+				by: "ai",
+				replyTo: q?.replyTo,
+				text: `See a.txt:1.\n${SUGGEST_RESOLVE}`,
+			});
+			expect(ai).not.toHaveProperty("suggests");
+			expect(await host.sessionWaiting()).toBe(0);
+			expect(await host.sessionNext(token)).toBeNull();
+		});
 	});
 
 	it("a GitHub thread conversation: next gives its envelope (no checkout), and a final [suggest-resolve] line is a suggestion", async () => {
@@ -501,14 +613,14 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(q?.preamble).toContain(JOINED_PREAMBLE);
 		expect(q?.preamble).toContain(JOINED_THREAD_PREAMBLE);
 		expect(q?.preamble).not.toContain("Your checkout");
-		expect(q?.envelope.github).toMatchObject({
+		expect(codeOf(q)?.github).toMatchObject({
 			resolved: false,
 			comments: [{ author: { login: "ann", role: "pr_author" }, body: "Fix?" }],
 		});
-		expect(q?.envelope.current).toBe(head);
-		expect(q?.envelope.view?.right).toBe(PATCHSETS[0]?.head);
+		expect(codeOf(q)?.current).toBe(head);
+		expect(codeOf(q)?.view?.right).toBe(PATCHSETS[0]?.head);
 		// No path into carbonless's checkout, anywhere.
-		expect(q?.envelope.review).not.toHaveProperty("tree");
+		expect(codeOf(q)?.review).not.toHaveProperty("tree");
 		expect(q?.envelope.thread.anchor).not.toHaveProperty("file");
 		expect(JSON.stringify(q)).not.toContain(TREE);
 		// The code the thread was opened on.
@@ -590,7 +702,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(await host.sessionWaiting()).toBe(1);
 		const q2 = await host.sessionNext(token);
 		expect(q2?.thread).toBe(g.id);
-		expect(q2?.envelope.github?.resolved).toBe(true);
+		expect(codeOf(q2)?.github?.resolved).toBe(true);
 		// A reply that is only the marker is empty: refused, nothing stored.
 		await expect(
 			host.sessionReply(token, {
@@ -1095,10 +1207,10 @@ describe("AgentHost with a session joined through MCP", () => {
 				anchoredFile: { path: "a.txt", commit: span.commit, text: "hello\n" },
 				hunk: "@@ -1 +1 @@\n-a\n+b",
 			});
-			expect(q?.envelope.review).not.toHaveProperty("tree");
+			expect(codeOf(q)?.review).not.toHaveProperty("tree");
 			expect(q?.envelope.thread.anchor).not.toHaveProperty("file");
-			expect(q?.envelope.review.head.ref).toBe("feat-x");
-			expect(q?.envelope.pr?.title).toBe("Cache");
+			expect(codeOf(q)?.review.head.ref).toBe("feat-x");
+			expect(codeOf(q)?.pr?.title).toBe("Cache");
 			expect(q?.envelope.messages[0]?.author).toEqual({
 				login: "dan",
 				role: "reviewer",
@@ -1106,7 +1218,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(q?.envelope.notice).toBeUndefined();
 			head = "e".repeat(40);
 			const again = await host.sessionNext(token);
-			expect(again?.envelope.pr).toBeUndefined();
+			expect(codeOf(again)?.pr).toBeUndefined();
 			expect(again?.envelope.notice).toContain("e".repeat(40));
 			const facts = await host.sessionReview(token, true);
 			expect(facts).not.toHaveProperty("tree");

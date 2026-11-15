@@ -14,6 +14,7 @@ import {
 	type AgentStatus,
 	type AgentThread,
 	JOINED_PREAMBLE,
+	REVIEW_PREAMBLE,
 } from "../../shared/agent";
 import { buildApp } from "../app";
 import { SessionRegistry } from "../registry";
@@ -501,6 +502,53 @@ describe("/mcp", () => {
 				}),
 				expect.not.objectContaining({ re: expect.anything() }),
 			]);
+		});
+	});
+
+	it("a review question goes through next and reply over MCP", async () => {
+		const res = await api("/agent/threads", "POST", {
+			clientId: "r1",
+			text: "Were the comments resolved?",
+			review: true,
+		});
+		expect(res.statusCode, res.body).toBe(200);
+		const asked = res.json() as AgentThread;
+		const client = await connect();
+		const a = await join(client);
+		const n = await call(client, "next", { token: a.token });
+		expect(n.error, JSON.stringify(n.value)).toBe(false);
+		expect(n.value).toMatchObject({
+			thread: asked.id,
+			replyTo: asked.messages[0]?.id,
+			preamble: REVIEW_PREAMBLE,
+			envelope: {
+				kind: "review_conversation",
+				thread: { id: asked.id, anchor: { subject: "review" } },
+			},
+			anchoredFile: null,
+			hunk: null,
+		});
+		const json = JSON.stringify(n.value);
+		for (const leak of ["Add widget cache", "a.txt", pr.head()]) {
+			expect(json).not.toContain(leak);
+		}
+		const r = await call(client, "reply", {
+			token: a.token,
+			thread: asked.id,
+			replyTo: asked.messages[0]?.id,
+			text: "Yes: see a.txt:2.",
+		});
+		expect(r.value).toMatchObject({ ok: true, waiting: false });
+		const [t] = await threads();
+		expect(t).toMatchObject({
+			anchor: { subject: "review" },
+			waiting: false,
+			resolved: false,
+		});
+		expect(t?.messages[1]).toMatchObject({
+			by: "ai",
+			text: "Yes: see a.txt:2.",
+			replyTo: asked.messages[0]?.id,
 		});
 	});
 
