@@ -57,7 +57,7 @@ import {
 	type FileLead,
 	READ_ONLY_TIP,
 } from "./DiffBody";
-import { finishes, resetChanges } from "./fileFinish";
+import { finishes, resetChanges, type SinceOnly } from "./fileFinish";
 import { MarkedText } from "./find/MarkedText";
 import { displayPath } from "./find/pathMarks";
 import { KindChip } from "./KindChip";
@@ -645,7 +645,7 @@ export function FileDiff(props: {
 	const mark = (changes: StateChange[]) => {
 		// An earlier patch set, as reviewed, takes no marks.
 		if (readOnly || marksIgnored()) return;
-		const closing = expanded && finishes(file.clusters, changes);
+		const closing = expanded && finishes(file.clusters, changes, sinceOnly);
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
@@ -679,12 +679,12 @@ export function FileDiff(props: {
 		mark([crossOffChange(cluster, piece)]);
 	};
 	// A since-view piece that owns no line of this snapshot: its own mark,
-	// never a cluster's, so it never finishes the file; guarded like one.
+	// never a cluster's; like one, the last thing left finishes the file.
 	const sinceMark = (piece: SincePiece, cross: boolean) => {
-		if (props.since === undefined || readOnly || marksIgnored()) return;
-		save([
+		if (props.since === undefined) return;
+		mark([
 			sinceToggleChange(props.sinceMarks, props.since, file.path, piece, cross),
-		]).catch(() => {});
+		]);
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
 	// In the since view the file's pieces that own no line of its clusters
@@ -698,6 +698,16 @@ export function FileDiff(props: {
 					props.sincePieces ?? [],
 					new Set(file.clusters.map((c) => c.key)),
 				);
+	// What finishing the file waits for besides its clusters (fileFinish.ts).
+	const sinceOnly: SinceOnly | undefined =
+		since === undefined
+			? undefined
+			: {
+					marks: props.sinceMarks,
+					since,
+					path: file.path,
+					pieces: onlyPieces,
+				};
 	const sinceChange = (action: SinceFileAction) =>
 		since === undefined
 			? []

@@ -2592,3 +2592,59 @@ test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ m
 	).toBeVisible(GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });
+
+/** Push 2'': A reworked, B reverted (gone, a removed piece), D new in util.ts. */
+const reworkRevert = {
+	message: "rework and revert",
+	files: {
+		"src/core.ts": edit(core, { 5: "core 5 reworked" }),
+		"src/util.ts": `${edit(util, { 3: "util 3 changed" })}util 11 new\n`,
+	},
+};
+
+test("in the since view, marking a file's last cluster keeps it open while a reverted piece is left; marking the piece moves on to the next file (CAR-159)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, workdir, s, p, reworkRevert);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	await expect(chips(coreS).filter({ hasText: "1 gone" })).toBeVisible();
+	await expand(page, "src/core.ts");
+	const gone = coreS.locator("tbody[data-gone]");
+	await expect(gone).toHaveCount(1);
+	const cluster = coreS
+		.locator("tbody:not([data-gone])")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(cluster).toHaveCount(1);
+
+	// The last cluster: the reverted piece is still left, core.ts stays open.
+	await cluster.click();
+	await expect(cluster).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(
+		coreS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+
+	// The piece, the last thing left: core.ts closes, util.ts opens.
+	await gone.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(
+		coreS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(
+		utilS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+});

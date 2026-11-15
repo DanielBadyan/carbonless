@@ -588,6 +588,91 @@ describe("FileDiff", () => {
 		});
 	});
 
+	it("in the since view, marking the last cluster keeps the file open while a removed piece is left; marking the piece moves on (CAR-159)", async () => {
+		// k1's lines, then a removed piece no cluster owns (old line 7).
+		const sinceHunks: FileHunks = {
+			newLineCount: 50,
+			hunks: [
+				{
+					oldStart: 4,
+					oldCount: 5,
+					newStart: 4,
+					newCount: 4,
+					lines: [
+						ctx(4, 4),
+						{ kind: "del", oldNo: 5, text: "old five", clusterKey: "k1" },
+						{ kind: "add", newNo: 5, text: "new five", clusterKey: "k1" },
+						ctx(6, 6),
+						{ kind: "del", oldNo: 7, text: "gone seven", clusterKey: "g1" },
+						ctx(8, 7),
+					],
+				},
+			],
+			pieces: [
+				{
+					hunk: 0,
+					line: 1,
+					key: "k1",
+					owns: [[0, 2]],
+					old: [[5, 6]],
+					new: [[5, 6]],
+				},
+				{
+					hunk: 0,
+					line: 4,
+					key: "g1",
+					owns: null,
+					old: [[7, 8]],
+					new: [],
+					kind: "removed",
+				},
+			],
+		};
+		const f = file([cluster("k1")]);
+		const onFinished = vi.fn();
+		const { posts, rerender, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			sinceHunks,
+			"clusters",
+			{ onFinished, since: 1, sincePieces: sinceHunks.pieces },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes).toHaveLength(2);
+		// The cluster: the removed piece is still left.
+		await user.click(boxes[0] as HTMLElement);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		expect(onFinished).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+		// The cluster reviewed: the piece is the last thing left.
+		await rerender(file([cluster("k1", { state: "reviewed" })]));
+		const piece = screen.getByText(codeLine("gone seven")).closest("tbody");
+		await user.click(
+			within(piece as HTMLElement).getByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			}),
+		);
+		expect(onFinished).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(posts()).toHaveLength(2));
+		expect(posts()[1]?.body.changes).toEqual([
+			{
+				key: "since:1:src/a.ts",
+				state: "reviewed",
+				sinceMark: {
+					since: 1,
+					path: "src/a.ts",
+					reviewed: { old: [[7, 8]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			},
+		]);
+	});
+
 	it("splits a batch over 1000 clusters into sequential requests", async () => {
 		const many = Array.from({ length: 2500 }, (_, i) => cluster(`k${i}`));
 		const f = file(many);
