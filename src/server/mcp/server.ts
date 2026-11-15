@@ -40,6 +40,11 @@ export interface McpRequestContext {
 	key: string | null;
 	/** The request's remote address: `machine` when the session names none. */
 	remote: string;
+	/**
+	 * The `X-Crb-Spawn` header: the secret crb gave the agent it spawned
+	 * (session/new), which alone collects that agent's pre-approved request.
+	 */
+	spawn?: string;
 }
 
 export interface McpDeps {
@@ -249,7 +254,11 @@ export function createMcpServer(
 					if (!JOIN_REQUEST.test(args.request)) {
 						throw new ToolError("invalid", "Not a join request id");
 					}
-					const o = await host.join.outcome(args.request, JOIN.attachWaitMs);
+					const o = await host.join.outcome(
+						args.request,
+						JOIN.attachWaitMs,
+						ctx.spawn,
+					);
 					if (o.state === "pending") {
 						return {
 							state: "pending",
@@ -272,7 +281,11 @@ export function createMcpServer(
 						};
 					}
 					const token = sessionToken(id, o.token);
-					const watch = watchCommand(ctx.origin, id, token, ctx.key);
+					// crb's own agent is woken over ACP: no watcher.
+					const spawned = host.join.isSpawned();
+					const watch = spawned
+						? null
+						: watchCommand(ctx.origin, id, token, ctx.key);
 					// The token is collected: nothing after this may lose it.
 					let review: Record<string, unknown> | null = null;
 					let waiting: number | null = null;
@@ -285,10 +298,23 @@ export function createMcpServer(
 					} catch (error) {
 						console.warn(`crb: attach: ${(error as Error).message}`);
 					}
+					const unread = review
+						? ""
+						: " The review's facts couldn't be read just now: call review for them.";
+					if (spawned) {
+						return {
+							state: "approved",
+							preamble: JOINED_PREAMBLE,
+							instructions: `You are this review's buddy now. Don't run any watch command: carbonless messages you when a question waits. Then call next; answer the question it gives with reply (thread, replyTo, your answer in Markdown); call next again until it says none waits, and end your turn. Keep the token to yourself: it is this review's only.${unread}`,
+							token,
+							waiting,
+							review,
+						};
+					}
 					return {
 						state: "approved",
 						preamble: JOINED_PREAMBLE,
-						instructions: `You are this review's buddy now. 1) Run \`watch\` as a background shell command (it exits when a question waits for you, or when you are detached). 2) Call next; answer the question it gives with reply (thread, replyTo, your answer in Markdown); call next again until it says none waits. 3) When watch exits, read its line, then repeat from 2 and run watch again. Call detach when you stop. Keep the token to yourself: it is this review's only.${review ? "" : " The review's facts couldn't be read just now: call review for them."}`,
+						instructions: `You are this review's buddy now. 1) Run \`watch\` as a background shell command (it exits when a question waits for you, or when you are detached). 2) Call next; answer the question it gives with reply (thread, replyTo, your answer in Markdown); call next again until it says none waits. 3) When watch exits, read its line, then repeat from 2 and run watch again. Call detach when you stop. Keep the token to yourself: it is this review's only.${unread}`,
 						token,
 						watch,
 						waiting,

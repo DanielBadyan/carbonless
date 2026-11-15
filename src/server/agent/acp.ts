@@ -18,6 +18,7 @@ import type {
 	AgentStop,
 } from "../../shared/agent.js";
 import { inheritedEnv } from "../git.js";
+import { bridgeCommand } from "../mcp/bridge.js";
 import { BUILD } from "../version.js";
 
 type Sdk = typeof import("@agentclientprotocol/sdk");
@@ -93,6 +94,49 @@ export interface AcpSpawn {
 	onExit(code: number | null, signal: string | null): void;
 	/** Stops a start under way (the session closing): killed, AgentStartError "exited". */
 	signal?: AbortSignal;
+	/**
+	 * crb's own `/mcp`, given to the agent at session/new as the server
+	 * `crb`: over HTTP when the agent says it can, else the stdio bridge
+	 * (`crb mcp-bridge`). `url` has no query: the key goes as `?key=` (HTTP)
+	 * or in the bridge's environment, as do the headers. Null: no servers.
+	 */
+	mcp?: McpTarget | null;
+	/** The bridge's command (tests); default bridgeCommand(). */
+	bridge?: { command: string; args: string[] };
+}
+
+/** Where a spawned agent reaches crb's `/mcp`. */
+export interface McpTarget {
+	url: string;
+	key: string | null;
+	headers: { name: string; value: string }[];
+}
+
+/** session/new's `crb` server for `mcp`: HTTP when `http`, else the stdio bridge. */
+export function crbMcpServer(
+	mcp: McpTarget,
+	http: boolean,
+	bridge: { command: string; args: string[] } = bridgeCommand(),
+) {
+	if (http) {
+		const url = new URL(mcp.url);
+		if (mcp.key) url.searchParams.set("key", mcp.key);
+		return {
+			type: "http" as const,
+			name: "crb",
+			url: url.href,
+			headers: mcp.headers.map((h) => ({ ...h })),
+		};
+	}
+	return {
+		name: "crb",
+		command: bridge.command,
+		args: [...bridge.args, "--url", mcp.url],
+		env: [
+			...(mcp.key ? [{ name: "CRB_MCP_KEY", value: mcp.key }] : []),
+			{ name: "CRB_MCP_HEADERS", value: JSON.stringify(mcp.headers) },
+		],
+	};
 }
 
 /** Live agents' process groups: killed when crb exits. */
@@ -158,6 +202,8 @@ interface Started {
 	child: ChildProcess;
 	conn: ClientConnection;
 	info: AgentIdentity;
+	/** initialize said it can reach MCP servers over HTTP. */
+	mcpHttp: boolean;
 	exited: Promise<{ code: number | null; signal: string | null }>;
 	stderr: () => string;
 }
@@ -298,6 +344,7 @@ async function start(
 				child,
 				conn,
 				info,
+				mcpHttp: init.agentCapabilities?.mcpCapabilities?.http === true,
 				exited,
 				stderr,
 			};
@@ -363,8 +410,11 @@ export class AcpAgent {
 	): Promise<AcpAgent> {
 		let session: ActiveSession | null = null;
 		const started = await start(opts, timeoutMs, async (s) => {
+			const mcpServers = opts.mcp
+				? [crbMcpServer(opts.mcp, s.mcpHttp, opts.bridge)]
+				: [];
 			session = await s.conn.agent
-				.buildSession({ cwd: opts.cwd, mcpServers: [] })
+				.buildSession({ cwd: opts.cwd, mcpServers })
 				.start()
 				.catch((error: unknown) => afterBreak(s.conn, error, s.stderr));
 		});
@@ -390,6 +440,14 @@ export class AcpAgent {
 			child.exitCode === null &&
 			child.signalCode === null
 		);
+	}
+
+	/** Whether its process exits within `ms` (it may have already). */
+	exitsWithin(ms: number): Promise<boolean> {
+		return Promise.race([
+			this.started.exited.then(() => true),
+			wait(ms).then(() => false),
+		]);
 	}
 
 	/** The last 2 KiB the agent wrote to stderr. */
