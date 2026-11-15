@@ -119,6 +119,34 @@ describe("ThreadsPanel", () => {
 		expect(region("People").querySelectorAll("time[datetime]").length).toBe(2);
 	});
 
+	it("each row says what it's about beneath; a bar while it's read, never a blank", () => {
+		const rows = githubRows(
+			[
+				reviewThread({ id: "r", excerpt: "Should this expire?" }),
+				reviewThread({
+					id: "l",
+					loaded: false,
+					excerpt: "",
+					lastActivityAt: "2026-01-01T00:00:00Z",
+				}),
+			],
+			new Map(),
+		);
+		render(<Panel people={rows} ai={[]} />);
+		const [read, loading] = within(region("People")).getAllByTestId(
+			"threads-row",
+		);
+		expect(
+			within(read as HTMLElement).getByTestId("threads-row-blurb").textContent,
+		).toBe("Should this expire?");
+		expect(
+			within(loading as HTMLElement).getByTestId("threads-row-blurb-loading"),
+		).toBeTruthy();
+		expect(
+			within(loading as HTMLElement).queryByTestId("threads-row-blurb"),
+		).toBeNull();
+	});
+
 	it("a row goes to its thread", async () => {
 		const user = userEvent.setup();
 		const onJump = vi.fn();
@@ -129,7 +157,7 @@ describe("ThreadsPanel", () => {
 		expect(onJump).toHaveBeenCalledWith(
 			expect.objectContaining({
 				key: "gh:old",
-				target: { path: "src/deep/dir/old.ts" },
+				focus: { id: "old" },
 			}),
 		);
 	});

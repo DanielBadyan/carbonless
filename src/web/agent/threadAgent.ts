@@ -289,6 +289,8 @@ export interface ThreadAgent {
 	open: boolean;
 	toggle: () => void;
 	close: () => void;
+	/** Opens it without moving the focus (the Threads tab's row showed it). */
+	show: () => void;
 	/** The agent button: focus comes back to it on close. */
 	buttonRef: RefObject<HTMLButtonElement | null>;
 	/** The composer's input: focus goes to it on open. */
@@ -369,6 +371,10 @@ export function useThreadAgent(
 			return false;
 		});
 	}, []);
+	const show = useCallback(() => {
+		setFolded(false);
+		setOpen(true);
+	}, []);
 	// The caller's onToggle is usually a fresh closure: kept in a ref, so
 	// the context value changes only when what it says does.
 	const onToggleRef = useRef(options.onToggle);
@@ -388,6 +394,7 @@ export function useThreadAgent(
 						open,
 						toggle,
 						close,
+						show,
 						buttonRef,
 						composerRef,
 						onToggle: hasOnToggle ? onToggle : undefined,
@@ -400,6 +407,7 @@ export function useThreadAgent(
 			open,
 			toggle,
 			close,
+			show,
 			hasOnToggle,
 			onToggle,
 		],

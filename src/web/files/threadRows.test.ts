@@ -4,7 +4,13 @@ import type { ReviewThread } from "../../shared/types";
 import { agentPlaceable } from "../agent/placeable";
 import { conversation, reviewThread } from "../agent/threadAgentFixtures";
 import { threadsCount } from "./ThreadsPanel";
-import { agentRows, githubRows, listedRows } from "./threadRows";
+import {
+	agentBlurb,
+	agentRows,
+	githubRows,
+	listedRows,
+	plainText,
+} from "./threadRows";
 
 const span = (more: Partial<AgentThread> = {}): AgentThread =>
 	conversation({
@@ -61,13 +67,13 @@ describe("githubRows", () => {
 		expect(placed).toMatchObject({
 			path: "new.ts",
 			line: 12,
-			target: { path: "new.ts", line: 12, side: "LEFT", thread: "RT1" },
+			focus: { id: "RT1" },
 		});
 		const [unshown] = githubRows([t], new Map());
 		expect(unshown).toMatchObject({
 			path: "old.ts",
 			line: 4,
-			target: { path: "old.ts" },
+			focus: { id: "RT1" },
 		});
 		// A file comment shows its path with no line.
 		const file = { ...shown, subject: "file" as const, anchor: null };
@@ -75,7 +81,7 @@ describe("githubRows", () => {
 		expect(onFile).toMatchObject({
 			path: "new.ts",
 			line: null,
-			target: { path: "new.ts" },
+			focus: { id: "RT1" },
 		});
 	});
 
@@ -135,15 +141,16 @@ describe("agentRows", () => {
 			key: "ai:A1",
 			path: "moved.ts",
 			line: 30,
-			// Its GitHub thread's bubble opens: the conversation is in its card.
-			target: { path: "moved.ts", line: 30, side: "RIGHT", thread: "RT1" },
+			// Its GitHub thread's card, with the conversation open.
+			focus: { id: "RT1", conversation: "A1" },
 		});
-		// Its GitHub thread shows nowhere: where it was asked.
+		// Its GitHub thread shows nowhere: where it was asked, still that
+		// thread's card (wherever it is listed).
 		const [asked] = agentRows([conversation()], new Map(), new Map());
-		expect(asked?.target).toEqual({
+		expect(asked).toMatchObject({
 			path: "src/cache.ts",
 			line: 4,
-			side: "RIGHT",
+			focus: { id: "RT1", conversation: "A1" },
 		});
 	});
 
@@ -167,7 +174,7 @@ describe("agentRows", () => {
 		expect(agentRows([t], new Map(), new Map())[0]).toMatchObject({
 			path: "src/a.ts",
 			line: 9,
-			target: { path: "src/a.ts", line: 9, side: "RIGHT" },
+			focus: { id: "S1" },
 		});
 	});
 
@@ -266,5 +273,79 @@ describe("threadsCount", () => {
 			state: "failed",
 			what: "People and AI",
 		});
+	});
+});
+
+describe("blurbs", () => {
+	it("a GitHub thread's is its excerpt; loading while unread; why not when gone", () => {
+		const blurb = (more: Partial<ReviewThread>) =>
+			githubRows([reviewThread(more)], new Map())[0]?.blurb;
+		expect(blurb({ excerpt: "Should this expire?" })).toEqual({
+			kind: "text",
+			text: "Should this expire?",
+		});
+		expect(blurb({ loaded: false, excerpt: "" })).toEqual({ kind: "loading" });
+		expect(blurb({ unavailable: "deleted" })).toEqual({
+			kind: "unavailable",
+			text: "Deleted on GitHub",
+		});
+		expect(blurb({ unavailable: "unreadable" })).toEqual({
+			kind: "unavailable",
+			text: "Couldn't be read from GitHub",
+		});
+	});
+
+	it("an agent thread's is the reviewer's first question, as plain text", () => {
+		expect(
+			agentBlurb(
+				span({
+					messages: [
+						{
+							id: "m1",
+							by: "human",
+							at: "2026-11-11T10:00:00Z",
+							text: "## Why  **this**\n\n- does `foo_bar` [link](https://x.y) _here_?",
+						},
+						{
+							id: "m2",
+							by: "ai",
+							at: "2026-11-11T10:01:00Z",
+							text: "Because.",
+						},
+					],
+				}),
+			),
+		).toEqual({
+			kind: "text",
+			text: "Why this does foo_bar link here?",
+		});
+	});
+
+	it("one the agent opened says why it did, else its first message", () => {
+		const opened = span({
+			openedBy: "ai",
+			origin: { request: "Check the **cache** keys" },
+			messages: [
+				{ id: "m1", by: "ai", at: "2026-11-11T10:00:00Z", text: "Found one." },
+			],
+		});
+		expect(agentBlurb(opened)).toEqual({
+			kind: "text",
+			text: "Check the cache keys",
+		});
+		expect(agentBlurb({ ...opened, origin: undefined })).toEqual({
+			kind: "text",
+			text: "Found one.",
+		});
+	});
+
+	it("plain text keeps code and words, drops markup and collapses whitespace", () => {
+		expect(plainText("```ts\nconst a = 1;\n```\n> quoted\n1. item")).toBe(
+			"const a = 1; quoted item",
+		);
+		expect(plainText("<b>x</b>  ![img](u)\t~~y~~")).toBe("x img y");
+		expect(plainText("snake_case_name and 2*3*4")).toBe(
+			"snake_case_name and 2*3*4",
+		);
 	});
 });

@@ -141,6 +141,13 @@ test.describe("on GitHub's threads", () => {
 				name: "src/deep/b.ts:3, last by octo-author",
 			}),
 		).toBeVisible();
+		// Beneath it, what it's about: its first comment's start.
+		await expect(
+			people
+				.getByTestId("threads-row")
+				.first()
+				.getByTestId("threads-row-blurb"),
+		).toHaveText("Why?");
 		await expect(region(side, "AI").getByTestId("threads-count")).toHaveText(
 			"0",
 		);
@@ -204,19 +211,117 @@ test.describe("on GitHub's threads", () => {
 		if (narrow(page)) {
 			await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
 		}
+		// Its card opens and is in view.
 		const section = fileSection(page, B);
-		const landed = section.locator(
-			'tr[data-testid="diff-line"][data-new-no="3"]',
-		);
-		await expect(landed).toHaveAttribute("data-landed", "true");
-		await expect(landed).toBeInViewport();
-		// Its bubble opens: the thread is there to read.
+		const card = section
+			.getByTestId("files-thread")
+			.filter({ hasText: "Because" });
+		await expect(card).toBeInViewport();
 		await expect(
-			landed.getByRole("button", { name: /^2 comments on line 3/ }),
+			section
+				.locator('tr[data-testid="diff-line"][data-new-no="3"]')
+				.getByRole("button", { name: /^2 comments on line 3/ }),
 		).toHaveAttribute("aria-expanded", "true");
+	});
+});
+
+test.describe("every kind of thread opens, in view", () => {
+	const C = "c.ts";
+	const KEEP = "keep.ts";
+	const cLines = Array.from({ length: 40 }, (_, i) => `c ${i + 1}`);
+	const kinds: PrOptions = {
+		base: { [C]: text(cLines), [KEEP]: "keep\n" },
+		files: [
+			{
+				message: "ends of c",
+				files: {
+					[C]: text(
+						cLines.map((l, i) => (i === 1 || i === 37 ? `${l} changed` : l)),
+					),
+				},
+			},
+		],
+	};
+
+	/** Picks a People row by its name, from the sidebar (the sheet on a phone). */
+	async function jump(page: Page, name: RegExp) {
+		const side = await sidebar(page);
+		const tab = tabs(side).getByRole("tab", { name: /^Threads/ });
+		if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
+		await region(side, "People").getByRole("button", { name }).click();
+		if (narrow(page)) {
+			await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
+		}
+	}
+
+	test("a thread in hidden lines, a file comment, a line past the end, one outside the comparison; the same row twice", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		const p = await pr(kinds);
+		const on = { commit: p.head(), diffHunk: "" };
+		const said = (login: string, words: string, minute: number) =>
+			threadComment({
+				login,
+				text: words,
+				createdAt: `2026-01-04T10:${String(minute).padStart(2, "0")}:00Z`,
+				...on,
+			});
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path: C, line: 20, subjectType: "LINE" }, [
+					said("gapper", "Gap note", 1),
+				]),
+				reviewThread({ path: C, line: null, subjectType: "FILE" }, [
+					said("filer", "File note", 2),
+				]),
+				reviewThread({ path: C, line: 500, subjectType: "LINE" }, [
+					said("ender", "Past the end", 3),
+				]),
+				reviewThread({ path: KEEP, line: 1, subjectType: "LINE" }, [
+					said("outsider", "Outside note", 4),
+				]),
+			];
+		});
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		const section = fileSection(page, C);
+		const card = (words: string) =>
+			page.getByTestId("files-thread").filter({ hasText: words });
+
+		// In hidden lines: its run's bubble opens, the lines stay hidden,
+		// no "isn't in this diff".
+		await jump(page, /last by gapper/);
+		await expect(card("Gap note")).toBeInViewport();
+		await expect(section.getByTestId("landing-hint")).toHaveCount(0);
+
+		// The same row again, scrolled away: in view again, still open.
+		await page.evaluate(() => window.scrollTo(0, 0));
+		await jump(page, /last by gapper/);
+		await expect(card("Gap note")).toBeInViewport();
+
+		// A file comment: the file bubble's card.
+		await jump(page, /last by filer/);
+		await expect(card("File note")).toBeInViewport();
+
+		// A line the tracer can't place in the file: its card under the
+		// file's header, with its fate.
+		await jump(page, /last by ender/);
 		await expect(
-			section.getByTestId("files-thread").filter({ hasText: "Because" }),
-		).toBeVisible();
+			section
+				.getByTestId("unplaced-thread")
+				.filter({ hasText: "Past the end" }),
+		).toBeInViewport();
+
+		// Its file not in the comparison: its card after the files.
+		await jump(page, /last by outsider/);
+		await expect(
+			page.getByTestId("unplaced-thread").filter({ hasText: "Outside note" }),
+		).toBeInViewport();
 	});
 });
 
@@ -252,11 +357,79 @@ test.describe("on the reviewer's agent threads", () => {
 		await expect(
 			tabs(side).getByRole("tab", { name: "Threads, 1 open" }),
 		).toBeVisible();
-		await row.click();
-		const line = section.locator(
-			'tr[data-testid="diff-line"][data-new-no="3"]',
-		);
-		await expect(line).toHaveAttribute("data-landed", "true");
-		await expect(line).toBeInViewport();
+		// Its blurb: the question asked.
+		await expect(ai.getByTestId("threads-row-blurb")).toHaveText("Why?");
+		// Its card closed (its bubble), then the row: it opens, in view.
+		if (narrow(page)) {
+			await page
+				.getByRole("dialog", { name: "Files" })
+				.getByRole("button", { name: "Close" })
+				.click();
+		}
+		const bubble = section
+			.locator('tr[data-testid="diff-line"][data-new-no="3"]')
+			.getByTestId("agent-bubble");
+		await bubble.click();
+		await expect(card).toHaveCount(0);
+		await page.evaluate(() => window.scrollTo(0, 0));
+		const again = await sidebar(page);
+		await region(again, "AI")
+			.getByRole("button", { name: /^src\/calc\.ts:3, last by the agent/ })
+			.click();
+		await expect(card).toBeInViewport();
+		await expect(bubble).toHaveAttribute("aria-expanded", "true");
+	});
+	test("an agent conversation on a GitHub thread opens that thread with the conversation, in view", async ({
+		page,
+		pr,
+		agentCrb,
+	}) => {
+		const p = await pr(agentFixture);
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path: CALC, line: 3, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev1",
+						text: "Is total right?",
+						createdAt: "2026-01-02T09:00:00Z",
+						commit: p.head(),
+						diffHunk:
+							"@@ -1,3 +1,3 @@\n export const v1 = 1;\n export const v2 = 2;\n-export const v3 = 3;\n+export const total = v1 + v2;",
+					}),
+				]),
+			];
+		});
+		const s = await agentCrb();
+		await installClock(page);
+		const section = await openFile(page, s.url, CALC);
+		const bubble = section
+			.locator('tr[data-testid="diff-line"][data-new-no="3"]')
+			.getByRole("button", { name: /^1 comment on line 3/ });
+		await bubble.click();
+		const thread = section.getByTestId("files-thread");
+		await thread.getByTestId("thread-agent-button").click();
+		const panel = thread.getByTestId("thread-agent-panel");
+		await expect(panel).toHaveAttribute("data-open", "true");
+		await thread.getByRole("textbox", { name: "Ask agent" }).fill("Sure?");
+		await thread.getByRole("button", { name: "Send to agent" }).click();
+		await expect(panel.getByTestId("agent-message-ai")).toHaveText("ok");
+		// Both closed: the conversation, then the thread.
+		await thread.getByTestId("thread-agent-button").click();
+		await expect(panel).toHaveAttribute("data-open", "false");
+		await bubble.click();
+		await expect(thread).toHaveCount(0);
+		await page.evaluate(() => window.scrollTo(0, 0));
+
+		const side = await sidebar(page);
+		await tabs(side)
+			.getByRole("tab", { name: /^Threads/ })
+			.click();
+		const ai = region(side, "AI");
+		await expect(ai.getByTestId("threads-row-blurb")).toHaveText("Sure?");
+		await ai.getByRole("button", { name: /^src\/calc\.ts:3/ }).click();
+		await expect(thread).toBeInViewport();
+		await expect(panel).toHaveAttribute("data-open", "true");
 	});
 });

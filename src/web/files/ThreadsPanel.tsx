@@ -10,12 +10,17 @@ import {
 } from "@primer/octicons-react";
 import { useId } from "react";
 import { RelativeTime } from "../RelativeTime";
-import { Spinner } from "../Spinner";
+import { SkeletonBar, Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { Avatar } from "../threads/people";
 import type { ThreadsCount } from "./FileTree";
 import type { SidebarState } from "./sidebarState";
-import { type LastSpeaker, listedRows, type PanelRow } from "./threadRows";
+import {
+	type Blurb as BlurbData,
+	type LastSpeaker,
+	listedRows,
+	type PanelRow,
+} from "./threadRows";
 
 /** What a row's speaker icon says. */
 function speakerText(last: LastSpeaker): string {
@@ -62,6 +67,38 @@ function cuesOf(row: PanelRow): { key: string; text: string }[] {
 }
 
 /**
+ * A row's second line: what the conversation is about (the start of its
+ * first comment, cut to the width); a bar while it is still read, never a
+ * blank; why there is none when GitHub has it gone.
+ */
+function Blurb(props: { id: string; blurb: BlurbData }) {
+	const { blurb } = props;
+	if (blurb.kind === "loading") {
+		return (
+			<span
+				id={props.id}
+				data-testid="threads-row-blurb-loading"
+				className="flex h-4 items-center pl-[1.375rem]"
+			>
+				<span className="sr-only">Loading</span>
+				<SkeletonBar className="w-2/3" />
+			</span>
+		);
+	}
+	return (
+		<span
+			id={props.id}
+			data-testid="threads-row-blurb"
+			className={`block truncate pl-[1.375rem] text-xs text-muted ${
+				blurb.kind === "unavailable" ? "italic" : ""
+			}`}
+		>
+			{blurb.text}
+		</span>
+	);
+}
+
+/**
  * One conversation: who spoke last, where it is (the file name prominent,
  * its folder muted and cut from the left), small cues, and when it last
  * moved. The row goes to the thread in Files changed; the date beside it
@@ -74,12 +111,13 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 	const by = speakerText(row.last);
 	const label = [where, `last by ${by}`, ...cues.map((c) => c.text)].join(", ");
 	const dir = dirName(row.path);
+	const blurbId = useId();
 	return (
 		<li
 			data-testid="threads-row"
 			data-key={row.key}
 			data-resolved={row.resolved || undefined}
-			className={`relative flex min-w-0 items-center gap-1 rounded-md pr-1 hover:bg-overlay ${
+			className={`relative flex min-w-0 items-start gap-1 rounded-md pr-1 hover:bg-overlay ${
 				row.resolved ? "opacity-60 hover:opacity-100" : ""
 			}`}
 		>
@@ -108,59 +146,63 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 						onClick={() => props.onJump(row)}
 						// Its area covers the whole row: a tap on the date (which
 						// takes no taps on touch) goes to the thread too.
-						className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 pl-1 text-left text-sm text-ink-soft after:absolute after:inset-0 after:rounded-md focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10"
+						aria-describedby={blurbId}
+						className="flex min-w-0 flex-1 flex-col rounded-md py-0.5 pl-1 text-left text-sm text-ink-soft after:absolute after:inset-0 after:rounded-md focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10 pointer-coarse:justify-center"
 					>
-						<Speaker last={row.last} />
-						<span
-							data-testid="threads-row-name"
-							className="shrink-0 truncate font-mono text-[0.8125rem] text-ink max-w-[70%]"
-						>
-							{fileName(row.path)}
-							{row.line !== null && (
-								<span className="text-muted">:{row.line}</span>
+						<span className="flex min-w-0 items-center gap-1.5">
+							<Speaker last={row.last} />
+							<span
+								data-testid="threads-row-name"
+								className="shrink-0 truncate font-mono text-[0.8125rem] text-ink max-w-[70%]"
+							>
+								{fileName(row.path)}
+								{row.line !== null && (
+									<span className="text-muted">:{row.line}</span>
+								)}
+							</span>
+							{/* The folder, cut from the left: its end is what tells files apart. */}
+							<span className="min-w-0 flex-1 truncate text-left font-mono text-xs text-faint [direction:rtl]">
+								<bdi>{dir}</bdi>
+							</span>
+							{row.yourTurn && (
+								<span
+									aria-hidden
+									data-cue="your-turn"
+									className="h-2 w-2 shrink-0 rounded-full bg-warn"
+								/>
+							)}
+							{row.waiting && !row.resolved && (
+								<span
+									aria-hidden
+									data-cue="waiting"
+									className="h-2 w-2 shrink-0 rounded-full bg-warn"
+								/>
+							)}
+							{row.unread && (
+								<span
+									aria-hidden
+									data-cue="unread"
+									className="h-2 w-2 shrink-0 rounded-full bg-accent"
+								/>
+							)}
+							{row.outdated && (
+								<HistoryIcon
+									size={12}
+									aria-hidden
+									data-cue="outdated"
+									className="shrink-0 text-muted"
+								/>
+							)}
+							{row.resolved && (
+								<CheckCircleIcon
+									size={12}
+									aria-hidden
+									data-cue="resolved"
+									className="shrink-0 text-ok"
+								/>
 							)}
 						</span>
-						{/* The folder, cut from the left: its end is what tells files apart. */}
-						<span className="min-w-0 flex-1 truncate text-left font-mono text-xs text-faint [direction:rtl]">
-							<bdi>{dir}</bdi>
-						</span>
-						{row.yourTurn && (
-							<span
-								aria-hidden
-								data-cue="your-turn"
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-						)}
-						{row.waiting && !row.resolved && (
-							<span
-								aria-hidden
-								data-cue="waiting"
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-						)}
-						{row.unread && (
-							<span
-								aria-hidden
-								data-cue="unread"
-								className="h-2 w-2 shrink-0 rounded-full bg-accent"
-							/>
-						)}
-						{row.outdated && (
-							<HistoryIcon
-								size={12}
-								aria-hidden
-								data-cue="outdated"
-								className="shrink-0 text-muted"
-							/>
-						)}
-						{row.resolved && (
-							<CheckCircleIcon
-								size={12}
-								aria-hidden
-								data-cue="resolved"
-								className="shrink-0 text-ok"
-							/>
-						)}
+						<Blurb id={blurbId} blurb={row.blurb} />
 					</button>
 				)}
 			</Tooltip>
@@ -168,7 +210,7 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 			    focus); on touch a tap goes through it to the thread. */}
 			<RelativeTime
 				iso={row.at}
-				className="relative z-[1] shrink-0 text-xs text-muted tabular-nums pointer-coarse:pointer-events-none"
+				className="relative z-[1] shrink-0 py-0.5 text-xs text-muted tabular-nums pointer-coarse:pointer-events-none"
 			/>
 		</li>
 	);

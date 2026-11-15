@@ -30,6 +30,7 @@ import {
 	startedBy,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
+import { useFocusCard } from "../files/threadFocus";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -458,6 +459,8 @@ export function AgentThreadCard(props: {
 	const closed = resolved && !expanded;
 	// Span threads too: an accent dot while an answer is unseen, and the
 	// same seen mark the thread panel writes, once it has been in view.
+	// Asked for by the Threads tab: open and scrolled into view.
+	useFocusCard(thread.id, card, () => setExpanded(true));
 	useSeenWriter(thread, !closed, card);
 	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
 	const toggle = (

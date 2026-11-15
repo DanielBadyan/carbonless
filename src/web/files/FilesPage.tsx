@@ -103,6 +103,7 @@ import {
 } from "./ThreadFate";
 import { ShowResolvedToggle, ThreadsPanel, threadsCount } from "./ThreadsPanel";
 import { TreeColumn } from "./TreeResizer";
+import { threadFocus } from "./threadFocus";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
 import { agentRows, githubRows, type PanelRow } from "./threadRows";
 import { useSince } from "./useSince";
@@ -1301,18 +1302,16 @@ export function FilesPage() {
 	const jumpTo = (row: PanelRow) => {
 		setMovedOn(null);
 		if (sheetOpen) setSheetOpen(false);
-		void navigate({
-			to: "/r/$id/files",
-			params: { id },
-			// The comparison stays; the landing is the thread's.
-			search: (prev: FilesSearch) => ({
-				ps: prev.ps,
-				head: prev.head,
-				from: prev.from,
-				...row.target,
-			}),
-			resetScroll: false,
-		});
+		// Its file opens (as a pick does); the card opens wherever it is (a
+		// line, a hidden run, the file bubble, the lists after the files)
+		// and scrolls into view (threadFocus).
+		const file = data ? landingFile(data.files, { path: row.path }) : undefined;
+		// "Needs eyes" hides a fully carried file: its threads show again.
+		if (file && eyesOnly && !files.some((f) => f.index === file.index)) {
+			setEyesOnly(false);
+		}
+		if (file && file.index !== openIndex) openOnly(file.index);
+		threadFocus.request(row.focus);
 	};
 	const tree = data && (
 		<FileTree

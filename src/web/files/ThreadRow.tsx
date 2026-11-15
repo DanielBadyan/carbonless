@@ -5,7 +5,7 @@ import {
 	HistoryIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext } from "react";
+import { type ReactNode, useContext, useRef } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
@@ -25,6 +25,7 @@ import {
 	PlacementChip,
 	usePlacementInfo,
 } from "./ThreadFate";
+import { useFocusCard } from "./threadFocus";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
@@ -48,9 +49,17 @@ export function ThreadBlock(props: {
 			if (resolved) onResolved(thread, from);
 		});
 	const agent = useThreadAgent(thread, { onToggle });
+	// Asked for by the Threads tab: scrolled into view, its agent
+	// conversation open when that was the row.
+	const card = useRef<HTMLElement>(null);
+	useFocusCard(thread.id, card, (f) => {
+		if (f.conversation) agent?.show();
+	});
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<article
+				ref={card}
+				data-thread={thread.id}
 				data-testid="files-thread"
 				aria-label={`${thread.resolved ? "Resolved" : "Unresolved"} thread by ${thread.author}`}
 				className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"

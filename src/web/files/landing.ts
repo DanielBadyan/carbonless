@@ -11,8 +11,6 @@ export interface FilesSearch {
 	line?: number;
 	side?: "LEFT" | "RIGHT";
 	moved?: boolean;
-	/** The review thread landed on (its id): its bubble opens. */
-	thread?: string;
 	/** The comparison (files/comparison.ts): the viewed patch set… */
 	ps?: number;
 	/** …or the viewed head (a commit id), and the comparison base. */
@@ -42,13 +40,6 @@ export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
 	if (raw.side === "LEFT" || raw.side === "RIGHT") out.side = raw.side;
 	if (raw.moved === true || raw.moved === "true" || raw.moved === 1) {
 		out.moved = true;
-	}
-	if (
-		typeof raw.thread === "string" &&
-		raw.thread.length > 0 &&
-		raw.thread.length <= 200
-	) {
-		out.thread = raw.thread;
 	}
 	const ps = positive(raw.ps);
 	if (ps !== undefined) out.ps = ps;

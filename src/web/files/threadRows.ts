@@ -1,7 +1,6 @@
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import type { AgentPlaceable } from "../agent/placeable";
-import type { FilesSearch } from "./landing";
 
 /** Who spoke last in a conversation: a person on GitHub, or the reviewer or the agent. */
 export type LastSpeaker =
@@ -29,42 +28,89 @@ export interface PanelRow {
 	unread: boolean;
 	/** A reviewer's message no answer has seen yet. */
 	waiting: boolean;
-	/** Where the row goes in Files changed (a thread link's landing). */
-	target: FilesSearch;
-}
-
-/** Where a shown thread is, as a landing: its last line, or its file's top. */
-function placedTarget(
-	path: string,
-	subject: "line" | "file",
-	anchor: { line: number; side: "LEFT" | "RIGHT" } | null,
-): { line: number | null; target: FilesSearch } {
-	if (subject === "file" || !anchor) return { line: null, target: { path } };
-	return {
-		line: anchor.line,
-		target: { path, line: anchor.line, side: anchor.side },
-	};
+	/**
+	 * The card the row shows (threadFocus): a review thread's, or an agent
+	 * thread's; a conversation on a review thread is that thread's card
+	 * with the conversation open.
+	 */
+	focus: { id: string; conversation?: string };
+	/** What it's about: the start of its first comment, as plain text. */
+	blurb: Blurb;
 }
 
 /**
+ * A row's second line: the start of its first comment; still loading (a
+ * skeleton, never a blank); or why there is none (GitHub's words).
+ */
+export type Blurb =
+	| { kind: "text"; text: string }
+	| { kind: "loading" }
+	| { kind: "unavailable"; text: string };
+
+/**
+ * Markdown as plain words for a one-line blurb: code fences, images and
+ * HTML tags out, links to their text, emphasis, heading, quote and list
+ * marks dropped, whitespace collapsed. Text only (React escapes it); not a
+ * renderer.
+ */
+export function plainText(markdown: string): string {
+	return (
+		markdown
+			.replace(/```[^\n]*\n?/g, " ")
+			.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/<[^>]+>/g, " ")
+			.replace(/^\s{0,3}(#{1,6}|>+|[-*+]|\d+[.)])\s+/gm, "")
+			.replace(/~~|`/g, "")
+			// Emphasis marks at a word's edge (snake_case keeps its own).
+			.replace(/(^|[\s(])[*_]+(?=\S)/g, "$1")
+			.replace(/(?<=\S)[*_]+(?=$|[\s.,;:!?)])/g, "")
+			.replace(/\s+/g, " ")
+			.trim()
+	);
+}
+
+/** A GitHub thread's blurb: its excerpt once read, else loading or why not. */
+function githubBlurb(t: ReviewThread): Blurb {
+	if (t.unavailable === "deleted")
+		return { kind: "unavailable", text: "Deleted on GitHub" };
+	if (t.unavailable === "unreadable")
+		return { kind: "unavailable", text: "Couldn't be read from GitHub" };
+	if (!t.loaded) return { kind: "loading" };
+	return { kind: "text", text: t.excerpt };
+}
+
+/**
+ * An agent thread's blurb: the reviewer's first question; one the agent
+ * opened, why it did (its first message else).
+ */
+export function agentBlurb(t: AgentThread): Blurb {
+	const source =
+		t.openedBy === "ai"
+			? (t.origin?.request ?? t.messages[0]?.text ?? "")
+			: (t.messages.find((m) => m.by === "human")?.text ??
+				t.messages[0]?.text ??
+				"");
+	return { kind: "text", text: plainText(source) };
+}
+
+/** A shown thread's line: its last line; none on a file, or none known. */
+const lineOf = (
+	subject: "line" | "file",
+	anchor: { line: number } | null,
+): number | null => (subject === "file" || !anchor ? null : anchor.line);
+
+/**
  * Where a GitHub thread is: where it shows in the viewed snapshot
- * (`shown`, by id: shownThreads), else where it was made, opening its
- * file at the top (the file lists it there, or the page says it's not in
- * this diff).
+ * (`shown`, by id: shownThreads), else where it was made.
  */
 function githubPlace(
 	t: ReviewThread,
 	shown: ReadonlyMap<string, ReviewThread>,
-): { path: string; line: number | null; target: FilesSearch } {
+): { path: string; line: number | null } {
 	const s = shown.get(t.id);
-	if (s) {
-		const placed = placedTarget(s.path, s.subject, s.anchor);
-		// On a line: its bubble opens there too.
-		const target =
-			placed.line === null ? placed.target : { ...placed.target, thread: t.id };
-		return { path: s.path, line: placed.line, target };
-	}
-	return { path: t.path, line: t.line, target: { path: t.path } };
+	if (s) return { path: s.path, line: lineOf(s.subject, s.anchor) };
+	return { path: t.path, line: t.line };
 }
 
 /** The PR's review threads as rows, every one (resolved too), unsorted. */
@@ -76,6 +122,8 @@ export function githubRows(
 		key: `gh:${t.id}`,
 		id: t.id,
 		...githubPlace(t, shown),
+		focus: { id: t.id },
+		blurb: githubBlurb(t),
 		at: t.lastActivityAt,
 		resolved: t.resolved,
 		last: {
@@ -91,20 +139,12 @@ export function githubRows(
 	}));
 }
 
-/** Where an agent thread was asked (a file's top without lines). */
-function askedPlace(t: AgentThread): {
-	path: string;
-	line: number | null;
-	target: FilesSearch;
-} {
+/** Where an agent thread was asked. */
+function askedPlace(t: AgentThread): { path: string; line: number | null } {
 	const a = t.anchor;
-	if (a.subject === "file" || a.line === undefined || a.side === undefined) {
-		return { path: a.path, line: null, target: { path: a.path } };
-	}
 	return {
 		path: a.path,
-		line: a.line,
-		target: { path: a.path, line: a.line, side: a.side },
+		line: a.subject === "file" || a.line === undefined ? null : a.line,
 	};
 }
 
@@ -128,12 +168,19 @@ export function agentRows(
 		const place = onGithub
 			? githubPlace(onGithub, new Map([[onGithub.id, onGithub]]))
 			: p
-				? { path: p.path, ...placedTarget(p.path, p.subject, p.anchor) }
+				? { path: p.path, line: lineOf(p.subject, p.anchor) }
 				: askedPlace(t);
+		// On a GitHub thread: that thread's card, its conversation open.
+		const focus =
+			a.subject === "thread"
+				? { id: a.thread, conversation: t.id }
+				: { id: t.id };
 		return {
 			key: `ai:${t.id}`,
 			id: t.id,
 			...place,
+			focus,
+			blurb: agentBlurb(t),
 			at: lastMessage?.at ?? t.at,
 			resolved: t.resolved,
 			last: { kind: "agent", by: lastMessage?.by ?? t.openedBy },

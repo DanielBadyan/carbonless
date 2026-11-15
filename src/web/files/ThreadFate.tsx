@@ -62,6 +62,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
+import { useFocusAmong, useFocusCard } from "./threadFocus";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -444,6 +445,13 @@ export function UnplacedRow(props: {
 	const showMore = useCallback(() => setMore(true), []);
 	// Its agent conversation: opening it shows the composer row too.
 	const agent = useThreadAgent(thread, { onOpen: showMore });
+	// The Threads tab asked for its agent conversation: it opens.
+	useFocusAmong(
+		(id) => id === thread.id,
+		(f) => {
+			if (f.conversation) agent?.show();
+		},
+	);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<UnplacedShell
@@ -491,6 +499,9 @@ export function UnplacedShell(props: {
 	const { thread } = props;
 	const testId = props.testId ?? "unplaced-thread";
 	const [expanded, setExpanded] = useState(false);
+	// Asked for by the Threads tab: expanded and scrolled into view.
+	const card = useRef<HTMLLIElement>(null);
+	useFocusCard(thread.id, card, () => setExpanded(true));
 	const [wasResolved, setWasResolved] = useState(thread.resolved);
 	if (wasResolved !== thread.resolved) {
 		setWasResolved(thread.resolved);
@@ -504,6 +515,7 @@ export function UnplacedShell(props: {
 	if (thread.resolved && !expanded) {
 		return (
 			<li
+				ref={card}
 				data-testid={testId}
 				data-fate={props.fate ?? "unknown"}
 				data-thread={thread.id}
@@ -558,6 +570,7 @@ export function UnplacedShell(props: {
 	}
 	return (
 		<li
+			ref={card}
 			data-testid={testId}
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}

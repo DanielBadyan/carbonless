@@ -79,6 +79,7 @@ import {
 import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
+import { useFocusAmong } from "./threadFocus";
 import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
 	countedFile,
@@ -941,6 +942,19 @@ export function FileDiff(props: {
 		if (landsOn) setAgentOpen(true);
 	}, [landsOn]);
 	const agentThreadsId = useId();
+	// The Threads tab asked for one of the file bubble's threads, or its
+	// agent bubble's (threadFocus): that bubble opens, its card scrolls in.
+	useFocusAmong(
+		(id) => header.some((h) => h.thread.id === id),
+		() => {
+			collapse.toggled("file");
+			setFileOpen(true);
+		},
+	);
+	useFocusAmong(
+		(id) => agentLead.some((t) => t.id === id),
+		() => setAgentOpen(true),
+	);
 	const agentFileItems = useAgentComposers().filter(
 		(c) => c.span.subject === "file" && c.span.path === file.path,
 	);

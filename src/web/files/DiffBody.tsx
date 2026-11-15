@@ -133,10 +133,12 @@ import {
 	TailRow,
 	ThreadRow,
 } from "./ThreadRow";
+import { useFocusAmong } from "./threadFocus";
 import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type Placeable,
 	type Placements,
 	placeThreads,
 	sinceLeftToNew,
@@ -2493,23 +2495,6 @@ export function DiffBody(props: {
 				`[aria-controls="${CSS.escape(`${idBase}-thread-${runBubbleOf.current.get(key) ?? key}`)}"]`,
 			) ?? null,
 	});
-	// A landing on a thread (the Threads tab's row): its bubble opens once
-	// its row is placed, once per landing.
-	const openedFor = useRef(0);
-	const landingThread = props.landing?.thread;
-	const landingSeq = props.landing?.seq ?? 0;
-	const threadKey =
-		landingThread && placement && openedFor.current !== landingSeq
-			? [...placement.end].find(([, list]) =>
-					list.some((t) => t.id === landingThread),
-				)?.[0]
-			: undefined;
-	useEffect(() => {
-		if (threadKey === undefined || openedFor.current === landingSeq) return;
-		openedFor.current = landingSeq;
-		collapse.toggled(threadKey);
-		setOpenThreads((open) => new Set(open).add(threadKey));
-	}, [threadKey, landingSeq, collapse]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
 		for (const k of keys) collapse.toggled(k);
@@ -2707,6 +2692,27 @@ export function DiffBody(props: {
 			setOpenAgent((open) => (open.has(key) ? open : new Set(open).add(key)));
 		}
 	}, [agentEnded, landing]);
+
+	// The Threads tab asked for one of this file's threads (threadFocus):
+	// its line's bubble opens, or its hidden run's (the lines stay hidden),
+	// and its card scrolls into view.
+	useFocusAmong(
+		(id) => focusKey(placement, (t) => t.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(placement, (t) => t.id, f.id);
+			if (!key) return;
+			collapse.toggled(key);
+			setOpenThreads((open) => (open.has(key) ? open : new Set(open).add(key)));
+		},
+	);
+	useFocusAmong(
+		(id) => focusKey(agentPlacement, (p) => p.thread.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(agentPlacement, (p) => p.thread.id, f.id);
+			if (!key) return;
+			setOpenAgent((open) => (open.has(key) ? open : new Set(open).add(key)));
+		},
+	);
 
 	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls
@@ -4406,4 +4412,23 @@ function usePicker(
 		},
 		onFocus: (stop) => setFocused({ shown, stop }),
 	};
+}
+
+/**
+ * The key a thread's bubble opens under: its line's, or (in a hidden run)
+ * the line it will end on, which the run's bubble opens.
+ */
+function focusKey<T extends Placeable>(
+	placement: FilePlacement<T> | null | undefined,
+	idOf: (t: T) => string,
+	id: string,
+): LineKey | undefined {
+	if (!placement) return undefined;
+	for (const [key, list] of placement.end) {
+		if (list.some((t) => idOf(t) === id)) return key;
+	}
+	for (const [t, target] of placement.gapTargets) {
+		if (idOf(t) === id) return target.key;
+	}
+	return undefined;
 }
