@@ -564,9 +564,8 @@ test("a phone is cramped: where every cluster's controls stack, a narrow leading
 		expect(await tapWidth(target)).toBeGreaterThanOrEqual(40);
 		expect(await tapHeight(target)).toBeGreaterThanOrEqual(40);
 	}
-	await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
-	await expect(first.getByRole("checkbox")).toBeChecked();
-	// A tap on either number picks the line.
+	// A tap on either number picks the line (the controls' taps: the
+	// floating, adjacent and card tests).
 	const row = section.locator('tr[data-testid="diff-line"][data-new-no="5"]');
 	await row.getByTestId("old").tap();
 	await expect(row).toHaveAttribute("data-picked", "true");
