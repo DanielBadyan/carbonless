@@ -67,7 +67,14 @@ describe("the preamble and anchors", () => {
 	});
 
 	it("the review preamble names crb's read tools, reply and path:line, and no review", () => {
-		for (const tool of ["`review`", "`threads`", "`reply`", "`path:line`"])
+		for (const tool of [
+			"`review`",
+			"`threads`",
+			"`progress`",
+			"`open`",
+			"`reply`",
+			"`path:line`",
+		])
 			expect(REVIEW_PREAMBLE).toContain(tool);
 		for (const tool of REVIEW_TOOLS) expect(REVIEW_PREAMBLE).toContain(tool);
 		expect(REVIEW_PREAMBLE).toContain("refs/crb/*");

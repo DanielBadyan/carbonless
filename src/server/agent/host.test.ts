@@ -18,7 +18,12 @@ import {
 	REVIEW_PREAMBLE,
 	SUGGEST_RESOLVE,
 } from "../../shared/agent.js";
-import type { ReviewThread, Snapshot } from "../../shared/types.js";
+import type {
+	ClusterView,
+	ReviewThread,
+	ReviewView,
+	Snapshot,
+} from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
@@ -29,10 +34,12 @@ import {
 	authorOf,
 	BadAnchorError,
 	buildAgentHost,
+	CoverageError,
 	type HostRunner,
 	NotHandedError,
 	NotHoldingError,
 	OwnThreadError,
+	type SessionFacts,
 	type SessionQuestion,
 	SessionTokenError,
 	ThreadUnavailableError,
@@ -234,6 +241,8 @@ describe("AgentHost with a session joined through MCP", () => {
 				ids: string[],
 		  ) => Promise<Map<string, { author: string; body: string }[]>>)
 		| undefined;
+	/** The reviewer's coverage as the stub session reads it; unset: none. */
+	let coverage: SessionFacts["coverage"];
 	/** Runs (once) in place of the next single-thread read: a race's other side. */
 	let onThread: ((id: string) => Promise<ReviewThread | null>) | undefined;
 
@@ -261,7 +270,14 @@ describe("AgentHost with a session joined through MCP", () => {
 					return ghComments(ids);
 				},
 			},
-			session: { facts, viewer: "dan" },
+			session: {
+				facts,
+				viewer: "dan",
+				coverage: (target) => {
+					if (!coverage) throw new Error("no coverage here");
+					return coverage(target);
+				},
+			},
 			runner: (off) => {
 				acpOff = off;
 				return runner;
@@ -306,6 +322,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		head = "d".repeat(40);
 		ghThread = null;
 		ghThreads = [];
+		coverage = undefined;
 		host = make();
 	});
 	afterEach(async () => {
@@ -379,6 +396,203 @@ describe("AgentHost with a session joined through MCP", () => {
 
 	describe("the review conversation", () => {
 		const review: AgentAnchor = { subject: "review" };
+
+		it("open from a review question pins code to the review's head, not one an earlier question showed", async () => {
+			listGh(false);
+			const x = await host.open({ clientId: "c0", text: "Why?", span });
+			const token = await approve();
+			const first = await host.sessionNext(token);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: first?.replyTo as string,
+				text: "Because.",
+			});
+			head = "e".repeat(40);
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			expect((await host.sessionNext(token))?.thread).toBe(t.id);
+			const r = await host.sessionOpen(token, {
+				text: "Here.",
+				code: { path: "a.txt", line: 1 },
+			});
+			const opened = (await host.threads()).find((th) => th.id === r.thread);
+			expect(opened?.anchor).toMatchObject({ subject: "line", commit: head });
+			expect(opened?.messages[0]?.origin).toEqual({
+				thread: t.id,
+				message: t.messages[0]?.id,
+			});
+		});
+
+		describe("progress", () => {
+			const D = "d".repeat(40);
+			const C = "c".repeat(40);
+			const cluster = (over: Partial<ClusterView>): ClusterView => ({
+				key: "k",
+				kind: "lines",
+				oldStart: 2,
+				oldCount: 1,
+				newStart: 2,
+				newCount: 2,
+				removed: ["a"],
+				added: ["b", "c"],
+				lines: 3,
+				state: "unreviewed",
+				...over,
+			});
+			const viewOf = (clusters: ClusterView[], path = "a.txt"): ReviewView =>
+				({
+					revision: "r1",
+					patchset: 1,
+					files: [{ index: 0, path, status: "modified", clusters }],
+					progress: {
+						clusters: { total: 1, reviewed: 0, crossedOff: 0 },
+						lines: { total: 3, reviewed: 0, crossedOff: 0 },
+						files: { total: 1, reviewed: 0, crossedOff: 0, done: 0 },
+					},
+				}) as unknown as ReviewView;
+
+			it("maps clusters to line ranges per side: whole, partly reviewed, crossed off", async () => {
+				coverage = async () => ({
+					base: C,
+					head: D,
+					view: viewOf([
+						cluster({ key: "a", state: "reviewed" }),
+						cluster({
+							key: "b",
+							oldStart: 10,
+							newStart: 11,
+							reviewedLines: [[1, 2]],
+							crossedLines: [[2, 3]],
+						}),
+						cluster({
+							key: "c",
+							oldStart: 20,
+							newStart: 21,
+							state: "crossed-off",
+						}),
+					]),
+				});
+				const token = await approve();
+				const p = await host.sessionProgress(token);
+				expect(p.comparison).toEqual({
+					base: C,
+					head: D,
+					patchset: 1,
+					source: "default",
+				});
+				expect(p.files).toEqual([
+					{
+						path: "a.txt",
+						status: "modified",
+						reviewed: {
+							LEFT: [[2, 2]],
+							RIGHT: [
+								[2, 3],
+								[11, 11],
+							],
+						},
+						unreviewed: { LEFT: [[10, 10]], RIGHT: [] },
+						crossedOff: {
+							LEFT: [[20, 20]],
+							RIGHT: [
+								[12, 12],
+								[21, 22],
+							],
+						},
+					},
+				]);
+			});
+
+			it("fails closed: a cluster in a state it doesn't know is unreviewed, whatever lines it names", async () => {
+				coverage = async () => ({
+					base: C,
+					head: D,
+					view: viewOf([
+						cluster({
+							state: "bogus" as ClusterView["state"],
+							reviewedLines: [[0, 3]],
+						}),
+					]),
+				});
+				const token = await approve();
+				const [f] = (await host.sessionProgress(token)).files;
+				expect(f?.reviewed).toEqual({ LEFT: [], RIGHT: [] });
+				expect(f?.unreviewed).toEqual({ LEFT: [[2, 2]], RIGHT: [[2, 3]] });
+			});
+
+			it("a file-level change is listed with its state, its label sanitised", async () => {
+				coverage = async () => ({
+					base: C,
+					head: D,
+					view: viewOf([
+						{
+							...cluster({ key: "f", kind: "file", state: "unreviewed" }),
+							removed: [],
+							added: [],
+							lines: 0,
+							label: "Renamed from x\u202e.txt",
+						},
+					]),
+				});
+				const token = await approve();
+				const [f] = (await host.sessionProgress(token)).files;
+				expect(f?.whole).toEqual([
+					{ label: "Renamed from x.txt", state: "unreviewed" },
+				]);
+			});
+
+			it("a coverage read that fails, or gives no commit ids, is an explicit error, never an empty or all-reviewed answer", async () => {
+				const token = await approve();
+				// No coverage at all.
+				await expect(host.sessionProgress(token)).rejects.toBeInstanceOf(
+					CoverageError,
+				);
+				coverage = async () => {
+					throw new Error("git: bad object");
+				};
+				await expect(host.sessionProgress(token)).rejects.toThrow(
+					/can't be read now \(git: bad object\)/,
+				);
+				await expect(host.sessionProgress(token)).rejects.toBeInstanceOf(
+					CoverageError,
+				);
+				coverage = async () => ({ base: "nope", head: D, view: viewOf([]) });
+				await expect(host.sessionProgress(token)).rejects.toBeInstanceOf(
+					CoverageError,
+				);
+			});
+
+			it("reads the view of the reviewer's latest message in the review conversation, else the default", async () => {
+				const seen: unknown[] = [];
+				coverage = async (target) => {
+					seen.push(target);
+					return { base: C, head: D, view: viewOf([]) };
+				};
+				const token = await approve();
+				await host.sessionProgress(token);
+				const t = await host.open({
+					clientId: "c1",
+					text: "q",
+					review: true,
+					view: { target: { head: D }, from: { branch: true } },
+				});
+				expect((await host.sessionProgress(token)).comparison.source).toBe(
+					"message",
+				);
+				// The latest message carries none: the default again.
+				await host.message(t.id, { clientId: "c2", text: "q2" });
+				expect((await host.sessionProgress(token)).comparison.source).toBe(
+					"default",
+				);
+				expect(seen).toEqual([undefined, { head: D }, undefined]);
+			});
+
+			it("refuses a token that isn't joined", async () => {
+				coverage = async () => ({ base: C, head: D, view: viewOf([]) });
+				await expect(
+					host.sessionProgress("Z".repeat(43)),
+				).rejects.toBeInstanceOf(SessionTokenError);
+			});
+		});
 
 		it("opens the review conversation once", async () => {
 			const first = await host.open({

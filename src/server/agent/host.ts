@@ -10,6 +10,7 @@ import {
 	type AgentStatus,
 	type AgentThread,
 	type AgentView,
+	type AgentViewTarget,
 	isAgentQuestion,
 	isOpenToAgent,
 	JOIN,
@@ -20,12 +21,26 @@ import {
 	REVIEW_PREAMBLE,
 	startedBy,
 } from "../../shared/agent.js";
+import {
+	all,
+	type LineRanges,
+	normalize,
+	subtract,
+	union,
+} from "../../shared/lineRanges.js";
+import { marksOf } from "../../shared/pieces.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
+	ClusterState,
+	ClusterView,
 	CodeAnchor,
 	CodeWindow,
+	Counts,
 	DiffLine,
+	FileStatus,
+	FileView,
 	ReviewThread,
+	ReviewView,
 	Snapshot,
 	ThreadComment,
 } from "../../shared/types.js";
@@ -237,6 +252,51 @@ export const MAX_SESSION_COMMENT = 2048;
 export interface SessionFacts {
 	facts: RunnerFacts;
 	viewer?: string;
+	/** The coverage the page shows for `target` (none: the review's default comparison). */
+	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
+}
+
+/** One comparison's coverage, as the page reads it (Session.coverage). */
+export interface SessionCoverage {
+	/** The comparison's merge base and head. */
+	base: string;
+	head: string;
+	view: ReviewView;
+}
+
+/** The reviewer's progress couldn't be read (code unavailable): never an empty or all-reviewed answer. */
+export class CoverageError extends Error {}
+
+/** Line ranges by side, inclusive: LEFT in the base's numbering, RIGHT in the head's. */
+export interface SideRanges {
+	LEFT: [number, number][];
+	RIGHT: [number, number][];
+}
+
+/** One changed file's lines in `progress`: each changed line in exactly one of the three. */
+export interface SessionProgressFile {
+	path: string;
+	oldPath?: string;
+	status: FileStatus;
+	reviewed: SideRanges;
+	unreviewed: SideRanges;
+	crossedOff: SideRanges;
+	/** File-level changes (a rename, a mode, a binary file): their state. */
+	whole?: { label?: string; state: ClusterState }[];
+}
+
+/** What `progress` answers: the comparison on screen and its coverage by line. */
+export interface SessionProgress {
+	comparison: {
+		base: string;
+		head: string;
+		patchset: number | null;
+		/** The view of the reviewer's latest message in the review conversation, or the review's default. */
+		source: "message" | "default";
+	};
+	files: SessionProgressFile[];
+	/** The page's line counts for this comparison. */
+	lines: Counts;
 }
 
 /** A request the agent host refuses as made (the app answers 400). */
@@ -1061,7 +1121,11 @@ export class AgentHost {
 			}
 			if (existing?.id === origin.thread) throw new OwnThreadError();
 		} else if (r.code) {
-			anchor = await this.#codeAnchor(r.code);
+			// A review question showed no head: the review's, not an older question's.
+			anchor = await this.#codeAnchor(
+				r.code,
+				request.anchor.subject === "review",
+			);
 		} else throw new BadAnchorError("Give code or thread, one of them");
 		if (atLimit && !(existing && started.includes(existing.id))) {
 			throw new TooManyOpenedError();
@@ -1154,11 +1218,16 @@ export class AgentHost {
 	 * files, the lines must exist in that version and the columns within
 	 * their lines.
 	 */
-	async #codeAnchor(c: Extract<OpenTarget, { code: object }>["code"]) {
+	async #codeAnchor(
+		c: Extract<OpenTarget, { code: object }>["code"],
+		reviewQuestion = false,
+	) {
 		const { facts } = this.#facts();
 		const joined = this.join.view().joined;
 		const seen =
-			joined && this.#seen?.since === joined.since ? this.#seen : null;
+			!reviewQuestion && joined && this.#seen?.since === joined.since
+				? this.#seen
+				: null;
 		const review = facts.review();
 		const head = seen?.head ?? review.head.commit;
 		const mergeBase = seen?.mergeBase ?? review.mergeBase;
@@ -1251,6 +1320,46 @@ export class AgentHost {
 			startLine,
 			...(hasCols ? { startCol: c.startCol, endCol: c.endCol } : {}),
 		} as AgentAnchor;
+	}
+
+	/**
+	 * The reviewer's progress for `progress`, read-only: the comparison the
+	 * view of their latest message in the review conversation names (else
+	 * the review's default), read with the page's own coverage join. A read
+	 * that fails is a CoverageError, never an empty or all-reviewed answer.
+	 */
+	async sessionProgress(secret: string): Promise<SessionProgress> {
+		await this.#token(secret);
+		const { coverage } = this.#facts();
+		const fail = (why: string) =>
+			new CoverageError(
+				`The reviewer's progress can't be read now (${why}): say so, don't guess it`,
+			);
+		if (!coverage) throw fail("this review has no coverage");
+		const conversation = (await this.store.read()).find(
+			(t) => t.anchor.subject === "review",
+		);
+		const view = conversation?.messages.findLast((m) => m.by === "human")?.view;
+		let read: SessionCoverage;
+		try {
+			read = await coverage(view?.target);
+		} catch (error) {
+			throw fail(oneError(error));
+		}
+		if (!OID.test(read.base) || !OID.test(read.head)) {
+			throw fail("no commit ids");
+		}
+		const { total, reviewed, crossedOff } = read.view.progress.lines;
+		return {
+			comparison: {
+				base: read.base,
+				head: read.head,
+				patchset: read.view.patchset,
+				source: view ? "message" : "default",
+			},
+			files: read.view.files.map(progressFile),
+			lines: { total, reviewed, crossedOff },
+		};
 	}
 
 	/** Every thread, for a joined session. */
@@ -1467,6 +1576,67 @@ async function sessionThreadTurn(
 }
 
 /** The notices that are set, one per line; undefined when none is. */
+/**
+ * A file's coverage by line for `progress`: its clusters' reviewed,
+ * crossed-off and unreviewed lines on each side (pieces.ts marksOf, as
+ * the page counts them). Fails closed: a state it doesn't know is
+ * unreviewed whatever lines it names, marks are cut to the cluster's
+ * lines, and a line both reviewed and crossed off counts crossed off.
+ * Paths and labels are sanitised.
+ */
+function progressFile(f: FileView): SessionProgressFile {
+	const s = sanitizeThirdParty;
+	const half = () => ({ LEFT: [] as LineRanges, RIGHT: [] as LineRanges });
+	const sets = { reviewed: half(), unreviewed: half(), crossedOff: half() };
+	const whole: { label?: string; state: ClusterState }[] = [];
+	const known = (c: ClusterView) =>
+		c.state === "reviewed" ||
+		c.state === "crossed-off" ||
+		c.state === "unreviewed";
+	for (const c of f.clusters) {
+		const state: ClusterState = known(c) ? c.state : "unreviewed";
+		if (c.kind !== "lines") {
+			whole.push({ ...(c.label ? { label: s(c.label) } : {}), state });
+			continue;
+		}
+		const removed = c.removed.length;
+		const n = removed + c.added.length;
+		const every = all(n);
+		const within = (r: LineRanges) => subtract(every, subtract(every, r));
+		const marks = known(c) ? marksOf(c) : { reviewed: [], crossed: [] };
+		const crossed = within(marks.crossed);
+		const reviewed = subtract(within(marks.reviewed), crossed);
+		const rest = subtract(every, union(reviewed, crossed));
+		const place = (r: LineRanges, into: ReturnType<typeof half>) => {
+			for (const [a, b] of r) {
+				if (a < removed) {
+					into.LEFT.push([c.oldStart + a, c.oldStart + Math.min(b, removed)]);
+				}
+				if (b > removed) {
+					const from = Math.max(a, removed) - removed;
+					into.RIGHT.push([c.newStart + from, c.newStart + b - removed]);
+				}
+			}
+		};
+		place(reviewed, sets.reviewed);
+		place(crossed, sets.crossedOff);
+		place(rest, sets.unreviewed);
+	}
+	const out = (h: ReturnType<typeof half>): SideRanges => ({
+		LEFT: normalize(h.LEFT).map(([a, b]) => [a, b - 1]),
+		RIGHT: normalize(h.RIGHT).map(([a, b]) => [a, b - 1]),
+	});
+	return {
+		path: s(f.path),
+		...(f.oldPath !== undefined ? { oldPath: s(f.oldPath) } : {}),
+		status: f.status,
+		reviewed: out(sets.reviewed),
+		unreviewed: out(sets.unreviewed),
+		crossedOff: out(sets.crossedOff),
+		...(whole.length > 0 ? { whole } : {}),
+	};
+}
+
 function joinNotices(parts: (string | undefined)[]): string | undefined {
 	return parts.filter(Boolean).join("\n") || undefined;
 }
@@ -1593,6 +1763,8 @@ export interface ReviewAgentSource {
 	comments?(
 		ids: string[],
 	): Promise<Map<string, { author: string; body: string }[]>>;
+	/** The coverage the page shows for a comparison (`progress`). */
+	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
 }
 
 /** What the session reads of one GitHub thread for a thread turn. */
@@ -1783,7 +1955,11 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			base: () => src.snapshot().base,
 			...(src.comments ? { comments: src.comments } : {}),
 		},
-		session: { facts, viewer: src.viewer },
+		session: {
+			facts,
+			viewer: src.viewer,
+			...(src.coverage ? { coverage: src.coverage } : {}),
+		},
 		claim: new ReviewClaim(dir, () => ({
 			pid: process.pid,
 			port: serverPort(),

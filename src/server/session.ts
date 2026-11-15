@@ -1,4 +1,8 @@
-import type { AgentPlacementsAnswer, AgentView } from "../shared/agent.js";
+import type {
+	AgentPlacementsAnswer,
+	AgentView,
+	AgentViewTarget,
+} from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import {
 	type ThreadInput,
@@ -414,6 +418,7 @@ export class Session {
 				}
 				return out;
 			},
+			coverage: (target) => this.coverage(target),
 			githubThread: async (id, view) => {
 				const { read, threads } = await this.#agentGithub();
 				const thread = threads.find((t) => t.id === id);
@@ -1932,6 +1937,38 @@ export class Session {
 		const view = buildReviewView(snapshot, await this.#progress());
 		if (snapshot === this.#snapshot) this.#patchset = view.patchset;
 		return view;
+	}
+
+	/**
+	 * The coverage the page shows for a comparison, with its merge base and
+	 * head (the agent's `progress`): patch set `target.patchset` as reviewAt
+	 * reads it, head `target.head` as viewHead does, else the review as
+	 * review() does. It writes nothing: no patch set starts.
+	 */
+	async coverage(
+		target?: AgentViewTarget,
+	): Promise<{ base: string; head: string; view: ReviewView }> {
+		if (target && "patchset" in target) {
+			const progress = await this.#progress();
+			const record = progress.patchsets.find(
+				(p) => p.number === target.patchset,
+			);
+			if (!record) throw new RangeError(`No patch set ${target.patchset}`);
+			const snapshot = await this.#snapshotOf(record);
+			const view = buildReviewView(snapshot, progress);
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		if (target) {
+			const snapshot = await this.#headSnapshot(target.head);
+			const view = await this.viewHead(target.head);
+			if (view.revision !== snapshot.revision) {
+				throw new Error("The head's comparison moved while it was read");
+			}
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		const snapshot = this.#snapshot;
+		const view = buildReviewView(snapshot, await this.#progress());
+		return { base: snapshot.base, head: snapshot.head, view };
 	}
 
 	/**
