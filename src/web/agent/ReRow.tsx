@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
 	ListUnorderedIcon,
@@ -13,6 +14,7 @@ import {
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import {
+	LINK_ERROR,
 	linkState,
 	useLinkFacts,
 	useOpenConversation,
@@ -51,7 +53,11 @@ export function ReRow(props: {
 	const go = linkState(request, facts, message.id).state;
 	const reachable = go === "ready";
 	const goTip =
-		go === "none" ? "Not in this review's files" : "Go to your request";
+		go === "none"
+			? "Not in this review's files"
+			: go === "error"
+				? LINK_ERROR
+				: "Go to your request";
 	return (
 		<div data-testid="agent-re" className="min-w-0 space-y-1">
 			<div className="flex min-w-0 items-center gap-1">
@@ -99,11 +105,13 @@ export function ReRow(props: {
 							onClick={() => {
 								if (reachable) open(request, message.id);
 							}}
-							className={`${ICON_BUTTON} ${go === "none" ? "cursor-not-allowed text-faint" : ""}`}
+							className={`${ICON_BUTTON} ${go === "none" ? "cursor-not-allowed text-faint" : go === "error" ? "cursor-not-allowed text-bad" : ""}`}
 						>
 							{/* Its place is still being read: the icon spins, never "not in the files". */}
 							{go === "loading" ? (
 								<SpinnerIcon size={16} />
+							) : go === "error" ? (
+								<AlertIcon size={16} aria-hidden />
 							) : (
 								<ReplyIcon size={16} aria-hidden />
 							)}

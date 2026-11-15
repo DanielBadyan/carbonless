@@ -1,8 +1,10 @@
+import { AlertIcon } from "@primer/octicons-react";
 import type { AgentThread } from "../../shared/agent";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import {
 	conversationLabel,
+	LINK_ERROR,
 	linkState,
 	useGithubAuthors,
 	useLinkFacts,
@@ -68,9 +70,22 @@ export function StartedList(props: {
 								/>
 							)}
 						</span>
-						<span className="flex max-w-[45%] shrink-0 items-center gap-1 truncate font-mono text-xs text-link">
-							{/* Its place is still being read: a spinner, never "not in the files". */}
+						{/* A kept slot: the spinner (its place is still being read, never
+						"not in the files") or the error comes and goes without moving the label. */}
+						<span
+							data-testid="agent-started-state"
+							className="flex w-3 shrink-0 justify-center"
+						>
 							{link === "loading" && <SpinnerIcon size={12} />}
+							{link === "error" && (
+								<AlertIcon
+									size={12}
+									aria-label={LINK_ERROR}
+									className="text-bad"
+								/>
+							)}
+						</span>
+						<span className="max-w-[45%] shrink-0 truncate font-mono text-xs text-link">
 							{label}
 						</span>
 						<span className="min-w-0 flex-1 truncate text-ink-soft">
@@ -80,10 +95,15 @@ export function StartedList(props: {
 				);
 				return (
 					<li key={t.id} className="min-w-0">
-						{link !== "none" ? (
+						{link === "ready" || link === "loading" ? (
 							row
 						) : (
-							<Tooltip content="Not in this review's files" describe={false}>
+							<Tooltip
+								content={
+									link === "error" ? LINK_ERROR : "Not in this review's files"
+								}
+								describe={false}
+							>
 								{(trigger) => (
 									<span {...trigger} className="block">
 										{row}

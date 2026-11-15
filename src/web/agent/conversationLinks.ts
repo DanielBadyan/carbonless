@@ -209,26 +209,35 @@ export interface LinkFacts {
 	patchsets: readonly { number: number; head: string }[];
 	/** The review's files are in: until then a code conversation's place is unknown, not "none". */
 	ready: boolean;
+	/** The review's files couldn't be read: an error, neither loading nor "not in the files". */
+	failed: boolean;
 }
 
 export function useLinkFacts(): LinkFacts {
-	const review = useQuery({ ...reviewQuery(), enabled: false }).data;
+	const reviewRead = useQuery({ ...reviewQuery(), enabled: false });
+	const review = reviewRead.data;
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
 	return {
 		files: new Set(review?.files.map((f) => f.path) ?? []),
 		patchsets: session?.patchsets ?? [],
 		ready: review !== undefined,
+		failed: review === undefined && reviewRead.isError,
 	};
 }
+
+/** What a link to a conversation says while its place is unknown. */
+export const LINK_ERROR = "Couldn't read the review's files";
 
 /**
  * A link's target as the page knows it now: `loading` while a code
  * conversation waits for the review's files (never "not in this review's
- * files" before they are in), `none` once they are in and it isn't there.
+ * files" before they are in), `error` when they couldn't be read, `none`
+ * once they are in and it isn't there.
  */
 export type LinkState =
 	| { state: "ready"; target: ConversationTarget }
 	| { state: "loading" }
+	| { state: "error" }
 	| { state: "none" };
 
 export function linkState(
@@ -243,12 +252,33 @@ export function linkState(
 		message,
 	);
 	if (target) return { state: "ready", target };
-	return facts.ready ? { state: "none" } : { state: "loading" };
+	if (facts.ready) return { state: "none" };
+	return facts.failed ? { state: "error" } : { state: "loading" };
 }
 
-/** The GitHub threads' first authors, from the threads the page has read. */
+/**
+ * The GitHub threads' first authors, from the threads the page has read.
+ * The function changes when a threads read lands, so a label made with it
+ * is made again then ("Thread · <path>" becomes "Thread · <author>").
+ */
 export function useGithubAuthors(): (id: string) => string | undefined {
 	const client = useQueryClient();
+	const cache = client.getQueryCache();
+	const reads = useSyncExternalStore(
+		useCallback(
+			(changed: () => void) =>
+				cache.subscribe((e) => {
+					if (e.query.queryKey[0] === "threads") changed();
+				}),
+			[cache],
+		),
+		() =>
+			cache
+				.findAll({ queryKey: ["threads"] })
+				.reduce((n, q) => n + q.state.dataUpdatedAt, 0),
+	);
+	// `reads` is what re-makes it when a threads read lands.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	return useCallback(
 		(id: string) => {
 			for (const [, data] of client.getQueriesData<ThreadsView>({
@@ -259,7 +289,7 @@ export function useGithubAuthors(): (id: string) => string | undefined {
 			}
 			return undefined;
 		},
-		[client],
+		[client, reads],
 	);
 }
 
@@ -304,7 +334,7 @@ export function linkCitations(
 ): void {
 	const doc = root.ownerDocument;
 	for (const code of root.querySelectorAll("code")) {
-		if (code.parentElement?.closest("a, pre")) continue;
+		if (code.parentElement?.closest("a, pre, [data-cite]")) continue;
 		const text = code.textContent ?? "";
 		const m = /^crb:c\/([0-9a-hjkmnp-tv-z]{26})$/.exec(text);
 		if (!m) continue;
@@ -315,7 +345,9 @@ export function linkCitations(
 	const texts: Text[] = [];
 	const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 	for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-		if (!n.parentElement?.closest("a, pre, code")) texts.push(n as Text);
+		if (!n.parentElement?.closest("a, pre, code, [data-cite]")) {
+			texts.push(n as Text);
+		}
 	}
 	for (const text of texts) {
 		const pieces: Node[] = [];

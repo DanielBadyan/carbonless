@@ -15,6 +15,7 @@ import {
 	renderHook,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -538,5 +539,97 @@ describe("a landing no card takes (CAR-80 B)", () => {
 		window.history.pushState(null, "", "/r/RV1/files");
 		rerender();
 		expect(result.current).toBeNull();
+	});
+});
+
+describe("fix round 2", () => {
+	/** `/review` answered an error: the query in its error state. */
+	const failReview = (client: QueryClient) =>
+		client.prefetchQuery({
+			...reviewQuery(),
+			queryFn: () => Promise.reject(new Error("HTTP 502")),
+			retry: false,
+		});
+
+	it("A: a failed /review read is an error, neither loading nor 'not in the files': citation, Go, Started rows", async () => {
+		const user = userEvent.setup();
+		const router = show(
+			<>
+				<AgentMarkdown text={`See crb:c/${A}.`} />
+				<ReRow origin={origin} current={A} threads={threads()} />
+			</>,
+			threads(),
+			{ review: false },
+		);
+		await act(() => failReview(router.client));
+		const cite = await screen.findByTestId("agent-conversation-link");
+		await waitFor(() => expect(cite.dataset.state).toBe("error"));
+		expect(cite.getAttribute("aria-busy")).toBeNull();
+		expect(
+			within(cite).getByRole("img", {
+				name: "Couldn't read the review's files",
+			}),
+		).toBeTruthy();
+		const go = screen.getByTestId("agent-re-go");
+		expect(go.getAttribute("aria-busy")).toBeNull();
+		expect(go.getAttribute("aria-label")).toBe(
+			"Couldn't read the review's files",
+		);
+		await user.click(screen.getByTestId("agent-re-list"));
+		const rows = screen.getAllByTestId("agent-started-item");
+		expect(rows.map((r) => r.getAttribute("aria-busy"))).toEqual([
+			null,
+			null,
+			null,
+		]);
+		expect(
+			within(rows[0] as HTMLElement).getByRole("img", {
+				name: "Couldn't read the review's files",
+			}),
+		).toBeTruthy();
+		expect(document.body.innerHTML).not.toContain("Not in this review");
+		expect(screen.queryAllByRole("status")).toHaveLength(0);
+	});
+
+	it("C: the Started row's state slot is kept whether loading or not, so the label never moves", async () => {
+		const user = userEvent.setup();
+		const router = show(
+			<ReRow origin={origin} current={A} threads={threads()} />,
+			threads(),
+			{ review: false },
+		);
+		await user.click(await screen.findByTestId("agent-re-list"));
+		const slot = () =>
+			screen.getAllByTestId("agent-started-state")[0] as HTMLElement;
+		expect(slot().childElementCount).toBe(1);
+		act(() => setReview(router.client));
+		await waitFor(() => expect(slot().childElementCount).toBe(0));
+		expect(screen.getAllByTestId("agent-started-state")).toHaveLength(3);
+	});
+
+	it("D: a loading citation shows the app's spinner, named", async () => {
+		show(<AgentMarkdown text={`See crb:c/${A}.`} />, threads(), {
+			review: false,
+		});
+		const cite = await screen.findByTestId("agent-conversation-link");
+		expect(
+			within(cite).getByRole("status", { name: "Placing this conversation" }),
+		).toBeTruthy();
+	});
+
+	it("E: a GitHub thread's citation relabels with its author once the threads read lands", async () => {
+		const router = show(<AgentMarkdown text={`See crb:c/${B}.`} />);
+		const cite = await screen.findByTestId("agent-conversation-link");
+		expect(cite.textContent).toBe("Thread · a.txt");
+		act(() =>
+			router.client.setQueryData(["threads", "r1", "full"], {
+				threads: [{ id: "PRRT_1", author: "rev1" }],
+			}),
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-conversation-link").textContent).toBe(
+				"Thread · rev1",
+			),
+		);
 	});
 });

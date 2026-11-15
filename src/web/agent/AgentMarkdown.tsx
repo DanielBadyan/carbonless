@@ -12,7 +12,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Marked, type Token, type Tokens, type TokensList } from "marked";
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { HunkLine } from "../../shared/diffHunk";
 import { reviewQuery, sessionQuery } from "../api";
 import { languageFor } from "../files/highlight";
@@ -20,14 +21,9 @@ import { type FilesSearch, parseFilesSearch } from "../files/landing";
 import { GithubHtml } from "../GithubHtml";
 import { CodeRows } from "../threads/CommentBody";
 import { agentThreadsQuery } from "./api";
+import { Citation } from "./Citation";
 import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
-import {
-	type ConversationTarget,
-	conversationLabel,
-	linkCitations,
-	linkState,
-	useGithubAuthors,
-} from "./conversationLinks";
+import { linkCitations } from "./conversationLinks";
 
 const md = new Marked({ gfm: true, breaks: false, async: false });
 
@@ -158,103 +154,43 @@ function useCodeLinks(
 }
 
 /**
- * Turns the agent's citations (`crb:c/<id>`) in the rendered prose into
- * router links labelled with where the conversation is, for ids among this
- * review's agent threads only; anything else stays text. A conversation
- * whose file isn't this review's shows its label, unlinked.
+ * The agent's citations (`crb:c/<id>`) in the rendered prose, for ids among
+ * this review's agent threads (anything else stays text): each token makes
+ * way for an empty `span[data-cite]`, where AgentMarkdown mounts a
+ * Citation (a portal), which labels and links it as what the page knows
+ * changes. Runs again when the text or the threads change; spans already
+ * made are kept.
  */
-function useCitationLinks(
+function useCitationMounts(
 	root: React.RefObject<HTMLDivElement | null>,
 	text: string,
-) {
+): HTMLElement[] {
 	const router = useRouter({ warn: false });
 	const threads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
-	const review = useQuery({ ...reviewQuery(), enabled: false }).data;
-	const session = useQuery({ ...sessionQuery, enabled: false }).data;
-	const authorOf = useGithubAuthors();
+	const [mounts, setMounts] = useState<HTMLElement[]>([]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `text` is what re-renders the prose.
 	useLayoutEffect(() => {
 		const el = root.current;
 		if (!el || !router || !threads?.length) return;
-		const id = router.state.matches
-			.map((m) => (m.params as { id?: string }).id)
-			.find((x) => x);
-		if (!id) return;
-		const facts = {
-			files: new Set(review?.files.map((f) => f.path) ?? []),
-			patchsets: session?.patchsets ?? [],
-			ready: review !== undefined,
-		};
-		const byId = new Map(threads.map((t) => [t.id, t]));
+		const known = new Set(threads.map((t) => t.id));
 		const doc = el.ownerDocument;
 		for (const prose of el.querySelectorAll<HTMLElement>(".markdown-body")) {
-			// What an earlier run made goes back to its token, so this run
-			// labels and links it with what the page knows now (the review's
-			// files, the threads' authors may have come in since).
-			for (const made of prose.querySelectorAll<HTMLElement>("[data-cite]")) {
-				made.replaceWith(doc.createTextNode(`crb:c/${made.dataset.cite}`));
-			}
-			prose.normalize();
-			linkCitations(prose, (threadId) => {
-				const thread = byId.get(threadId);
-				if (!thread) return null;
-				const label = conversationLabel(thread, authorOf);
-				const link = linkState(thread, facts);
-				if (link.state !== "ready") {
-					const span = doc.createElement("span");
-					span.dataset.testid = "agent-conversation-link";
-					span.dataset.cite = threadId;
-					span.dataset.state = link.state;
-					span.setAttribute("aria-disabled", "true");
-					if (link.state === "loading") {
-						// Its place is still being read: never "not in the files".
-						span.setAttribute("aria-busy", "true");
-						span.className =
-							"animate-pulse text-muted motion-reduce:animate-none";
-					} else {
-						span.title = "Not in this review's files";
-						span.className = "text-faint";
-					}
-					span.textContent = label;
-					return span;
-				}
-				const { target } = link;
-				const a = doc.createElement("a");
-				a.dataset.testid = "agent-conversation-link";
-				a.dataset.cite = threadId;
-				a.className = LINK_CLASS;
-				a.textContent = label;
-				a.href = router.buildLocation({
-					to: target.to,
-					params: { id },
-					search: target.search,
-				} as never).href;
-				a.dataset.target = JSON.stringify(target);
-				return a;
+			linkCitations(prose, (id) => {
+				if (!known.has(id)) return null;
+				const span = doc.createElement("span");
+				span.dataset.cite = id;
+				return span;
 			});
 		}
-		const onClick = (e: MouseEvent) => {
-			const link = (e.target as Element | null)?.closest<HTMLElement>("a");
-			if (link?.dataset.testid !== "agent-conversation-link") return;
-			if (e.button !== 0) return;
-			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-			e.preventDefault();
-			let target: ConversationTarget;
-			try {
-				target = JSON.parse(link.dataset.target ?? "");
-			} catch {
-				return;
-			}
-			void router.navigate({
-				to: target.to,
-				params: { id },
-				search: target.search,
-			} as never);
-		};
-		el.addEventListener("click", onClick);
-		return () => el.removeEventListener("click", onClick);
-	}, [root, router, threads, review, session, authorOf, text]);
+		const found = [...el.querySelectorAll<HTMLElement>("span[data-cite]")];
+		setMounts((was) =>
+			was.length === found.length && was.every((m, i) => m === found[i])
+				? was
+				: found,
+		);
+	}, [root, router, threads, text]);
+	return mounts;
 }
 
 export function AgentMarkdown(props: {
@@ -265,9 +201,16 @@ export function AgentMarkdown(props: {
 	const parts = useMemo(() => agentParts(props.text), [props.text]);
 	const root = useRef<HTMLDivElement>(null);
 	useCodeLinks(root, props.text, props.head);
-	useCitationLinks(root, props.text);
+	const citations = useCitationMounts(root, props.text);
 	return (
 		<div ref={root} className="min-w-0">
+			{citations.map((span) =>
+				createPortal(
+					<Citation thread={span.dataset.cite ?? ""} />,
+					span,
+					span.dataset.cite,
+				),
+			)}
 			{parts.map((part, i) =>
 				part.kind === "html" ? (
 					// Parts keep their order while the text grows.
