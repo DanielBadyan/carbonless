@@ -14,10 +14,18 @@ import {
 
 /**
  * The room a card keeps free on its right for the agent tab: the tab
- * (32px; 40px on a phone and under a finger) and a 4-8px gap. The card's
+ * (32px; 40px on a phone and under a finger) and an 8px gap. The card's
  * box that holds the tab is `relative` and has this right padding.
  */
-export const AGENT_TAB_GUTTER = "pr-10 max-sm:pr-11 pointer-coarse:pr-11";
+export const AGENT_TAB_GUTTER = "pr-10 max-sm:pr-12 pointer-coarse:pr-12";
+
+/**
+ * The tab placed from a box that ends where the gutter starts (the
+ * Overview's comment column): out over the gutter to the card's edge,
+ * its top at the box's top, where the panel opens.
+ */
+export const AGENT_TAB_FROM_COLUMN =
+	"top-0 -right-10 max-sm:-right-12 pointer-coarse:-right-12";
 
 /**
  * The tab: a drawer opener on the card's right edge, flush with its
@@ -25,7 +33,7 @@ export const AGENT_TAB_GUTTER = "pr-10 max-sm:pr-11 pointer-coarse:pr-11";
  * the conversation slides in from. At least 48px tall.
  */
 const TAB =
-	"absolute top-2 right-0 flex min-h-12 w-8 shrink-0 flex-col items-center justify-center gap-0.5 rounded-l-lg border border-r-0 py-1.5 max-sm:w-10 pointer-coarse:w-10";
+	"absolute flex min-h-12 w-8 shrink-0 flex-col items-center justify-center gap-0.5 rounded-l-lg border border-r-0 py-1.5 max-sm:w-10 pointer-coarse:w-10";
 
 /**
  * A thread card's agent tab, a drawer opener on the card's right edge
@@ -44,8 +52,14 @@ export function ThreadAgentButton(props: {
 	conversation: AgentThread | undefined;
 	open: boolean;
 	onToggle: () => void;
+	/**
+	 * Where it sits in its `relative` box (default: its top right, in the
+	 * gutter); its top level with the panel's.
+	 */
+	place?: string;
 }) {
 	const { conversation, open } = props;
+	const tab = `${TAB} ${props.place ?? "top-2 right-0"}`;
 	const on = useAgentOn();
 	const loading = useAgentThreadsLoading();
 	const { failed, retry } = useAgentThreadsFailed();
@@ -56,7 +70,7 @@ export function ThreadAgentButton(props: {
 			<span
 				data-testid="thread-agent-loading"
 				aria-busy="true"
-				className={`${TAB} border-line`}
+				className={`${tab} border-line`}
 			>
 				<Spinner label="Loading agent messages" size={14} />
 			</span>
@@ -82,7 +96,7 @@ export function ThreadAgentButton(props: {
 							retry();
 							props.onToggle();
 						}}
-						className={`${TAB} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent`}
+						className={`${tab} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent`}
 					>
 						<AlertIcon size={14} aria-hidden />
 					</button>
@@ -107,14 +121,14 @@ export function ThreadAgentButton(props: {
 					aria-label={name}
 					aria-pressed={open}
 					onClick={props.onToggle}
-					className={`${TAB} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
+					className={`${tab} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
 						conversation
 							? open
 								? "border-agent-ink bg-agent shadow-[inset_0_0_0_1px_var(--color-agent-ink)]"
 								: "border-agent-edge bg-agent hover:border-agent-ink"
 							: open
 								? "border-dashed border-agent-ink bg-agent"
-								: "border-dashed border-agent-edge hover:border-agent-ink hover:bg-agent"
+								: "border-dashed border-agent-edge bg-agent/60 hover:border-agent-ink hover:bg-agent"
 					}`}
 				>
 					<SparkleFillIcon size={14} aria-hidden />

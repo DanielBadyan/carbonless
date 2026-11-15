@@ -110,6 +110,8 @@ export function ThreadBlock(props: {
 							conversation={agent.conversation}
 							open={agent.open}
 							onToggle={agent.toggle}
+							// Level with the comments' top, where the panel opens.
+							place="top-2.5 right-0"
 						/>
 					)}
 					{placement?.kind === "changed" && (

@@ -501,7 +501,7 @@ test("no horizontal page scroll at 360px with the panel open", async ({
 	expect((await strip.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
 });
 
-/** Asserts the agent opener is a tab on the card's right edge, near its top, covering nothing. */
+/** Asserts the agent opener is a tab on the card's right edge, level with the panel's top, in sight with the card's top, covering nothing. */
 async function expectDrawerTab(card: Locator, page: Page) {
 	const tab = agentButton(card);
 	// The card's top in view: the tab is in sight without scrolling further.
@@ -512,8 +512,11 @@ async function expectDrawerTab(card: Locator, page: Page) {
 	if (!t || !c) throw new Error("no boxes");
 	// Flush with the card's right edge (inside its 1px border).
 	expect(Math.abs(t.x + t.width - (c.x + c.width))).toBeLessThanOrEqual(2);
-	// Near the card's top: seen without scrolling a long thread.
-	expect(t.y - c.y).toBeLessThan(120);
+	// Level with the top of the comments the panel slides over: the handle
+	// of the drawer it opens.
+	const cover = await card.getByTestId("agent-cover").boundingBox();
+	if (!cover) throw new Error("no agent cover");
+	expect(Math.abs(t.y - cover.y)).toBeLessThanOrEqual(2);
 	// A finger's target: 40px each way on a phone.
 	const phone = (page.viewportSize()?.width ?? 1000) < 640;
 	expect(t.height).toBeGreaterThanOrEqual(40);

@@ -51,6 +51,7 @@ import {
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
 import {
+	AGENT_TAB_FROM_COLUMN,
 	AGENT_TAB_GUTTER,
 	ThreadAgentButton,
 } from "../agent/ThreadAgentButton";
@@ -1665,11 +1666,22 @@ function ThreadItem({
 		) : null;
 	// With an agent, its conversation slides over the comments alone (the
 	// opener and the replies, in the comment column), never the code pane.
+	// The agent's drawer opener on the card's right edge, its top level
+	// with the comment column's, where the panel opens.
 	const comments = agent ? (
-		<AgentCover>
-			{commentCell}
-			{repliesEl}
-		</AgentCover>
+		<div className="relative min-w-0">
+			<ThreadAgentButton
+				thread={thread}
+				conversation={agent.conversation}
+				open={agent.open}
+				onToggle={agent.toggle}
+				place={AGENT_TAB_FROM_COLUMN}
+			/>
+			<AgentCover>
+				{commentCell}
+				{repliesEl}
+			</AgentCover>
+		</div>
 	) : (
 		commentCell
 	);
@@ -1787,15 +1799,6 @@ function ThreadItem({
 				<div
 					className={`relative space-y-2 pt-1 pb-3 pl-3 ${agent ? AGENT_TAB_GUTTER : "pr-3"}`}
 				>
-					{/* The agent's drawer opener, on the card's right edge. */}
-					{agent && (
-						<ThreadAgentButton
-							thread={thread}
-							conversation={agent.conversation}
-							open={agent.open}
-							onToggle={agent.toggle}
-						/>
-					)}
 					<ThreadPlace thread={thread} line={line} target={target} />
 					<ThreadFateLine thread={thread} />
 					{thread.code?.source === "pending" ? (
@@ -1836,8 +1839,11 @@ function ThreadItem({
 						<ThreadActions thread={thread} onToggle={onToggle} />
 					)}
 					{more && (
-						// Its own row, centred under the card.
-						<div data-testid="thread-more-row" className="flex justify-center">
+						// Its own row, centred under the card (out over the agent's gutter).
+						<div
+							data-testid="thread-more-row"
+							className={`flex justify-center ${agent ? "-mr-7 max-sm:-mr-9 pointer-coarse:-mr-9" : ""}`}
+						>
 							<MoreToggle
 								open={open}
 								onClick={() => setOpen((o) => !o)}
