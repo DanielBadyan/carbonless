@@ -7,12 +7,18 @@
 	},
 	"files": {
 		"ignoreUnknown": true,
-		"includes": ["**", "!test/fixtures/inline-diff", "!test/fake-gh/gh.mjs"]
+		"includes": [
+			"**",
+			"!test/fixtures/inline-diff",
+			"!test/fixtures/pairing",
+			"!test/fake-gh/gh.mjs"
+		]
 	},
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab"
 	},
+	"plugins": ["./biome-plugins/no-static-private-method.grit"],
 	"linter": {
 		"enabled": true,
 		"rules": {

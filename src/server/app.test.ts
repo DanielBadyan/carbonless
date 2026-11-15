@@ -29,7 +29,7 @@ import type {
 	ReviewView,
 	SessionInfo,
 } from "../shared/types";
-import { agentConfigSaveCount } from "./agent/host";
+import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
@@ -1262,6 +1262,8 @@ describe("API", () => {
 				agent: { name: "fake-acp", version: "1.0.0" },
 				answers: [{ text: "Two writers race." }],
 			});
+			// The spawned agent answers through this server's /mcp.
+			setServerMcp({ url: `http://${host}/mcp`, key: null });
 			// Nothing spawns by itself: the reviewer's Spawn, in this review.
 			const start = await post("/api/agent/start");
 			expect(start.statusCode, start.body).toBe(200);
@@ -1270,6 +1272,7 @@ describe("API", () => {
 			// The agent goes with its session, before the env it ran in.
 			await registry.closeAll();
 			fake.restore();
+			setServerMcp(null);
 		});
 		const span = () => ({
 			subject: "line",
@@ -1318,13 +1321,19 @@ describe("API", () => {
 				stop: "end_turn",
 			});
 			expect(t?.code?.rows.length).toBeGreaterThan(0);
-			const status: AgentStatus = await get("/api/agent");
-			expect(status).toMatchObject({
-				state: "ready",
-				configured: true,
-				agent: { name: "fake-acp", version: "1.0.0" },
-				waiting: 0,
-			});
+			// Ready once its turn (next found none) ends.
+			await vi.waitFor(
+				async () => {
+					const status: AgentStatus = await get("/api/agent");
+					expect(status).toMatchObject({
+						state: "ready",
+						configured: true,
+						agent: { name: "fake-acp", version: "1.0.0", via: "acp" },
+						waiting: 0,
+					});
+				},
+				{ timeout: 20_000, interval: 20 },
+			);
 			const more = await post(`/api/agent/threads/${t?.id}/messages`, {
 				clientId: "m1",
 				text: "Both?",
@@ -1418,6 +1427,44 @@ describe("API", () => {
 			const start = await post("/api/agent/start");
 			expect(start.statusCode, start.body).toBe(200);
 			expect((await get("/api/agent")).spawned).toBe(true);
+		});
+
+		it("the one-time setups done (CAR-160): Invite on an approved join only, Spawn on a start, each its own", async () => {
+			const done = async () => {
+				const res = await app.inject({
+					method: "GET",
+					url: "/api/config/agent/setup",
+					headers: { host },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				return res.json();
+			};
+			// The state dir is the file's: start from none done.
+			rmSync(
+				join(process.env.XDG_STATE_HOME as string, "carbonless", "agent-setup"),
+				{ recursive: true, force: true },
+			);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			const { session } = await registry.open({ pr: pr.arg });
+			const agent = session.agent;
+			if (!agent) throw new Error("no agent");
+			const who = { name: "carbonless · main", machine: "devbox" };
+			// Declined: not done.
+			const first = agent.join.request(who).request;
+			const deny = await post(`/api/agent/join/${first}`, { approve: false });
+			expect(deny.statusCode, deny.body).toBe(200);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			// A stale answer (nothing pending) records nothing.
+			const stale = await post(`/api/agent/join/${first}`, { approve: true });
+			expect(stale.statusCode).toBe(409);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			const second = agent.join.request(who).request;
+			const ok = await post(`/api/agent/join/${second}`, { approve: true });
+			expect(ok.statusCode, ok.body).toBe(200);
+			expect(await done()).toEqual({ invite: true, spawn: false });
+			const start = await post("/api/agent/start");
+			expect(start.statusCode, start.body).toBe(200);
+			expect(await done()).toEqual({ invite: true, spawn: true });
 		});
 
 		it("POST /agent/detach answers ok and the status says off", async () => {

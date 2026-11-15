@@ -259,6 +259,17 @@ export class SessionRegistry {
 		return entry && !entry.session.closed ? entry.session : undefined;
 	}
 
+	/**
+	 * A request from review `id`'s page (never /mcp or the watcher): its
+	 * spawned agent's page-idle clock restarts. A use too. No-op when closed.
+	 */
+	pageSeen(id: string): void {
+		const entry = this.#open.get(id);
+		if (!entry || entry.session.closed) return;
+		entry.lastUsed = this.#now();
+		entry.session.agent?.pageSeen();
+	}
+
 	/** Counts as a use of open review `id` (it isn't closed as idle); no-op otherwise. */
 	touch(id: string): void {
 		const entry = this.#open.get(id);

@@ -124,6 +124,17 @@ the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
 
+## Why are lines in a different order, or marked where GitHub shows none?
+
+When a cluster has more removed lines than added ones (or the reverse),
+GitHub marks nothing: its unified view pairs no lines, and its split view
+only lines the rows up by position. carbonless pairs the lines
+that are clearly similar instead, and marks the words that changed in each
+pair. Unified shows a pair together, the removed line right above its
+added one; side by side puts it on one row. Unpaired lines keep today's
+layout, nothing is hidden, and each side stays in its own order. This is
+the first place carbonless deliberately differs from GitHub.
+
 ## Why doesn't Find in PR find a line I know is in the file?
 
 Only what the diff can show is searched: file paths, changed lines and the
@@ -235,6 +246,11 @@ setup modal, whose Spawn tab has three steps:
    | Copilot CLI | `copilot --acp` | |
    | Other | any command speaking ACP | |
 
+   Once a Spawn has started on this machine, this step shows folded and
+   grayed, with the harness in effect named in its header; tap it to open.
+   Where that's kept and how to reset it: "Joining a review from a
+   session", below.
+
 2. **Select leash:** Open (the only one so far).
 3. **Configure:** command and arguments, then **Spawn**. Spawn runs the
    command once through `initialize`; if that fails it shows why (not
@@ -247,6 +263,36 @@ you press Spawn there, and stays on in that review, across crb restarts,
 until you press Detach in the Review Agent view. Other reviews stay
 without one until you spawn there too. A config saved later restarts it
 only in the reviews where it was spawned.
+
+**How does a spawned agent answer?** Like a session you invite: through
+crb's MCP tools (`attach`, `next`, `reply`, `threads`, `review`,
+`detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
+when the agent supports it, else through `crb mcp-bridge` over stdio) and
+a join that pressing Spawn already approved: there is no Approve bar, and
+that join works only for the process Spawn started (a secret only it was
+given), in this review only. Its first prompt, an intro, says where it
+is: the review's status (repo, PR, title, base and head, how many
+questions wait), its checkout (a `tree` folder in its working directory,
+the PR's head as of Spawn, with the base commit in its objects), and to
+`attach`, then call `next` and `reply` until no question waits. Only `reply` stores
+an answer; what it says in the prompt itself is never stored. It gets
+exactly what `next` gives a joined session; crb makes its checkout of the
+PR's head once, at Spawn, and never moves it.
+
+How it differs from a joined session:
+- **Waking up.** It runs no watch command: when a question waits and it
+  isn't working, crb sends it a short prompt ("a question waits: call
+  next"), never the question itself. A turn that ends still holding a
+  question gets one reminder; two turns in a row without a reply mark
+  that question failed (red), and asking again retries it.
+- **Extras.** The question it holds shows its tool calls live, Stop
+  current cancels it (the thread says stopped), and a crash or a failed
+  turn shows in the thread with the agent's reason.
+- **Leaving.** Its `detach`, Detach, or Disconnect ends it: the process
+  stops, the spawn flag clears, its checkout goes. So does closing every
+  page of the review: after 30 minutes with no page open (its own tool
+  calls don't count), between two answers, never in the middle of one.
+- **The chip** says it was spawned, not joined.
 
 The agent runs with the server's environment minus variables whose name
 contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
@@ -323,7 +369,11 @@ claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<ke
 it, `claude mcp add` writes to the *local* scope, seen only by sessions
 started in the directory it ran in. A session that's already running
 picks it up with `/reload-plugins` (below); the info icon next to the line
-says so.
+says so. Once you've approved a join on this crb, this step shows folded
+and grayed (tap it to open); Spawn's folds on its own, after a Spawn.
+Both are kept by the crb server, not the browser, as marker files in
+`$XDG_STATE_HOME/carbonless/agent-setup/` (`~/.local/state/carbonless/…`
+by default): delete that folder to unfold both.
 
 **Then, in the session:** "join the carbonless review at
 `http://<host>:4747/r/<id>`" (step 2 of the tab shows that line too), or "join my
@@ -342,8 +392,9 @@ session can pick one. The tools' replies tell the session every step:
 4. When a question arrives, the watch command prints one line and exits,
    which wakes the session (Claude Code: a background command's exit).
 
-Approving a join stops the ACP buddy (it finishes the turn it is on, or
-is cancelled after 30 s) and clears the review's spawn flag, so it stays
+Approving a join stops the spawned agent (it may still land the answer
+it is on within 30 s, then its turn is cancelled) and clears the review's
+spawn flag, so it stays
 off, across crb restarts, until you press Spawn again. A joined session leaving doesn't bring it back.
 
 **Does a session that's already running pick up the server?** Not

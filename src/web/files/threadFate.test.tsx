@@ -10,10 +10,12 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import type { Fate } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { NotInComparison } from "./NotInComparison";
 import {
+	ChangedSince,
 	PlacementChip,
 	type PlacementInfo,
 	PlacementProvider,
@@ -373,30 +375,169 @@ describe("PlacementChip", () => {
 	});
 });
 
+/** Each fate's sentence: the open row's title and, resolved, its quiet line. */
+const SENTENCES: [Fate | null, string][] = [
+	["deleted", "Commented line has been deleted since the review"],
+	["rewritten", "Commented line has been rewritten since the review"],
+	["outdated", "GitHub marks the commented line outdated"],
+	["untraced", "Couldn't trace the commented line here"],
+	["reverted", "The commented change has been reverted since the review"],
+	[
+		"base-changed",
+		"The base changed under the commented line since the review",
+	],
+	["file-gone", "Commented file has been deleted since the review"],
+	[null, "Couldn't work out where this thread is now"],
+];
+
+describe("ChangedSince", () => {
+	/** Carried from line 3 on PS1 to line 9, rewritten: what replaced it is the head's. */
+	const changed = {
+		kind: "changed" as const,
+		anchor: {
+			path: `src/${HOSTILE}.ts`,
+			startSide: "RIGHT" as const,
+			startLine: 9,
+			side: "RIGHT" as const,
+			line: 9,
+		},
+		old: { side: "RIGHT" as const, startLine: 3, line: 3, text: [HOSTILE] },
+		now: ["the line placed on now"],
+	};
+
+	it("shows the code the thread was written on (its own patch set's lines), never the lines it sits on now", async () => {
+		render(
+			wrap(
+				info(),
+				inRouter(() => <ChangedSince thread={thread()} placement={changed} />),
+			),
+		);
+		const box = await screen.findByTestId("original-code");
+		expect(within(box).getByTestId("original-code-label").textContent).toBe(
+			`PS1 · src/${HOSTILE}.ts · line 3`,
+		);
+		expect(
+			within(box)
+				.getAllByTestId("original-code-line")
+				.map((l) => l.textContent),
+		).toEqual([
+			expect.stringContaining("line 1"),
+			expect.stringContaining("line 2"),
+			expect.stringContaining(HOSTILE),
+			expect.stringContaining("line 4"),
+			expect.stringContaining("line 5"),
+		]);
+		expect(document.body.textContent).not.toContain("the line placed on now");
+		expect(screen.getByTestId("placement-fate-line").textContent).toContain(
+			"Line rewritten since PS1",
+		);
+		expect(document.querySelector("img[src='x']")).toBeNull();
+	});
+
+	it("while its code is on its way: the code's frame, never the lines it sits on now", async () => {
+		const t = thread();
+		const pending = thread({
+			code: t.code && { ...t.code, rows: [], source: "pending" },
+		});
+		render(
+			wrap(
+				info(),
+				inRouter(() => <ChangedSince thread={pending} placement={changed} />),
+			),
+		);
+		expect(await screen.findByTestId("original-code-loading")).toHaveAttribute(
+			"aria-busy",
+			"true",
+		);
+		expect(document.body.textContent).not.toContain("the line placed on now");
+		expect(screen.queryByTestId("original-code-line")).toBeNull();
+	});
+
+	it("with no code of its own (none, or none marked): the commented lines it was written on from the placement, never the ones it sits on now", async () => {
+		const t = thread();
+		for (const code of [
+			null,
+			t.code && {
+				...t.code,
+				rows: t.code.rows.map((r) => ({ ...r, marked: false })),
+			},
+		]) {
+			const { unmount } = render(
+				wrap(
+					info(),
+					inRouter(() => (
+						<ChangedSince thread={thread({ code })} placement={changed} />
+					)),
+				),
+			);
+			const box = await screen.findByTestId("original-code");
+			expect(within(box).getByTestId("original-code-label").textContent).toBe(
+				`PS1 · src/${HOSTILE}.ts · line 3`,
+			);
+			const rows = within(box).getAllByTestId("original-code-line");
+			expect(rows.map((l) => l.textContent)).toEqual([
+				expect.stringContaining(HOSTILE),
+			]);
+			expect(rows[0]).toHaveAttribute("data-marked", "true");
+			expect(document.body.textContent).not.toContain("the line placed on now");
+			expect(document.querySelector("img[src='x']")).toBeNull();
+			unmount();
+		}
+	});
+
+	it("the Overview's card (lines off) shows only the fate line: the card has its own code", async () => {
+		render(
+			wrap(
+				info(),
+				inRouter(() => (
+					<ChangedSince thread={thread()} placement={changed} lines={false} />
+				)),
+			),
+		);
+		await screen.findByTestId("placement-fate-line");
+		expect(screen.queryByTestId("original-code")).toBeNull();
+		expect(document.body.textContent).not.toContain("the line placed on now");
+	});
+});
+
 describe("UnplacedRow", () => {
 	afterEach(() => vi.unstubAllGlobals());
 
-	it.each<[Fate | null, string]>([
-		["deleted", "Commented line has been deleted since the review"],
-		["rewritten", "Commented line has been rewritten since the review"],
-		["outdated", "GitHub marks the commented line outdated"],
-		["untraced", "Couldn't trace the commented line here"],
-		["reverted", "The commented change has been reverted since the review"],
-		[
-			"base-changed",
-			"The base changed under the commented line since the review",
-		],
-		["file-gone", "Commented file has been deleted since the review"],
-		[null, "Couldn't work out where this thread is now"],
-	])("its top row says the fate %s in a sentence", (fate, sentence) => {
-		render(
-			wrap(info(), <UnplacedRow thread={thread()} readId="r1" fate={fate} />),
-		);
-		const top = screen.getByTestId("unplaced-fate");
-		expect(top.textContent).toBe(sentence);
-		// One line on a phone: truncated, never wrapped.
-		expect(top.className).toContain("truncate");
-	});
+	it.each(SENTENCES)(
+		"its top row says the fate %s in a sentence",
+		(fate, sentence) => {
+			render(
+				wrap(info(), <UnplacedRow thread={thread()} readId="r1" fate={fate} />),
+			);
+			const top = screen.getByTestId("unplaced-fate");
+			expect(top.textContent).toBe(sentence);
+			// One line on a phone: truncated, never wrapped.
+			expect(top.className).toContain("truncate");
+		},
+	);
+
+	it.each(SENTENCES)(
+		"resolved, its quiet line keeps the fate %s's sentence (CAR-158)",
+		(fate, sentence) => {
+			render(
+				wrap(
+					info(),
+					<UnplacedRow
+						thread={thread({ resolved: true, author: "rev1" })}
+						readId="r1"
+						fate={fate}
+					/>,
+				),
+			);
+			const line = screen.getByTestId("unplaced-collapsed");
+			expect(line.textContent).toBe(`${sentence} · rev1`);
+			expect(line).toHaveAccessibleName(
+				`Resolved thread by rev1: ${sentence}. Expand`,
+			);
+			// One line on a phone: truncated, never wrapped.
+			expect(line.querySelector(".truncate")).toBeTruthy();
+		},
+	);
 
 	it("moved? names where the line may have gone, as text", () => {
 		render(
@@ -415,6 +556,48 @@ describe("UnplacedRow", () => {
 			`Commented line may have moved to lib/${HOSTILE}.ts`,
 		);
 		expect(top.querySelector("img")).toBeNull();
+	});
+
+	it("resolved, moved? still names where the line may have gone (CAR-158)", () => {
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({ resolved: true, author: "rev1" })}
+					readId="r1"
+					fate="moved"
+					movedTo={`lib/${HOSTILE}.ts`}
+				/>,
+			),
+		);
+		const line = screen.getByTestId("unplaced-collapsed");
+		expect(line.textContent).toBe(
+			`Commented line may have moved to lib/${HOSTILE}.ts · rev1`,
+		);
+		expect(line).toHaveAccessibleName(
+			`Resolved thread by rev1: Commented line may have moved to lib/${HOSTILE}.ts. Expand`,
+		);
+		expect(line.querySelector("img")).toBeNull();
+	});
+
+	it("resolved, its quiet line's whole sentence shows in a tooltip, as the open row's (CAR-158)", async () => {
+		const user = userEvent.setup();
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({ resolved: true, author: "rev1" })}
+					readId="r1"
+					fate="deleted"
+				/>,
+			),
+		);
+		await user.tab();
+		expect(screen.getByTestId("unplaced-collapsed")).toHaveFocus();
+		// Not a description: the button's name already says it.
+		expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
 	});
 
 	it("the original code sits in a titled box: Original Reviewed Change, then where it was", () => {
@@ -546,10 +729,24 @@ describe("a resolved unplaced thread", () => {
 		const quiet = rows[1] as HTMLElement;
 		expect(quiet).toHaveAttribute("data-resolved", "true");
 		const line = within(quiet).getByTestId("unplaced-collapsed");
-		expect(line.textContent).toBe("File deleted · a.ts · rev1");
+		// As the open row: the sentence truncates on its own; who wrote it
+		// never shrinks; the path has a line of its own, outside the
+		// sentence's truncation, so a phone still shows both (CAR-158).
+		const fate = within(line).getByTestId("unplaced-collapsed-fate");
+		expect(fate.textContent).toBe(
+			"Commented file has been deleted since the review",
+		);
+		expect(fate.className).toContain("truncate");
+		const who = within(line).getByTestId("unplaced-collapsed-who");
+		expect(who.textContent).toBe(" · rev1");
+		expect(who.className).toContain("shrink-0");
+		const path = within(line).getByTestId("unplaced-collapsed-path");
+		expect(path.textContent).toBe("a.ts");
+		expect(fate.contains(path)).toBe(false);
+		expect(path.parentElement?.className).toContain("flex-col");
 		// Its name says what it shows, the path too.
 		expect(line).toHaveAccessibleName(
-			"Resolved thread by rev1: File deleted · a.ts. Expand",
+			"Resolved thread by rev1: Commented file has been deleted since the review · a.ts. Expand",
 		);
 		expect(line).toHaveAttribute("aria-expanded", "false");
 		expect(line.className).toContain("text-muted");
@@ -585,7 +782,7 @@ describe("a resolved unplaced thread", () => {
 			),
 		);
 		expect(screen.getByTestId("unplaced-collapsed").textContent).toContain(
-			"Line deleted",
+			"Commented line has been deleted since the review",
 		);
 		expect(screen.queryByTestId("original-code")).toBeNull();
 		rerender(

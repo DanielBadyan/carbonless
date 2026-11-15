@@ -117,6 +117,69 @@ describe("AcpAgent", () => {
 		expect(session?.params).toEqual({ cwd: dir, mcpServers: [] });
 	});
 
+	it("session/new carries crb's MCP server over http when the agent advertises it (the key in the URL, the secret as a header)", async () => {
+		scenario();
+		const { agent } = await spawn({
+			mcp: {
+				url: "http://127.0.0.1:4800/mcp",
+				key: "k3y",
+				headers: [{ name: "X-Crb-Spawn", value: "s3cret" }],
+			},
+		});
+		expect(agent.alive).toBe(true);
+		const session = acpLog(logPath).find((e) => e.method === "session/new");
+		expect(session?.params).toEqual({
+			cwd: dir,
+			mcpServers: [
+				{
+					type: "http",
+					name: "crb",
+					url: "http://127.0.0.1:4800/mcp?key=k3y",
+					headers: [{ name: "X-Crb-Spawn", value: "s3cret" }],
+				},
+			],
+		});
+	});
+
+	it("without http, the stdio bridge: crb's own command with --url and no secret in argv; the key and headers in its env", async () => {
+		scenario({ mcpHttp: false });
+		const { agent } = await spawn({
+			mcp: {
+				url: "http://127.0.0.1:4800/mcp",
+				key: "k3y",
+				headers: [{ name: "X-Crb-Spawn", value: "s3cret" }],
+			},
+			bridge: { command: "/usr/bin/node", args: ["/crb/cli.js", "mcp-bridge"] },
+		});
+		expect(agent.alive).toBe(true);
+		const session = acpLog(logPath).find((e) => e.method === "session/new");
+		const servers =
+			(session?.params as { mcpServers: unknown[] } | undefined)?.mcpServers ??
+			[];
+		expect(servers).toEqual([
+			{
+				name: "crb",
+				command: "/usr/bin/node",
+				args: [
+					"/crb/cli.js",
+					"mcp-bridge",
+					"--url",
+					"http://127.0.0.1:4800/mcp",
+				],
+				env: [
+					{ name: "CRB_MCP_KEY", value: "k3y" },
+					{
+						name: "CRB_MCP_HEADERS",
+						value: '[{"name":"X-Crb-Spawn","value":"s3cret"}]',
+					},
+				],
+			},
+		]);
+		expect(JSON.stringify((servers[0] as { args: string[] }).args)).not.toMatch(
+			/k3y|s3cret/,
+		);
+	});
+
 	it("args reach the agent as given, shell metacharacters too (a Windows .cmd shim runs through cmd.exe)", async () => {
 		scenario();
 		const args = [

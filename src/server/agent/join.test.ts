@@ -697,3 +697,133 @@ describe("the grace gate (test-only CRB_JOIN_GRACE_GATE)", () => {
 		expect(left).toEqual(["lost"]);
 	});
 });
+
+describe("JoinBroker: a spawned agent (admit)", () => {
+	const AGENT = { name: "fake-acp", machine: "devbox", harness: "1.0.0" };
+	const SECRET = "s".repeat(43);
+
+	it("admit then collect with the secret: approved, a token check accepts, via acp; no join request, no joined.json", async () => {
+		const b = make();
+		fsCalls.length = 0;
+		const { request } = b.admit(AGENT, SECRET);
+		expect(b.view().joinRequest).toBeUndefined();
+		expect(b.isSpawned()).toBe(true);
+		expect(b.attached()).toBe(false);
+		const o = await b.outcome(request, 0, SECRET);
+		expect(o.state).toBe("approved");
+		const token = (o as Extract<AttachOutcome, { state: "approved" }>).token;
+		expect(b.check(token)).toBe(true);
+		expect(b.attached()).toBe(true);
+		expect(b.view()).toMatchObject({ via: "acp", joined: AGENT });
+		expect(b.view().joinRequest).toBeUndefined();
+		expect(existsSync(join(dir, "joined.json"))).toBe(false);
+		expect(fsCalls.filter((c) => c.includes("joined.json"))).toEqual([]);
+		expect(approved).toBe(0);
+	});
+
+	it("collected once; without the secret, or with another, it is expired (and still collectable by its own)", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		expect(await b.outcome(request, 0)).toEqual({ state: "expired" });
+		expect(await b.outcome(request, 0, "")).toEqual({ state: "expired" });
+		expect(await b.outcome(request, 0, "x".repeat(43))).toEqual({
+			state: "expired",
+		});
+		expect((await b.outcome(request, 0, SECRET)).state).toBe("approved");
+		expect(await b.outcome(request, 0, SECRET)).toEqual({ state: "expired" });
+	});
+
+	it("no absence timers: no watcher for far past graceMs and busyMs, still joined; it never gets a watcher", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		const o = await b.outcome(request, 0, SECRET);
+		const token = (o as Extract<AttachOutcome, { state: "approved" }>).token;
+		b.handOut("t1", "m1");
+		await vi.advanceTimersByTimeAsync(JOIN.busyMs + JOIN.graceMs + 1000);
+		b.replied("t1");
+		await vi.advanceTimersByTimeAsync(JOIN.busyMs + JOIN.graceMs + 1000);
+		expect(b.isJoined()).toBe(true);
+		expect(left).toEqual([]);
+		expect(b.watcher(token)).toBeNull();
+	});
+
+	it("presence follows setBusy and the hand-out", async () => {
+		const b = make();
+		b.admit(AGENT, SECRET);
+		expect(b.view().presence).toBe("listening");
+		b.setBusy(true);
+		expect(b.view().presence).toBe("busy");
+		b.setBusy(false);
+		b.handOut("t1", "m1");
+		expect(b.view().presence).toBe("busy");
+		b.release("t1");
+		expect(b.handedOut()).toBeNull();
+		expect(b.view().presence).toBe("listening");
+	});
+
+	it("never collected within expiryMs: the join ends as lost", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		await vi.advanceTimersByTimeAsync(JOIN.expiryMs + 1);
+		expect(b.isJoined()).toBe(false);
+		expect(left).toEqual(["lost"]);
+		expect(await b.outcome(request, 0, SECRET)).toEqual({ state: "expired" });
+	});
+
+	it("spawnedGone ends it (its request dies with it); it doesn't touch a session that joined by Approve", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		b.spawnedGone("lost");
+		expect(b.isJoined()).toBe(false);
+		expect(await b.outcome(request, 0, SECRET)).toEqual({ state: "expired" });
+		await joined(b);
+		b.spawnedGone("lost");
+		expect(b.isJoined()).toBe(true);
+	});
+
+	it("admit replaces a joined session (replaced); a pending request stays pending", async () => {
+		const b = make();
+		await joined(b);
+		const { request: pending } = b.request({ ...WHO, name: "other" });
+		b.admit(AGENT, SECRET);
+		expect(left).toEqual(["replaced"]);
+		expect(existsSync(join(dir, "joined.json"))).toBe(false);
+		expect(b.view().joinRequest?.id).toBe(pending);
+	});
+
+	it("an outside join approved while the spawned agent holds a thread: its token may reply to that thread only, until acpStopMs", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		const o = await b.outcome(request, 0, SECRET);
+		const old = (o as Extract<AttachOutcome, { state: "approved" }>).token;
+		b.handOut("t1", "m1");
+		const { request: outside } = b.request(WHO);
+		await b.answer(outside, true);
+		expect(left).toEqual(["replaced"]);
+		expect(b.check(old)).toBe(false);
+		expect(b.replaceGrace()).toMatchObject({ thread: "t1", who: AGENT });
+		expect(b.graceAllows(old, "t1")).toBe(true);
+		expect(b.graceAllows(old, "t2")).toBe(false);
+		expect(b.graceAllows("x".repeat(43), "t1")).toBe(false);
+		await vi.advanceTimersByTimeAsync(JOIN.acpStopMs + 1);
+		expect(b.graceAllows(old, "t1")).toBe(false);
+		expect(b.replaceGrace()).toBeNull();
+	});
+
+	it("endGrace ends it early; no hand-out at the approve: no grace", async () => {
+		const b = make();
+		const { request } = b.admit(AGENT, SECRET);
+		const o = await b.outcome(request, 0, SECRET);
+		const old = (o as Extract<AttachOutcome, { state: "approved" }>).token;
+		b.handOut("t1", "m1");
+		const { request: outside } = b.request(WHO);
+		await b.answer(outside, true);
+		b.endGrace();
+		expect(b.graceAllows(old, "t1")).toBe(false);
+		const c = make({ dir: mkdtempSync(join(tmpdir(), "crb-join-")) });
+		c.admit(AGENT, SECRET);
+		const { request: r2 } = c.request(WHO);
+		await c.answer(r2, true);
+		expect(c.replaceGrace()).toBeNull();
+	});
+});

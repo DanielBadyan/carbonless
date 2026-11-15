@@ -15,6 +15,7 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import type { AgentThread } from "../../shared/agent";
+import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
 import { AgentNotInComparison } from "../agent/AgentNotInComparison";
@@ -56,7 +57,7 @@ import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree } from "./FileTree";
-import { nextFile } from "./fileFinish";
+import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { FindBar } from "./find/FindBar";
@@ -106,7 +107,7 @@ const NO_THREADS: ReviewThread[] = [];
 const NO_AGENT_THREADS: AgentThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
-import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
+import { STALE_MESSAGE, useReviewView, useSyncStale } from "./useSetStates";
 import { useViewShortcuts } from "./viewShortcuts";
 
 /**
@@ -621,7 +622,7 @@ export function FilesPage() {
 		if (!eyesOnly || !byFile) return ordered;
 		return ordered.filter((f) => eyesOf(f, byFile.get(f.index)) !== "carried");
 	}, [data, eyesOnly, byFile]);
-	const { stale } = useSyncState();
+	const stale = useSyncStale();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();
@@ -855,7 +856,29 @@ export function FilesPage() {
 	 * With none left it closes and the verdict at the end rises into view.
 	 */
 	const finished = (index: number) => {
-		const next = nextFile(files, index);
+		// In the since view a file's since-only pieces are left in it too,
+		// and the gone files after the tree's (no clusters: all pieces) are
+		// files to move on to like any other.
+		const candidates = [
+			...files,
+			...gone.map((g) => ({ index: g.index, path: g.path, clusters: [] })),
+		];
+		const next = nextFile(candidates, index, (f) =>
+			fileLeft(
+				f.clusters,
+				since === null || !sinceAnswer
+					? undefined
+					: {
+							marks: data?.sinceMarks,
+							since,
+							path: f.path,
+							pieces: sinceOnlyPieces(
+								piecesByFile.get(f.index) ?? [],
+								new Set(f.clusters.map((c) => c.key)),
+							),
+						},
+			),
+		);
 		if (!next) {
 			// The verdict rises where the click landed: a double click's
 			// second click must not send a verdict (Approve posts at once).
@@ -1269,6 +1292,12 @@ export function FilesPage() {
 					? ("failed" as const)
 					: undefined;
 	// Each file's header meter in the since view: its own units.
+	// The since view's pieces of each file (the header marks them).
+	const piecesByFile = useMemo(
+		() =>
+			new Map((sinceAnswer?.files ?? []).map((f) => [f.index, f.pieces ?? []])),
+		[sinceAnswer],
+	);
 	const unitsByFile = useMemo(() => {
 		const out = new Map<number, typeof units>();
 		for (const u of units) out.set(u.index, [...(out.get(u.index) ?? []), u]);
@@ -1545,6 +1574,7 @@ export function FilesPage() {
 														)}
 														sincePending={sinceView.pending}
 														sinceMarks={data.sinceMarks}
+														sincePieces={piecesByFile.get(file.index)}
 														counted={
 															// The since view counts its units: none here is
 															// nothing to read, never the snapshot's numbers.
@@ -1570,6 +1600,7 @@ export function FilesPage() {
 														since={since as number}
 														info={byFile?.get(file.index)}
 														sinceMarks={data.sinceMarks}
+														pieces={file.pieces}
 														readOnly={readOnly}
 														expanded={open === keyOf(file.index)}
 														onExpandedChange={(expanded) =>
@@ -1577,6 +1608,12 @@ export function FilesPage() {
 														}
 														pathFind={find.pathOf(file.index)}
 														find={find.diffOf(file.index)}
+														onFinished={() => finished(file.index)}
+														ignoreMarksUntil={
+															movedOn?.key === keyOf(file.index)
+																? movedOn.until
+																: undefined
+														}
 													/>
 												))}
 												{/* Threads whose file isn't in this comparison at all. */}

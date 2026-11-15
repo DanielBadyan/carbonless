@@ -73,7 +73,7 @@ import {
 	type Words,
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
-import { Spinner } from "../Spinner";
+import { Spinner, SpinnerIcon } from "../Spinner";
 import {
 	clickPointer,
 	isTap,
@@ -134,8 +134,8 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -248,6 +248,77 @@ function LeadSlot(props: { lead: FileLead; centred: boolean }) {
 /** A non-code row's text cell beside the file bubble: its padding and line. */
 const leadText = (lead: FileLead | undefined, centred: boolean, others = 0) =>
 	`${bubblePad(others + (lead && !centred ? (lead.count ?? 1) : 0))} ${lead && centred ? LEAD_LINE : ""}`;
+
+/**
+ * A file-level label ("Renamed from …", a mode change) and the file's
+ * bubbles, when it is the diff's first row (CAR-152): one row as wide as
+ * the diff's visible width (`--diff-w`) less what sits left of the label
+ * (`--lead-l`, measured), the label wrapping in what the bubbles leave it,
+ * whatever width they render at. Sticky at the left, so scrolling long
+ * lines sideways keeps both in view. Centred, the bubble would cover the
+ * label's text and taps.
+ */
+function FileLabel(props: { children: ReactNode; bubble?: ReactNode }) {
+	const box = useRef<HTMLDivElement>(null);
+	useLayoutEffect(() => {
+		const el = box.current;
+		const cell = el?.parentElement;
+		const table = cell?.closest("table");
+		if (!el || !cell || !table) return;
+		const set = () => {
+			const pad = Number.parseFloat(getComputedStyle(cell).paddingLeft) || 0;
+			const left =
+				cell.getBoundingClientRect().left -
+				table.getBoundingClientRect().left +
+				pad;
+			el.style.setProperty("--lead-l", `${left}px`);
+		};
+		set();
+		if (typeof ResizeObserver === "undefined") return;
+		// The controls beside it, or the table, change size: it moves.
+		const observer = new ResizeObserver(set);
+		observer.observe(table);
+		if (cell.previousElementSibling) {
+			observer.observe(cell.previousElementSibling);
+		}
+		return () => observer.disconnect();
+	}, []);
+	return (
+		<div
+			ref={box}
+			data-testid="file-label"
+			className="sticky left-0 z-[4] flex w-[calc(var(--diff-w,100%)-var(--lead-l,0px)-0.5rem)] items-start gap-2"
+		>
+			<span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+				{props.children}
+			</span>
+			{props.bubble && (
+				<span className="flex shrink-0 select-none">{props.bubble}</span>
+			)}
+		</div>
+	);
+}
+
+/**
+ * A label whose paths may break after each "/" (`<wbr>`: nothing added to
+ * copy), rather than mid-name; a name wider than the line still breaks
+ * anywhere (FileLabel). Plain text: React escapes it.
+ */
+export function breakablePath(text: string | undefined): ReactNode {
+	if (!text) return null;
+	const parts = text.split("/");
+	return parts.map((part, i) =>
+		i === parts.length - 1 ? (
+			// biome-ignore lint/suspicious/noArrayIndexKey: the parts never reorder.
+			<Fragment key={i}>{part}</Fragment>
+		) : (
+			// biome-ignore lint/suspicious/noArrayIndexKey: the parts never reorder.
+			<Fragment key={i}>
+				{part}/<wbr />
+			</Fragment>
+		),
+	);
+}
 
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
@@ -686,6 +757,42 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 }
 
 /**
+ * In the sign's place, on a paired line whose word marks are still being
+ * computed off the render path (wordWork.ts): a spinner; or, when marking
+ * them failed, a warning (the line is unmarked, but not because nothing
+ * changed). As wide as the sign, so nothing moves when the marks come and
+ * the sign is back. An image, not a live region: a block of hundreds of
+ * pending lines mustn't flood a screen reader (the cell is `aria-busy`).
+ */
+function WordsSign({ failed }: { failed?: boolean }) {
+	const label = failed ? FAILED_WORDS : PENDING_WORDS;
+	return (
+		<Tooltip content={label} describe={false} lazy>
+			{(trigger) => (
+				<span
+					{...trigger}
+					role="img"
+					aria-label={label}
+					tabIndex={-1}
+					data-words-pending={failed ? undefined : ""}
+					data-words-failed={failed ? "" : undefined}
+					className={`mr-2 inline-flex w-[1ch] select-none justify-center align-[-1px] ${failed ? "text-bad" : "text-muted"} focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					{failed ? (
+						<AlertIcon size={12} aria-hidden />
+					) : (
+						<SpinnerIcon size={12} />
+					)}
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+const PENDING_WORDS = "Marking changed words";
+const FAILED_WORDS = "Couldn't mark changed words";
+
+/**
  * Before a warning goes, moves focus it holds to its line: the line's number
  * button (its own side's first), else the code cell itself.
  */
@@ -872,6 +979,7 @@ function CodeCell(props: {
 			data-commented={cell?.commented ? "" : undefined}
 			data-picked={cell?.picked || undefined}
 			data-find-current={cell?.current || undefined}
+			aria-busy={props.words?.pending || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
 			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
 		>
@@ -884,6 +992,10 @@ function CodeCell(props: {
 			)}
 			{props.words?.hidden ? (
 				<HiddenWarning kind={line.kind} />
+			) : props.words?.failed ? (
+				<WordsSign failed />
+			) : props.words?.pending ? (
+				<WordsSign />
 			) : (
 				<Sign kind={line.kind} />
 			)}
@@ -935,10 +1047,14 @@ interface RowProps {
 	composers?: RowComposers;
 	find?: DiffFind;
 	agent?: AgentRows;
-	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	/** The hunk's paired lines' word marks (wordWork.ts hunkWords of hunkView's pairs), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
 	hidden?: ReadonlySet<DiffLine>;
+	/** The paired lines whose word marks are still being computed (wordWork.ts). */
+	pendingWords?: ReadonlySet<DiffLine>;
+	/** The paired lines whose word marks couldn't be computed (wordWork.ts). */
+	failedWords?: ReadonlySet<DiffLine>;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -953,18 +1069,22 @@ const NO_MARKS: readonly Mark[] = [];
  */
 function wordsOf(
 	line: RowLine,
-	props: Pick<RowProps, "words" | "hidden">,
+	props: Pick<RowProps, "words" | "hidden" | "pendingWords" | "failedWords">,
 	reviewed: boolean,
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
 	// A BOM may be hidden on a line without marks (hiddenLines).
 	const hidden = props.hidden?.has(line) || undefined;
-	if (!marks && !hidden) return undefined;
+	const pending = props.pendingWords?.has(line) || undefined;
+	const failed = props.failedWords?.has(line) || undefined;
+	if (!marks && !hidden && !pending && !failed) return undefined;
 	return {
 		marks: marks ?? NO_MARKS,
 		tone: reviewed ? `${line.kind}-done` : line.kind,
 		hidden,
+		pending,
+		failed,
 	};
 }
 
@@ -1813,12 +1933,6 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 }
 
 /**
- * A thread's lines further than this from a gap's loaded edge load on
- * their own (a few around them), not the whole way from the edge.
- */
-const FAR = 200;
-
-/**
  * The runs of a gap's lines that aren't loaded, top down (lines on their way
  * or failed are in them: their run's row says so).
  */
@@ -2256,6 +2370,12 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	/**
+	 * Each thread key on a hidden-lines row, to the key its bubble goes by
+	 * (the run's first thread's): filled as the gap rows are drawn.
+	 */
+	const runBubbleOf = useRef(new Map<LineKey, LineKey>());
+	runBubbleOf.current = new Map();
 	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
 	// every key of its row, as the bubble closes it (a context line's is
 	// open under either side's).
@@ -2268,17 +2388,12 @@ export function DiffBody(props: {
 				return next;
 			}),
 		focus: setFocusThread,
+		// A thread of a hidden-lines row is under that row's bubble.
 		element: (key) =>
 			scroller.current?.querySelector(
-				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${runBubbleOf.current.get(key) ?? key}`)}"]`,
 			) ?? null,
 	});
-	// A gap's window that failed drops its focus target, so a later Retry
-	// doesn't take focus from wherever the reader is by then.
-	const windowFailed = contexts.some((c) => c.isError);
-	useEffect(() => {
-		if (windowFailed) setFocusThread(null);
-	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
 		for (const k of keys) collapse.toggled(k);
@@ -2287,6 +2402,23 @@ export function DiffBody(props: {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
 			else next.add(key);
+			return next;
+		});
+	};
+	/**
+	 * A hidden-lines row's bubble: opens (or closes) its threads under the
+	 * keys of the rows they end on, every one, so each is open on its line
+	 * once the reviewer shows it.
+	 */
+	const openRun = (keys: LineKey[], open: boolean) => {
+		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		setOpenThreads((was) => {
+			const next = new Set(was);
+			for (const k of keys) {
+				if (open) next.add(k);
+				else next.delete(k);
+			}
 			return next;
 		});
 	};
@@ -2604,41 +2736,28 @@ export function DiffBody(props: {
 			) {
 				return;
 			}
-			const start = run.from + top;
-			const end = run.to - bottom;
-			/**
-			 * Opens the run's threads where they are: loads their lines (from
-			 * the nearer edge when it's close, else just around them) and opens
-			 * each on its row, its bubble focused.
-			 */
-			const loadAround = (target: { show: [number, number] }) => {
-				const [from, to] = target.show;
-				const window: [number, number] =
-					from - start <= FAR && from - start <= end - to
-						? [start, Math.min(end, to + 3)]
-						: end - to <= FAR
-							? [Math.max(start, from - 3), end]
-							: [Math.max(start, from - 10), Math.min(end, to + 3)];
-				if (window[0] <= window[1]) addRange(window[0], window[1]);
-			};
-			/** Opens the run's agent threads where they are, like its comments. */
-			const openRunAgent = () => {
-				for (const p of runAgent) {
-					const target = agentTargetOf(p);
-					if (!target) continue;
-					loadAround(target);
-					setOpenAgent((open) => new Set(open).add(target.key));
-				}
-			};
-			const openRunThreads = () => {
-				for (const t of runThreads) {
-					const target = targetOf(t);
-					if (!target) continue;
-					loadAround(target);
-					setOpenThreads((open) => new Set(open).add(target.key));
-					setFocusThread(target.key);
-				}
-			};
+			// The run's bubbles open its threads right under the row, its
+			// lines left hidden (the owner, 2026-11-14: "opening a comment
+			// inside a hidden row opens the row - it shouldn't, just open the
+			// bubble"). They open under the keys of the rows they end on, so
+			// once the reviewer shows those lines by the row's own controls,
+			// they are open there.
+			const runKeys = runThreads.flatMap((t) => {
+				const key = targetOf(t)?.key;
+				return key ? [key] : [];
+			});
+			const runKey = runKeys[0];
+			if (runKey) for (const k of runKeys) runBubbleOf.current.set(k, runKey);
+			const runOpen = runKeys.some((k) => openThreads.has(k));
+			const runShown = runOpen
+				? runThreads.filter(rowThreads?.collapse.shows ?? (() => true))
+				: [];
+			const agentKeys = runAgent.flatMap((p) => {
+				const key = agentTargetOf(p)?.key;
+				return key ? [key] : [];
+			});
+			const agentKey = agentKeys[0];
+			const agentOpen = agentKeys.some((k) => openAgent.has(k));
 			const runLead = lead?.();
 			const where =
 				run.from === run.to
@@ -2711,8 +2830,17 @@ export function DiffBody(props: {
 										inline
 										threads={runThreads}
 										where={where}
-										open={false}
-										onToggle={openRunThreads}
+										open={runOpen}
+										controls={
+											runOpen && runKey
+												? `${idBase}-thread-${runKey}`
+												: undefined
+										}
+										focus={
+											focusThread !== null && runKeys.includes(focusThread)
+										}
+										onFocused={() => setFocusThread(null)}
+										onToggle={() => openRun(runKeys, !runOpen)}
 									/>
 								)}
 								{runAgent.length > 0 && (
@@ -2720,8 +2848,22 @@ export function DiffBody(props: {
 										inline
 										threads={runAgent.map((p) => p.thread)}
 										where={where}
-										open={false}
-										onToggle={openRunAgent}
+										open={agentOpen}
+										controls={
+											agentOpen && agentKey
+												? `${idBase}-agent-${agentKey}`
+												: undefined
+										}
+										onToggle={() =>
+											setOpenAgent((was) => {
+												const next = new Set(was);
+												for (const k of agentKeys) {
+													if (agentOpen) next.delete(k);
+													else next.add(k);
+												}
+												return next;
+											})
+										}
 									/>
 								)}
 							</BubbleSlot>
@@ -2761,6 +2903,54 @@ export function DiffBody(props: {
 					</td>
 				</GapRowTr>,
 			);
+			if (runKey && runOpen && props.threads) {
+				const readId = props.threads.readId;
+				rows.push(
+					<ThreadRow
+						// By its first thread's line: stays mounted as lines
+						// load around it and the run shrinks.
+						key={`gap${gap.index}:${runKey}:threads`}
+						id={`${idBase}-thread-${runKey}`}
+						readId={readId}
+						threads={runShown}
+						place={{ columns }}
+						onResolved={(t, from) => {
+							// Under the thread's own line, where it shows once
+							// that line loads: hidden or brought back there.
+							const own = targetOf(t)?.key ?? runKey;
+							const did = collapse.resolved({
+								key: own,
+								keys: runKeys,
+								thread: t,
+								shown: runShown,
+								from,
+							});
+							// Hidden while others show: its line's bubble is
+							// closed, unless another shown thread ends there.
+							const shared = runShown.some(
+								(o) => o !== t && targetOf(o)?.key === own,
+							);
+							if (did === "hidden" && !shared) {
+								setOpenThreads((open) => {
+									const next = new Set(open);
+									next.delete(own);
+									return next;
+								});
+							}
+						}}
+					/>,
+				);
+			}
+			if (agentKey && agentOpen) {
+				rows.push(
+					<AgentThreadRow
+						key={`gap${gap.index}:${agentKey}:agent`}
+						id={`${idBase}-agent-${agentKey}`}
+						threads={runAgent.map((p) => p.thread)}
+						place={{ columns }}
+					/>,
+				);
+			}
 			if (runLead) {
 				rows.push(
 					<Fragment key={`gap${gap.index}:${run.from}:file`}>
@@ -2790,13 +2980,11 @@ export function DiffBody(props: {
 				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
 					<Rail state={cluster.state} />
 					<ControlsCell className="py-1">{checkbox(cluster)}</ControlsCell>
-					<td
-						colSpan={columns - 2}
-						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
-					>
-						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{cluster.label}
-						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+					<td colSpan={columns - 2} className="px-2 py-1 font-sans text-sm">
+						<FileLabel bubble={lead?.bubble}>
+							{breakablePath(cluster.label)}
+							<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						</FileLabel>
 					</td>
 				</tr>
 				{lead?.row(columns, RAIL[cluster.state])}
@@ -3372,23 +3560,36 @@ function HunkRows(props: {
 		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
-	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
-	// over the whole hunk): not again on a toggle, a landing, a thread
-	// opening or a context load. Side by side, the rows laid out as pairs
-	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose. The word marks of the hunk's pairs with them, over all its
-	// runs' rows (a block may span two clusters), computed here, with the
-	// rows: a pair is never shown plain while its marks are pending.
-	const { hunkRuns, words } = useMemo(() => {
-		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+	// The hunk's runs and their rows (hunkView, cached per hunk: the
+	// matching is O(n·m) over the whole hunk), not again on a toggle, a
+	// landing, a thread opening or a context load. Rows never leave their
+	// run: unified, a run's rows are already in hunkView's order (a
+	// similarity pair reads together); side by side, they're laid out as
+	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
+	// whitespace and pairing compose. A pair whose lines sit in two runs
+	// gets its marks only: neither row moves.
+	const { hunkRuns, pairs } = useMemo(() => {
+		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const runs = shown.runs.map((run) => ({
 			...run,
-			side: view === "side-by-side" ? layoutRows(run.rows) : null,
+			side:
+				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
-		return {
-			hunkRuns: runs,
-			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
-		};
+		return { hunkRuns: runs, pairs: shown.pairs };
 	}, [hunk, ignoreWhitespace, view]);
+	// The word marks of the hunk's pairs: those done before and those the
+	// render budget allows now; the rest are marked off the render path and
+	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
+	// lines show a spinner meanwhile, or a warning if marking them failed.
+	// Unmounted, the hunk stops waiting, and work nobody waits for is dropped.
+	const [marked, setMarked] = useState(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
+	const hunkMarks = useMemo(() => hunkWords(pairs), [pairs, marked]);
+	const words = hunkMarks.marks;
+	useEffect(() => {
+		if (hunkMarks.later.length === 0) return;
+		return requestMarks(hunkMarks.later, () => setMarked((n) => n + 1));
+	}, [hunkMarks]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
 	const showHidden = useShowInvisibles();
@@ -3400,8 +3601,9 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+						pairs,
 					),
-		[showHidden, hunkRuns, words, props.tabWidth],
+		[showHidden, hunkRuns, words, pairs, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
@@ -3495,6 +3697,8 @@ function HunkRows(props: {
 					agent: props.agent,
 					words,
 					hidden,
+					pendingWords: hunkMarks.pending,
+					failedWords: hunkMarks.failed,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>
