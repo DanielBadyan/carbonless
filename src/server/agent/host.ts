@@ -200,7 +200,31 @@ export interface SessionReviewFacts {
 	title?: string;
 	body?: string;
 	files?: string[];
+	/** The PR's GitHub review threads (the `review` tool): ids to `open` on. */
+	threads?: SessionGithubThread[];
+	/** More than MAX_SESSION_THREADS: the rest are left out. */
+	threadsTruncated?: boolean;
+	/** GitHub's threads couldn't be read (why, one line). */
+	threadsError?: string;
 }
+
+/** A GitHub review thread as the `review` tool lists it (bodies sanitised and capped). */
+export interface SessionGithubThread {
+	id: string;
+	path: string;
+	line: number | null;
+	side: "LEFT" | "RIGHT" | null;
+	resolved: boolean;
+	outdated: boolean;
+	comments: { author: string; body: string }[];
+	/** Only the opening comment is listed: the others couldn't be read now. */
+	commentsPartial?: boolean;
+}
+
+/** At most this many GitHub threads in `review`. */
+export const MAX_SESSION_THREADS = 200;
+/** A comment body in `review`, in characters (cut with an ellipsis). */
+export const MAX_SESSION_COMMENT = 2048;
 
 /** What a joined session's tools read of the review (reviewAgentHost's facts). */
 export interface SessionFacts {
@@ -232,6 +256,10 @@ export type AgentGithub = Pick<
 > & {
 	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
 	base(): string;
+	/** The comments (author, markdown) of these threads, by id; absent: openers only. */
+	comments?(
+		ids: string[],
+	): Promise<Map<string, { author: string; body: string }[]>>;
 };
 
 /**
@@ -661,6 +689,7 @@ export class AgentHost {
 	async sessionReview(
 		secret: string,
 		withPr: boolean,
+		withThreads = false,
 	): Promise<SessionReviewFacts> {
 		await this.#token(secret);
 		const { facts } = this.#facts();
@@ -673,9 +702,54 @@ export class AgentHost {
 		};
 		if (!withPr) return out;
 		const pr = await facts.prFacts().catch(() => null);
-		return pr
+		const withFacts = pr
 			? { ...out, title: s(pr.title), body: s(pr.body), files: pr.files.map(s) }
 			: out;
+		return withThreads
+			? { ...withFacts, ...(await this.#sessionThreads()) }
+			: withFacts;
+	}
+
+	/** The PR's live GitHub threads for `review`, sanitised and capped. */
+	async #sessionThreads(): Promise<
+		Pick<SessionReviewFacts, "threads" | "threadsTruncated" | "threadsError">
+	> {
+		let listed: ReviewThread[];
+		try {
+			listed = [...liveGithubThreads(await this.github.threads()).values()];
+		} catch (error) {
+			return { threadsError: oneError(error) };
+		}
+		const kept = listed.slice(0, MAX_SESSION_THREADS);
+		const all = await (
+			this.github.comments?.(kept.map((t) => t.id)) ?? Promise.resolve(null)
+		).catch(() => null);
+		const s = sanitizeThirdParty;
+		const cap = (body: string) => {
+			const clean = s(body);
+			return clean.length > MAX_SESSION_COMMENT
+				? `${clean.slice(0, MAX_SESSION_COMMENT - 1)}…`
+				: clean;
+		};
+		const threads = kept.map((t): SessionGithubThread => {
+			const comments = all?.get(t.id);
+			return {
+				id: s(t.id),
+				path: s(t.path),
+				line: t.anchor?.line ?? t.line,
+				side: t.anchor?.side ?? null,
+				resolved: t.resolved,
+				outdated: t.outdated,
+				comments: (comments ?? [{ author: t.author, body: t.body }]).map(
+					(c) => ({ author: s(c.author), body: cap(c.body) }),
+				),
+				...(comments ? {} : { commentsPartial: true }),
+			};
+		});
+		return {
+			threads,
+			...(listed.length > kept.length ? { threadsTruncated: true } : {}),
+		};
 	}
 
 	/**
@@ -726,10 +800,21 @@ export class AgentHost {
 			);
 		}
 		const role = viewer ? await facts.authorOf(viewer) : undefined;
+		const requestText = (o: AgentOrigin) =>
+			threads
+				.find((t) => t.id === o.thread)
+				?.messages.find((m) => m.id === o.message)?.text;
 		const messages = thread.messages.map(
 			(m): PromptMessage =>
 				m.by === "ai"
-					? { author: { role: "agent" }, at: m.at, text: m.text }
+					? {
+							author: { role: "agent" },
+							at: m.at,
+							text: m.text,
+							...(m.origin && requestText(m.origin) !== undefined
+								? { re: requestText(m.origin) as string }
+								: {}),
+						}
 					: {
 							author:
 								viewer && role ? { login: viewer, role } : { role: "reviewer" },
@@ -1410,6 +1495,10 @@ export interface ReviewAgentSource {
 	 * no longer lists it (or it was deleted).
 	 */
 	githubThread(id: string, view: AgentView): Promise<AgentThreadRead | null>;
+	/** These threads' comments (author, markdown) from the current read, by id. */
+	comments?(
+		ids: string[],
+	): Promise<Map<string, { author: string; body: string }[]>>;
 }
 
 /** What the session reads of one GitHub thread for a thread turn. */
@@ -1598,6 +1687,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			thread: (id) => src.thread(id),
 			patchsets: () => src.patchsets(),
 			base: () => src.snapshot().base,
+			...(src.comments ? { comments: src.comments } : {}),
 		},
 		session: { facts, viewer: src.viewer },
 		claim: new ReviewClaim(dir, () => ({

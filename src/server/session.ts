@@ -379,6 +379,18 @@ export class Session {
 				await this.checkHead();
 			},
 			prAuthor: async () => (await this.overview()).author,
+			comments: async (ids) => {
+				const { read } = await this.#agentGithub();
+				const out = new Map<string, { author: string; body: string }[]>();
+				for (const t of (await read.comments(ids)).threads) {
+					if (t.unavailable) continue;
+					out.set(
+						t.threadId,
+						t.comments.map((c) => ({ author: c.author, body: c.body })),
+					);
+				}
+				return out;
+			},
 			githubThread: async (id, view) => {
 				const { read, threads } = await this.#agentGithub();
 				const thread = threads.find((t) => t.id === id);

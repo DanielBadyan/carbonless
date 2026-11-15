@@ -28,6 +28,11 @@ export interface PromptMessage {
 	};
 	at: string;
 	text: string;
+	/**
+	 * An agent message from `open`: the reviewer's request it came from
+	 * (that message's text), so the agent knows why it opened this.
+	 */
+	re?: string;
 }
 
 export type CommentRole = "reviewer" | "pr_author" | "other";
