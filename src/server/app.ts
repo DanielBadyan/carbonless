@@ -76,6 +76,7 @@ import {
 import { registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
+import { channelOf } from "./update/semver.js";
 import { UpdateRefusedError, type Updater } from "./update/updater.js";
 import { verdictProblem } from "./verdict.js";
 import {
@@ -132,6 +133,13 @@ const noUpdate = (): UpdateInfo => ({
 	command: null,
 	state: "idle",
 	failed: null,
+	commit: BUILD.commit,
+	channel: channelOf(BUILD.version),
+	install: null,
+	byHand: false,
+	lastChecked: null,
+	checkError: null,
+	checksOff: "unavailable",
 });
 
 /** A malformed request (HTTP 400). */
@@ -365,6 +373,17 @@ export async function buildApp(
 		if (!options.updater) throw new UpdateRefusedError("No updates here");
 		return reply.status(202).send(await options.updater.update(body.version));
 	});
+	// Global settings' "Check for updates": a check now (sharing one under
+	// way), its answer the fresh info. The hourly timer keeps its times.
+	app.post("/api/update/check", async (_request, reply) => {
+		reply.header("cache-control", "no-store");
+		const info = options.updater?.info();
+		if (!options.updater || !info || info.checksOff) {
+			throw new UpdateRefusedError("Update checks are off");
+		}
+		await options.updater.checkNow();
+		return options.updater.info();
+	});
 	// The page strips ?key= from its address, so a home-screen install would
 	// save a keyless URL and a shortcut with its own cookie jar would get 401.
 	app.get("/manifest.webmanifest", async (_request, reply) => {
@@ -421,6 +440,8 @@ export async function buildApp(
 		async (request) => {
 			const agent = registry.peek(request.params.id)?.agent;
 			if (!agent) return {};
+			// A hidden tab is an open page: its spawned agent stays (no use).
+			agent.pageSeen();
 			const { joinRequest, left } = agent.join.view();
 			return {
 				...(joinRequest ? { joinRequest } : {}),
@@ -436,6 +457,8 @@ export async function buildApp(
 				"preHandler",
 				async (request) => {
 					sessions.set(request, await registry.get(request.params.id));
+					// The page is open: a spawned agent's idle clock restarts.
+					registry.pageSeen(request.params.id);
 				},
 			);
 			review.get("/session", async (request) => sessionOf(request).info());
@@ -847,9 +870,15 @@ export async function buildApp(
 				await agentOf(request).disconnect();
 				return { ok: true };
 			});
-			// The reviewer's Start: the ACP buddy on again.
+			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
+				return { ok: true };
+			});
+			// The reviewer's Detach: a joined session disconnected, or the
+			// ACP buddy off until the next Spawn.
+			review.post("/agent/detach", async (request) => {
+				await agentOf(request).detach();
 				return { ok: true };
 			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());

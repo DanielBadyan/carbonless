@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -83,13 +83,11 @@ const anchor = (over: Partial<AgentAnchor> = {}): AgentAnchor =>
 describe("anchoredFile", () => {
 	it("reads the file at the anchor's commit; LEFT at the merge base", async () => {
 		const src = { repo: repo.path, snapshot: () => snapshot };
-		const right = await anchoredFile(src, TREE, anchor());
-		expect(right?.uri).toBe(`file://${TREE}/src/x.ts`);
-		expect(right?.mimeType).toBe("text/x-typescript");
+		const right = await anchoredFile(src, anchor());
+		expect(right).toEqual({ text: expect.any(String) });
 		expect(right?.text).toContain("line 30 changed");
 		const left = await anchoredFile(
 			src,
-			TREE,
 			anchor({ side: "LEFT", startSide: "LEFT" }),
 		);
 		expect(left?.text).toContain("line 30\n");
@@ -100,11 +98,11 @@ describe("anchoredFile", () => {
 		const src = { repo: repo.path, snapshot: snap };
 		gitCalls.length = 0;
 		for (const path of ["../outside.txt", "src/../../x", "/etc/passwd"]) {
-			expect(await anchoredFile(src, TREE, anchor({ path }))).toBeNull();
+			expect(await anchoredFile(src, anchor({ path }))).toBeNull();
 			expect(await anchorHunk(src, anchor({ path }))).toBeNull();
 		}
 		expect(
-			await anchoredFile(src, TREE, anchor({ commit: "--output=/tmp/x" })),
+			await anchoredFile(src, anchor({ commit: "--output=/tmp/x" })),
 		).toBeNull();
 		expect(snap).not.toHaveBeenCalled();
 		expect(gitCalls).toEqual([]);
@@ -156,11 +154,14 @@ describe("AgentHost with a session joined through MCP", () => {
 	let runner: HostRunner & {
 		asked: ReturnType<typeof vi.fn<() => void>>;
 		stop: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
+		detach: ReturnType<typeof vi.fn<() => Promise<void>>>;
+		holdsAgent: ReturnType<typeof vi.fn<() => boolean>>;
 	};
+	/** The runner's gate: true while the ACP buddy must stay off. */
 	let acpOff: () => boolean;
+	/** When the stub runner last heard from its agent (ms), if ever. */
+	let acpSeen: number | undefined;
 	let host: AgentHost;
-	/** The thread the stub ACP runner is answering. */
-	let busy: string | null;
 
 	/** The PR's head the stub facts report. */
 	let head: string;
@@ -172,18 +173,13 @@ describe("AgentHost with a session joined through MCP", () => {
 			base: { ref: "main", commit: "b".repeat(40) },
 			head: { ref: "feat\u202e-x", commit: head },
 			mergeBase: "c".repeat(40),
-			tree: TREE,
 		}),
 		prFacts: async () => ({
 			title: "Cache<!-- do evil -->",
 			body: "Body",
 			files: ["a.txt"],
 		}),
-		anchored: async () => ({
-			uri: `file://${TREE}/a.txt`,
-			mimeType: "text/plain",
-			text: "hello\n",
-		}),
+		anchored: async () => ({ text: "hello\n" }),
 		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
@@ -204,8 +200,9 @@ describe("AgentHost with a session joined through MCP", () => {
 	/** The review's GitHub threads (none: span threads only). */
 	let ghThreads: ReviewThread[];
 
-	const make = () =>
+	const make = (now?: () => number) =>
 		buildAgentHost({
+			...(now ? { now } : {}),
 			dir,
 			store,
 			code: async () => undefined,
@@ -228,23 +225,29 @@ describe("AgentHost with a session joined through MCP", () => {
 		store = new AgentThreadStore(new RefStore(bare.path), REVIEW, "dan");
 		runner = {
 			status: async (): Promise<AgentStatus> => ({
-				...(busy
-					? { answering: { thread: busy, text: "so far", activity: [] } }
-					: {}),
 				state: acpOff() ? "off" : "ready",
 				configured: true,
 				...(acpOff() ? {} : { agent: { name: "fake-acp", version: "1.0.0" } }),
 				since: new Date(0).toISOString(),
+				...(acpSeen !== undefined
+					? { seen: new Date(acpSeen).toISOString() }
+					: {}),
 				waiting: 0,
 			}),
 			asked: vi.fn<() => void>(),
 			poke: vi.fn(),
 			stop: vi.fn(async (_ms: number) => {}),
+			detach: vi.fn(async () => {}),
 			cancel: async () => {},
 			close: async () => {},
-			inFlight: () => busy,
+			handed: vi.fn(),
+			activity: () => [],
+			replied: vi.fn(),
+			takeNotice: () => undefined,
+			fenced: () => [],
+			holdsAgent: vi.fn(() => false),
 		};
-		busy = null;
+		acpSeen = undefined;
 		head = "d".repeat(40);
 		ghThread = null;
 		ghThreads = [];
@@ -256,6 +259,21 @@ describe("AgentHost with a session joined through MCP", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	/**
+	 * A spawned agent (admitted, attached) takes the oldest question with
+	 * next: an approved outside join then leaves it a grace on that thread.
+	 */
+	async function spawnedHolds(h = host): Promise<string> {
+		const secret = "S".repeat(43);
+		const { request } = h.join.admit(
+			{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+			secret,
+		);
+		const o = await h.join.outcome(request, 0, secret);
+		const token = (o as { token: string }).token;
+		const q = await h.sessionNext(token);
+		return q?.thread as string;
+	}
 	async function approve(h = host): Promise<string> {
 		const { request } = h.join.request(WHO);
 		await h.join.answer(request, true);
@@ -326,8 +344,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(q?.envelope.current).toBe(head);
 		expect(q?.envelope.view?.right).toBe(PATCHSETS[0]?.head);
 		// No path into carbonless's checkout, anywhere.
-		expect(q?.envelope.review.tree).toBeUndefined();
-		expect(q?.envelope.thread.anchor.file).toBeUndefined();
+		expect(q?.envelope.review).not.toHaveProperty("tree");
+		expect(q?.envelope.thread.anchor).not.toHaveProperty("file");
 		expect(JSON.stringify(q)).not.toContain(TREE);
 		// The code the thread was opened on.
 		expect(q?.hunk).toBe("@@ -1 +1 @@\n-a\n+b");
@@ -429,7 +447,6 @@ describe("AgentHost with a session joined through MCP", () => {
 			state: "ready",
 			via: "mcp",
 			joined: WHO,
-			acpOff: true,
 			agent: {
 				name: WHO.name,
 				version: WHO.harness,
@@ -437,17 +454,14 @@ describe("AgentHost with a session joined through MCP", () => {
 				machine: WHO.machine,
 			},
 		});
+		expect(s.spawned).toBeUndefined();
 	});
 
-	it("the ACP turn still running after Approve stays in the status, and the session's watcher isn't woken for it", async () => {
+	it("the thread a replaced spawned agent still holds after Approve: the session's watcher isn't woken for it", async () => {
 		const x = await host.open({ clientId: "c1", text: "Why?", span });
-		busy = x.id;
+		expect(await spawnedHolds()).toBe(x.id);
 		const token = await approve();
 		expect(host.busyThread()).toBe(x.id);
-		expect((await host.status()).answering).toMatchObject({
-			thread: x.id,
-			text: "so far",
-		});
 		const reads = vi.spyOn(store, "read");
 		const lease = host.join.watcher(token);
 		let woken = false;
@@ -461,17 +475,40 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(woken).toBe(false);
 		reads.mockRestore();
 		// The turn ended: the thread is the session's.
-		busy = null;
+		host.join.endGrace();
 		const again = host.join.watcher(token);
 		await expect(again?.deliver).resolves.toBeUndefined();
 	});
 
-	it("while joined the ACP gate holds even without the acp-off file", async () => {
+	it("the ACP gate: closed without the spawn flag, open with it, closed while joined even with it", async () => {
+		expect(acpOff()).toBe(true);
+		await host.join.setSpawned(true);
+		expect(acpOff()).toBe(false);
 		await approve();
-		rmSync(join(dir, "acp-off"));
+		writeFileSync(join(dir, "acp-on"), "");
 		expect(acpOff()).toBe(true);
 		await host.disconnect();
 		expect(acpOff()).toBe(false);
+	});
+
+	it("status reports spawned while off (the flag set, no agent configured)", async () => {
+		await host.join.setSpawned(true);
+		runner.status = async () => ({
+			state: "off",
+			configured: false,
+			since: new Date(0).toISOString(),
+			waiting: 0,
+		});
+		expect(await host.status()).toMatchObject({
+			state: "off",
+			spawned: true,
+		});
+	});
+
+	it("a leftover acp-off file means nothing: no flag, the gate closed", async () => {
+		writeFileSync(join(dir, "acp-off"), "");
+		expect(acpOff()).toBe(true);
+		expect((await host.status()).spawned).toBeUndefined();
 	});
 
 	it("active while a session asks to join or is joined (no idle eviction)", async () => {
@@ -509,19 +546,313 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(s.via).toBeUndefined();
 		expect(s.joined).toBeUndefined();
 		expect(s.left).toMatchObject({ ...WHO, why: "disconnected" });
-		expect(s).toMatchObject({ state: "off", acpOff: true });
+		expect(s.state).toBe("off");
+		expect(s.spawned).toBeUndefined();
 		expect(runner.asked).not.toHaveBeenCalled();
 	});
 
-	it("startAcp clears ACP off, pokes the runner and ends a joined session", async () => {
+	it("startAcp sets the spawn flag, pokes the runner and ends a joined session", async () => {
 		await approve();
 		await host.startAcp();
 		expect(acpOff()).toBe(false);
+		expect(existsSync(join(dir, "acp-on"))).toBe(true);
 		expect(runner.asked).toHaveBeenCalled();
 		const s = await host.status();
 		expect(s.left?.why).toBe("disconnected");
-		expect(s.acpOff).toBeUndefined();
+		expect(s.spawned).toBe(true);
+		expect(Number.isNaN(Date.parse(s.spawnedAt ?? ""))).toBe(false);
 		expect(s.state).toBe("ready");
+	});
+
+	it("detach with a joined session disconnects it; the runner isn't touched", async () => {
+		await approve();
+		await host.detach();
+		const s = await host.status();
+		expect(s.joined).toBeUndefined();
+		expect(s.left?.why).toBe("disconnected");
+		expect(runner.detach).not.toHaveBeenCalled();
+	});
+
+	it("detach without one clears the spawn flag, then detaches the runner", async () => {
+		await host.startAcp();
+		let flagAtDetach: boolean | undefined;
+		runner.detach.mockImplementationOnce(async () => {
+			flagAtDetach = existsSync(join(dir, "acp-on"));
+		});
+		await host.detach();
+		expect(runner.detach).toHaveBeenCalledTimes(1);
+		expect(flagAtDetach).toBe(false);
+		const s = await host.status();
+		expect(s.spawned).toBeUndefined();
+		expect(s.state).toBe("off");
+	});
+
+	it("a joined session's handed thread is answering", async () => {
+		const x = await host.open({ clientId: "c1", text: "Why?", span });
+		const token = await approve();
+		const q = await host.sessionNext(token);
+		expect(q?.thread).toBe(x.id);
+		expect((await host.status()).answering).toEqual({
+			thread: x.id,
+			text: "",
+			activity: [],
+			asked: q?.replyTo,
+		});
+	});
+
+	it("seen: the later of the ACP agent's and the joined session's (the broker's clock, not the machine's)", async () => {
+		await host.close();
+		let clock = Date.parse("2026-11-12T10:00:00.000Z");
+		host = make(() => clock);
+		expect((await host.status()).seen).toBeUndefined();
+		acpSeen = Date.parse("2026-11-12T09:00:00.000Z");
+		expect((await host.status()).seen).toBe("2026-11-12T09:00:00.000Z");
+		const token = await approve();
+		const lease = host.join.watcher(token);
+		clock += 60_000;
+		// Watched: the session's now beats the ACP agent's older word.
+		expect((await host.status()).seen).toBe("2026-11-12T10:01:00.000Z");
+		lease?.close();
+		clock += 60_000;
+		await host.sessionThreads(token);
+		clock += 60_000;
+		expect((await host.status()).seen).toBe("2026-11-12T10:02:00.000Z");
+		acpSeen = Date.parse("2026-11-12T11:00:00.000Z");
+		expect((await host.status()).seen).toBe("2026-11-12T11:00:00.000Z");
+	});
+
+	describe("a spawned agent and the review page", () => {
+		let clock: number;
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		/** The host on a clock (page idle 1 s, a turn's wait 5 s), nothing joined. */
+		const clockedHost = async () => {
+			await host.close();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			clock = Date.parse("2026-11-13T10:00:00.000Z");
+			host = buildAgentHost({
+				now: () => clock,
+				dir,
+				store,
+				code: async () => undefined,
+				github: {
+					threads: async () => ghThreads,
+					thread: async () => null,
+					patchsets: () => [],
+					base: () => "c".repeat(40),
+				},
+				session: { facts, viewer: "dan" },
+				pageIdleMs: 1000,
+				idleTurnMs: 5000,
+				runner: (off) => {
+					acpOff = off;
+					return runner;
+				},
+			});
+		};
+		/** The host on a clock, its spawned agent attached: its token. */
+		const spawnedHost = async (): Promise<string> => {
+			await host.close();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			clock = Date.parse("2026-11-13T10:00:00.000Z");
+			host = buildAgentHost({
+				now: () => clock,
+				dir,
+				store,
+				code: async () => undefined,
+				github: {
+					threads: async () => ghThreads,
+					thread: async () => null,
+					patchsets: () => [],
+					base: () => "c".repeat(40),
+				},
+				session: { facts, viewer: "dan" },
+				pageIdleMs: 1000,
+				idleTurnMs: 5000,
+				runner: (off) => {
+					acpOff = off;
+					return runner;
+				},
+			});
+			await host.join.setSpawned(true);
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			return (o as { token: string }).token;
+		};
+		const tick = async (ms: number) => {
+			clock += ms;
+			await vi.advanceTimersByTimeAsync(ms);
+		};
+
+		it("no page request for pageIdleMs ends it like Detach, though it keeps calling threads (its MCP calls aren't the page)", async () => {
+			const token = await spawnedHost();
+			for (let i = 0; i < 9; i++) {
+				await tick(100);
+				await host.sessionThreads(token);
+			}
+			expect(host.active()).toBe(true);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(150);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.isJoined()).toBe(false);
+			expect(host.active()).toBe(false);
+		});
+
+		it("a page request just before the time is up defers it by a whole period", async () => {
+			await spawnedHost();
+			await tick(999);
+			host.pageSeen();
+			await tick(900);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.active()).toBe(true);
+			await tick(200);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("never mid-turn: it waits for the turn's end", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1500);
+			expect(runner.detach).not.toHaveBeenCalled();
+			// In a turn: the review stays in use.
+			expect(host.active()).toBe(true);
+			host.join.setBusy(false);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("the page closes mid-turn, then reopens before the turn ends: no detach, and the timer restarts from the reopen (Review Focus 5)", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1200);
+			host.pageSeen();
+			await tick(100);
+			host.join.setBusy(false);
+			await tick(800);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(150);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("a turn that never ends: past idleTurnMs the closed page's agent ends anyway", async () => {
+			await spawnedHost();
+			host.join.setBusy(true);
+			await tick(1500);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(4000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			await tick(1000);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+		});
+
+		it("an outside session joined here, the spawn flag set by another server's Spawn: the page timer leaves both alone", async () => {
+			await clockedHost();
+			await approve();
+			writeFileSync(join(dir, "acp-on"), "");
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+			expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		});
+
+		it("the flag set, the agent run by another server (this runner holds no claim): this server's page timer never clears it", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		});
+
+		it("an outside join approved here while the runner still holds the claim (stop() keeps it until a status): the page timer leaves the session be (R2)", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			runner.holdsAgent.mockReturnValue(true);
+			await approve();
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+		});
+
+		it("this runner holds the claim (its agent starting or failed, not joined): the page timer ends it", async () => {
+			await clockedHost();
+			await host.join.setSpawned(true);
+			runner.holdsAgent.mockReturnValue(true);
+			await tick(1100);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+		});
+
+		it("an outside joined session keeps today's rules: no page timer ends it", async () => {
+			await spawnedHost();
+			await host.join.setSpawned(false);
+			host.join.leave("disconnected");
+			await approve();
+			await tick(5000);
+			expect(runner.detach).not.toHaveBeenCalled();
+			expect(host.join.isJoined()).toBe(true);
+			expect(host.active()).toBe(true);
+		});
+
+		it("its own detach ends it like the reviewer's: flag cleared, runner detached; via acp while joined", async () => {
+			const token = await spawnedHost();
+			expect((await host.status()).via).toBe("acp");
+			await host.sessionDetach(token);
+			await vi.waitFor(() => expect(runner.detach).toHaveBeenCalledTimes(1));
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.view().left).toBeUndefined();
+		});
+
+		it("the reviewer's Disconnect of a spawned agent is its Detach", async () => {
+			await spawnedHost();
+			await host.disconnect();
+			expect(runner.detach).toHaveBeenCalledTimes(1);
+			expect(existsSync(join(dir, "acp-on"))).toBe(false);
+			expect(host.join.isJoined()).toBe(false);
+		});
+
+		it("a human question wakes the spawned agent through the runner, never a watcher", async () => {
+			const token = await spawnedHost();
+			expect(host.join.watcher(token)).toBeNull();
+			await host.open({ clientId: "c1", text: "Why?", span });
+			expect(runner.asked).toHaveBeenCalled();
+		});
+
+		it("its reply is stored via acp with the runner's activity for that thread", async () => {
+			const token = await spawnedHost();
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			runner.activity = (t: string) =>
+				t === x.id ? [{ kind: "read", title: "Read a.txt" }] : [];
+			const q = await host.sessionNext(token);
+			expect(runner.handed).toHaveBeenCalledWith(x.id);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q?.replyTo as string,
+				text: "Because.",
+			});
+			const [t] = await host.threads();
+			expect(t?.messages[1]).toMatchObject({
+				agent: { name: "fake-acp", version: "1.0.0", via: "acp" },
+				activity: [{ kind: "read", title: "Read a.txt" }],
+			});
+			expect(runner.replied).toHaveBeenCalledWith(x.id);
+		});
+	});
+
+	it("detach of a joined session leaves a spawn flag set meanwhile (Spawn pressed elsewhere): ACP may start", async () => {
+		await approve();
+		// Another server's Spawn while this one's session is joined.
+		writeFileSync(join(dir, "acp-on"), "");
+		expect(acpOff()).toBe(true);
+		await host.detach();
+		expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		expect(acpOff()).toBe(false);
+		expect((await host.status()).spawned).toBe(true);
+		expect(runner.detach).not.toHaveBeenCalled();
 	});
 
 	it("a new host on the same dir restores the joined session as reconnecting", async () => {
@@ -532,14 +863,13 @@ describe("AgentHost with a session joined through MCP", () => {
 			state: "reconnecting",
 			via: "mcp",
 			joined: WHO,
-			acpOff: true,
 		});
 		expect(again.join.check(token)).toBe(true);
 		host = again;
 	});
 	it("the session isn't woken for the ACP buddy's running turn, and is woken once that turn is stopped", async () => {
 		const x = await host.open({ clientId: "c1", text: "Why?", span });
-		busy = x.id;
+		expect(await spawnedHolds()).toBe(x.id);
 		let releaseStop!: () => void;
 		runner.stop.mockImplementationOnce(
 			() =>
@@ -559,7 +889,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(delivered).toBe(false);
 		// The turn is stopped (cancelled): what it left waits for the session.
-		busy = null;
+		host.join.endGrace();
 		releaseStop();
 		await vi.waitFor(() => expect(delivered).toBe(true));
 	});
@@ -568,7 +898,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		it("next skips the thread the ACP buddy still answers, then hands it out once that turn ends", async () => {
 			const x = await host.open({ clientId: "c1", text: "One?", span });
 			const y = await host.open({ clientId: "c2", text: "Two?", span });
-			busy = x.id;
+			expect(await spawnedHolds()).toBe(x.id);
 			const token = await approve();
 			const first = await host.sessionNext(token);
 			expect(first?.thread).toBe(y.id);
@@ -580,7 +910,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			// The ACP turn on x still runs (it may yet store its answer).
 			expect(await host.sessionNext(token)).toBeNull();
 			expect(await host.sessionWaiting()).toBe(0);
-			busy = null;
+			host.join.endGrace();
 			expect((await host.sessionNext(token))?.thread).toBe(x.id);
 		});
 

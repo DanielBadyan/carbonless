@@ -211,15 +211,31 @@ resolved, so an unresolved thread never disappears with its file. A
 thread whose file is still there but whose lines are gone is listed under
 that file's header instead, with its fate and the code it was written on.
 
+## Why does a thread say "outdated" or "untraced" rather than "rewritten"?
+
+carbonless places a thread by tracing it from the commit it was written
+on. Some threads have no such commit it can use: GitHub gave none, the
+commit was force-pushed away and can't be fetched, or it shares no history
+with the base. Those sit on the line GitHub shows them on now. When
+GitHub shows them on no line, they are listed under their file:
+`outdated` when GitHub marks them so, `untraced` otherwise (also when
+GitHub's line isn't the same text in the patch set you are viewing, and
+for a line on the old side, which GitHub counts against its own merge
+base).
+`rewritten` means a real trace found the lines gone.
+`docs/product-rules.md`, "A thread with nothing to trace from sits on
+GitHub's line".
+
 ## Setting up an agent
 
 Ask agent sends your question about a span of the diff to your own coding
 agent, which answers in a private thread. carbonless installs and pays for
 nothing: it starts the agent you configured, speaking the Agent Client
-Protocol over stdio, with your own login. With no agent configured your
-questions wait, and the chip in the header opens the setup modal:
+Protocol over stdio, with your own login. Until you spawn or invite one
+in a review, your questions there wait; the chip in the header opens the
+setup modal, whose Spawn tab has three steps:
 
-1. **Pick a harness** (`src/shared/agentHarnesses.ts`):
+1. **One-time setup:** pick a harness (`src/shared/agentHarnesses.ts`):
 
    | Harness | Command | Install |
    |---|---|---|
@@ -230,11 +246,48 @@ questions wait, and the chip in the header opens the setup modal:
    | Copilot CLI | `copilot --acp` | |
    | Other | any command speaking ACP | |
 
-2. **Check** runs the command once through `initialize` and shows the
-   agent's name and version, or why not: not found on `PATH`, not logged in
-   (the agent's stderr), a protocol error.
-3. **Save** writes `"agent"` into `config.json`; the open review picks it
-   up within a poll and starts the agent. Remove writes `"agent": null`.
+2. **Select leash:** Open (the only one so far).
+3. **Configure:** command and arguments, then **Spawn**. Spawn runs the
+   command once through `initialize`; if that fails it shows why (not
+   found on `PATH`, not logged in with the agent's stderr, a protocol
+   error) and saves nothing. Otherwise it writes `"agent"` into
+   `config.json` and starts the agent in this review.
+
+A configured agent never starts by itself: it starts in a review once
+you press Spawn there, and stays on in that review, across crb restarts,
+until you press Detach in the Review Agent view. Other reviews stay
+without one until you spawn there too. A config saved later restarts it
+only in the reviews where it was spawned.
+
+**How does a spawned agent answer?** Like a session you invite: through
+crb's MCP tools (`attach`, `next`, `reply`, `threads`, `review`,
+`detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
+when the agent supports it, else through `crb mcp-bridge` over stdio) and
+a join that pressing Spawn already approved: there is no Approve bar, and
+that join works only for the process Spawn started (a secret only it was
+given), in this review only. Its first prompt, an intro, says where it
+is: the review's status (repo, PR, title, base and head, how many
+questions wait), its checkout (a `tree` folder in its working directory,
+the PR's head as of Spawn, with the base commit in its objects), and to
+`attach`, then call `next` and `reply` until no question waits. Only `reply` stores
+an answer; what it says in the prompt itself is never stored. It gets
+exactly what `next` gives a joined session; crb makes its checkout of the
+PR's head once, at Spawn, and never moves it.
+
+How it differs from a joined session:
+- **Waking up.** It runs no watch command: when a question waits and it
+  isn't working, crb sends it a short prompt ("a question waits: call
+  next"), never the question itself. A turn that ends still holding a
+  question gets one reminder; two turns in a row without a reply mark
+  that question failed (red), and asking again retries it.
+- **Extras.** The question it holds shows its tool calls live, Stop
+  current cancels it (the thread says stopped), and a crash or a failed
+  turn shows in the thread with the agent's reason.
+- **Leaving.** Its `detach`, Detach, or Disconnect ends it: the process
+  stops, the spawn flag clears, its checkout goes. So does closing every
+  page of the review: after 30 minutes with no page open (its own tool
+  calls don't count), between two answers, never in the middle of one.
+- **The chip** says it was spawned, not joined.
 
 The agent runs with the server's environment minus variables whose name
 contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
@@ -261,8 +314,8 @@ it does in your terminal. Stricter levels are planned. Decided
 the agent to keep out of carbonless's data (`refs/crb`, the cache clone,
 config and state), a request, not a protection. An OS sandbox is planned.
 
-**Who can set the agent's command?** Whoever can save the setup modal:
-Save and Check run the command as the server's user, so that is command
+**Who can set the agent's command?** Whoever can press Spawn in the
+setup modal: it runs the command as the server's user, so that is command
 execution. On a bind beyond loopback that is whoever holds the access key
 (the owner treats it like an SSH key: a shell login); on loopback with no key, any process on the
 machine. Other web sites are refused (the Origin and Host checks).
@@ -286,6 +339,11 @@ and holds its agent (`<cache>/agents/<review-id>/claim.json`). Your
 questions still go in; that server's agent answers them. This one takes
 over when the other closes the review, at its next status poll.
 
+**I pressed Detach but the other server's agent still runs.** Detach
+clears the review's spawn flag; the server running the agent stops it on
+its next status check or poke, so with no page of that server open it
+keeps running until one is.
+
 ## Joining a review from a session
 
 Instead of an agent carbonless launches, a session you already have (the
@@ -294,8 +352,9 @@ buddy, from any machine that reaches crb. Spec: the CAR-81 ticket.
 
 **One-time setup per harness and machine.** crb serves MCP over
 Streamable HTTP at `/mcp`, on the web UI's address and port, behind the
-access key. The setup modal's "Join from a session" tab shows the line
-for this instance's address and key, with a copy button:
+access key. The setup modal's Invite tab shows the line for this
+instance's address and key, with a copy button, one per harness (Claude
+Code, Codex, Gemini CLI; Other is the bare MCP URL):
 
 ```sh
 claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<key>"
@@ -308,7 +367,7 @@ picks it up with `/reload-plugins` (below); the info icon next to the line
 says so.
 
 **Then, in the session:** "join the carbonless review at
-`http://<host>:4747/r/<id>`" (the tab shows that line too), or "join my
+`http://<host>:4747/r/<id>`" (step 2 of the tab shows that line too), or "join my
 review of the MCP PR": the `reviews` tool lists your reviews (newest
 activity first, with repo, PR, title, branches and progress) so the
 session can pick one. The tools' replies tell the session every step:
@@ -324,9 +383,10 @@ session can pick one. The tools' replies tell the session every step:
 4. When a question arrives, the watch command prints one line and exits,
    which wakes the session (Claude Code: a background command's exit).
 
-Approving a join stops the ACP buddy (it finishes the turn it is on, or
-is cancelled after 30 s) and keeps it off, across crb restarts, until you
-press Start in the chip. A joined session leaving doesn't bring it back.
+Approving a join stops the spawned agent (it may still land the answer
+it is on within 30 s, then its turn is cancelled) and clears the review's
+spawn flag, so it stays
+off, across crb restarts, until you press Spawn again. A joined session leaving doesn't bring it back.
 
 **Does a session that's already running pick up the server?** Not
 through `/mcp`, but `/reload-plugins` does, without a restart. Checked

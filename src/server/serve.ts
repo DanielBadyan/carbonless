@@ -1,5 +1,5 @@
 import { sweepStaleCheckouts } from "./agent/checkout.js";
-import { setServerPort } from "./agent/host.js";
+import { setServerMcp, setServerPort } from "./agent/host.js";
 import { buildApp } from "./app.js";
 import { readConfig, updateConfig } from "./config.js";
 import { configAccess, HomeService } from "./home/homeService.js";
@@ -12,7 +12,7 @@ import {
 	writeServerState,
 } from "./serverState.js";
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
-import { updaterFor } from "./update/updater.js";
+import { serveChecksOff, updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -88,7 +88,10 @@ export async function startServer(opts: {
 	let actualPort = port;
 	const updater = updaterFor({
 		build: BUILD,
-		off: !opts.exit || !config.updates.check,
+		off: serveChecksOff({
+			canRestart: opts.exit !== undefined,
+			configCheck: config.updates.check,
+		}),
 		...(config.updates.channel ? { channel: config.updates.channel } : {}),
 		exit: (code) => opts.exit?.(code),
 		port: () => actualPort,
@@ -117,6 +120,7 @@ export async function startServer(opts: {
 	const address = app.server.address();
 	actualPort = typeof address === "object" && address ? address.port : port;
 	setServerPort(actualPort);
+	setServerMcp(selfMcp(host, actualPort, key));
 	const urlHost = host.includes(":") ? `[${host}]` : host;
 	url = `http://${urlHost}:${actualPort}`;
 	await writeServerState({
@@ -149,4 +153,18 @@ export async function startServer(opts: {
 			return closed;
 		},
 	};
+}
+
+/**
+ * crb's own /mcp as an agent it spawns reaches it: this machine, so the
+ * bound address (loopback for a wildcard bind), never serve.publicUrl.
+ */
+export function selfMcp(
+	host: string,
+	port: number,
+	key: string | null,
+): { url: string; key: string | null } {
+	const wildcard = host === "0.0.0.0" || host === "::" || host === "";
+	const h = wildcard ? "127.0.0.1" : host.includes(":") ? `[${host}]` : host;
+	return { url: `http://${h}:${port}/mcp`, key };
 }

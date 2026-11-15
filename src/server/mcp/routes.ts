@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { JOIN } from "../../shared/agent.js";
 import { agentsDir } from "../agent/checkout.js";
 import { agentConfig } from "../agent/host.js";
+import { ACP_ON_FILE } from "../agent/join.js";
 import type { HomeService } from "../home/homeService.js";
 import { StartedReviews } from "../home/started.js";
 import { type SessionRegistry, UnknownReviewError } from "../registry.js";
@@ -54,6 +55,14 @@ export function originOf(
 	return isSafeOrigin(origin) ? origin : deps.baseUrl();
 }
 
+/** The spawn secret's header (X-Crb-Spawn), when it is one string. */
+function spawnHeader(request: Pick<FastifyRequest, "headers">): {
+	spawn?: string;
+} {
+	const v = request.headers["x-crb-spawn"];
+	return typeof v === "string" && v ? { spawn: v } : {};
+}
+
 /** Fastify's headers set so far (the security headers), on a hijacked reply. */
 function carryHeaders(reply: FastifyReply): void {
 	for (const [name, value] of Object.entries(reply.getHeaders())) {
@@ -67,6 +76,7 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 			origin: originOf(request, deps),
 			key: deps.accessKey,
 			remote: request.ip,
+			...spawnHeader(request),
 		};
 		const server = createMcpServer(deps, ctx);
 		const transport = new StreamableHTTPServerTransport({
@@ -247,7 +257,7 @@ export function joinableDeps(
 		started: (slug) => started.list(slug),
 		cached: (owner, repo, number) => home?.cachedPr(owner, repo, number),
 		acpConfigured: async () => (await agentConfig()).agent !== null,
-		acpOff: (id) => existsSync(dir(id, "acp-off")),
+		spawned: (id) => existsSync(dir(id, ACP_ON_FILE)),
 		joinedOnDisk: (id) => existsSync(dir(id, "joined.json")),
 	};
 }

@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
+	AGENT_TURN_MS,
 	type AgentAnchor,
 	type AgentConfig,
+	type AgentMessage,
 	type AgentMessageRequest,
 	type AgentStatus,
 	type AgentThread,
@@ -37,7 +38,6 @@ import {
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
-	mimeTypeOf,
 	type PromptEnvelope,
 	type PromptMessage,
 	sanitizeEnvelope,
@@ -45,12 +45,21 @@ import {
 	takeSuggestion,
 	threadEnvelope,
 } from "./prompt.js";
-import { AgentRunner, type RunnerFacts, viewOf } from "./runner.js";
+import {
+	AgentRunner,
+	type RunnerFacts,
+	type SelfMcp,
+	type SpawnJoin,
+	viewOf,
+} from "./runner.js";
 import {
 	type AgentThreadFold,
 	AgentThreadStore,
 	UnknownAgentThreadError,
 } from "./store.js";
+
+/** No review page request this long ends a spawned agent (the registry's idle time). */
+export const PAGE_IDLE_MS = 30 * 60_000;
 
 /** The port this server listens on (serve.ts sets it): the claim names it. */
 let listeningPort = 0;
@@ -59,10 +68,29 @@ export const setServerPort = (port: number): void => {
 };
 export const serverPort = (): number => listeningPort;
 
+/** crb's own /mcp as this machine reaches it (serve.ts sets it once listening). */
+let selfMcp: SelfMcp | null = null;
+export const setServerMcp = (mcp: SelfMcp | null): void => {
+	selfMcp = mcp;
+};
+export const serverMcp = (): SelfMcp | null => selfMcp;
+
 /** What the host asks of its ACP runner (an AgentRunner; a stub in tests). */
 export type HostRunner = Pick<
 	AgentRunner,
-	"status" | "asked" | "poke" | "stop" | "cancel" | "close" | "inFlight"
+	| "status"
+	| "asked"
+	| "poke"
+	| "stop"
+	| "detach"
+	| "cancel"
+	| "close"
+	| "handed"
+	| "activity"
+	| "replied"
+	| "takeNotice"
+	| "fenced"
+	| "holdsAgent"
 >;
 
 /** A joined session's token isn't (or is no longer) this review's (code unknown-token). */
@@ -163,8 +191,96 @@ export class AgentHost {
 		private readonly github: AgentGithub,
 		readonly join: JoinBroker,
 		private readonly session?: SessionFacts,
+		opts: { now?: () => number; pageIdleMs?: number; idleTurnMs?: number } = {},
 	) {
 		this.#restored = join.restore().catch(() => {});
+		this.#now = opts.now ?? Date.now;
+		this.#pageIdleMs = opts.pageIdleMs ?? PAGE_IDLE_MS;
+		this.#idleTurnMs = opts.idleTurnMs ?? AGENT_TURN_MS;
+		this.#pageSeenAt = this.#now();
+		join.onTurnEnd(() => this.#turnEnded());
+		this.#armPage();
+	}
+
+	readonly #now: () => number;
+	readonly #pageIdleMs: number;
+	/** The longest a closed page's agent waits for its turn to end. */
+	readonly #idleTurnMs: number;
+	/** The review page's last request (ms): its status polls count, MCP doesn't. */
+	#pageSeenAt: number;
+	#pageTimer: ReturnType<typeof setTimeout> | null = null;
+	/** The page went idle during a turn: the spawned agent ends at its end. */
+	#idleDue = false;
+	#closed = false;
+
+	/**
+	 * A request from the review's page (its routes, its status polls):
+	 * the page is open. A spawned agent ends once none came for
+	 * pageIdleMs, between turns ("Closing the review page ends it").
+	 */
+	pageSeen(): void {
+		this.#pageSeenAt = this.#now();
+		this.#idleDue = false;
+		this.#armPage();
+	}
+
+	#armPage(): void {
+		if (this.#pageTimer) clearTimeout(this.#pageTimer);
+		this.#pageTimer = null;
+		if (this.#closed) return;
+		const left = this.#pageSeenAt + this.#pageIdleMs - this.#now();
+		this.#pageTimer = setTimeout(() => this.#pageIdle(), Math.max(0, left));
+		this.#pageTimer.unref?.();
+	}
+
+	#pageStale(): boolean {
+		return this.#now() - this.#pageSeenAt >= this.#pageIdleMs;
+	}
+
+	#pageIdle(): void {
+		this.#pageTimer = null;
+		if (this.#closed) return;
+		if (!this.#pageStale()) {
+			this.#armPage();
+			return;
+		}
+		// Only the agent this server runs: its spawned join, or its runner
+		// holding the claim. Not the shared spawn flag alone: that may be
+		// another server's agent (this runner `elsewhere`), or set beside
+		// an outside session joined here.
+		if (!this.#runsSpawned()) return;
+		// An answer in progress still lands: it ends at the turn's end, or
+		// at the latest after idleTurnMs (a turn that never ends).
+		if (this.join.inTurn()) {
+			this.#idleDue = true;
+			this.#pageTimer = setTimeout(() => {
+				this.#pageTimer = null;
+				if (!this.#idleDue || this.#closed) return;
+				this.#idleDue = false;
+				if (this.#pageStale() && this.#runsSpawned()) {
+					void this.detach().catch(() => {});
+				}
+			}, this.#idleTurnMs);
+			this.#pageTimer.unref?.();
+			return;
+		}
+		void this.detach().catch(() => {});
+	}
+
+	/** This server runs the review's spawned agent (not just the shared flag). */
+	#runsSpawned(): boolean {
+		// An outside session joined here: whatever the runner still holds
+		// (its claim until a status winds it down), the timer leaves it be.
+		if (this.join.isJoined() && !this.join.isSpawned()) return false;
+		return this.join.isSpawned() || this.runner.holdsAgent();
+	}
+
+	#turnEnded(): void {
+		if (!this.#idleDue || this.#closed) return;
+		this.#idleDue = false;
+		if (this.#pageStale() && this.#runsSpawned()) {
+			void this.detach().catch(() => {});
+		} else this.#armPage();
 	}
 
 	/** The joined session (by `since`) and the head its last `next` saw. */
@@ -173,19 +289,41 @@ export class AgentHost {
 	/** The runner's status, with a joined session (or a request to join) laid over it. */
 	async status(): Promise<AgentStatus> {
 		await this.#restored;
-		const base = await this.runner.status();
+		const { seen: acpSeen, ...base } = await this.runner.status();
 		const { presence, ...view } = this.join.view();
+		const joinSeen = this.join.seen();
+		const seen = Math.max(
+			acpSeen ? Date.parse(acpSeen) : Number.NEGATIVE_INFINITY,
+			joinSeen ?? Number.NEGATIVE_INFINITY,
+		);
 		const out: AgentStatus = {
 			...base,
 			...view,
-			...(this.join.acpOff() ? { acpOff: true } : {}),
+			...this.#spawnedFields(),
+			...(Number.isFinite(seen) ? { seen: new Date(seen).toISOString() } : {}),
 		};
 		const joined = view.joined;
 		if (!joined) return out;
 		const handed = this.join.handedOut();
-		// The ACP buddy's last turn (it finishes after an Approve) stays
-		// visible until it ends, unless the session holds a thread.
-		const { answering: acpTurn, error: __, elsewhere: ___, ...rest } = out;
+		const via = view.via ?? "mcp";
+		if (via === "acp") {
+			// crb's own agent: the page shows it as spawned (no `joined`,
+			// which means an invited session there), with its live activity.
+			// A failed turn keeps its reason up (red) until the next one.
+			const { joined: _, elsewhere: __, ...rest } = out;
+			return {
+				...rest,
+				state:
+					presence === "busy"
+						? "busy"
+						: out.state === "error"
+							? "error"
+							: "ready",
+				agent: { name: joined.name, version: joined.harness ?? "", via },
+			};
+		}
+		// An invited session: its presence, the question it holds.
+		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
 		return {
 			...rest,
 			state:
@@ -197,7 +335,7 @@ export class AgentHost {
 			agent: {
 				name: joined.name,
 				version: joined.harness ?? "",
-				via: "mcp",
+				via,
 				machine: joined.machine,
 			},
 			since: joined.since,
@@ -210,19 +348,46 @@ export class AgentHost {
 							...(handed.asked ? { asked: handed.asked } : {}),
 						},
 					}
-				: acpTurn
-					? { answering: acpTurn }
-					: {}),
+				: {}),
 		};
 	}
 
-	/** The thread the ACP buddy still answers (after an Approve, for up to JOIN.acpStopMs): `next` skips it. */
-	busyThread(): string | null {
-		return this.runner.inFlight();
+	/** `spawned` and `spawnedAt` while this review's spawn flag is set. */
+	#spawnedFields(): Pick<AgentStatus, "spawned" | "spawnedAt"> {
+		const at = this.join.spawnedAt();
+		return at === null
+			? {}
+			: { spawned: true, spawnedAt: new Date(at).toISOString() };
 	}
 
-	/** In use by a joined session (or a request to join): the registry doesn't evict it. */
+	/** The thread a replaced spawned agent may still answer (JOIN.acpStopMs after an Approve): `next` skips it. */
+	busyThread(): string | null {
+		return this.join.replaceGrace()?.thread ?? null;
+	}
+
+	/**
+	 * Threads `next` skips: the one a replaced spawned agent may still
+	 * answer, and those whose stop message the runner is storing.
+	 */
+	#skipped(): Set<string> {
+		const busy = this.busyThread();
+		return new Set([...(busy ? [busy] : []), ...this.runner.fenced()]);
+	}
+
+	/**
+	 * In use by a joined session (or a request to join): the registry
+	 * doesn't evict it. A spawned agent counts only while its page was
+	 * seen within pageIdleMs, or while it is in a turn: its own MCP calls
+	 * never keep the review open.
+	 */
 	active(): boolean {
+		if (this.join.isSpawned()) {
+			return (
+				this.join.inTurn() ||
+				this.join.view().joinRequest !== undefined ||
+				!this.#pageStale()
+			);
+		}
 		return this.join.active();
 	}
 
@@ -343,21 +508,46 @@ export class AgentHost {
 		this.runner.poke();
 	}
 
-	/** The reviewer's Start: the ACP buddy on again (a joined session leaves first). */
+	/** The reviewer's Spawn (Start): this review's spawn flag set, the ACP buddy on (a joined session leaves first). */
 	async startAcp(): Promise<void> {
 		await this.#restored;
-		this.join.leave("disconnected");
-		await this.join.setAcpOff(false);
+		// A spawned agent already in place stays.
+		if (!this.join.isSpawned()) this.join.leave("disconnected");
+		await this.join.setSpawned(true);
 		this.runner.asked();
 	}
 
-	/** The reviewer's Disconnect of a joined session; the ACP buddy stays as it is (off). */
+	/**
+	 * The reviewer's Detach: a joined session is disconnected; else the
+	 * spawn flag is cleared (review-wide: another server holding the agent
+	 * stops it on its next status) and the ACP buddy here is detached (its
+	 * turn cancelled, its process stopped, its checkout and claim gone).
+	 */
+	async detach(): Promise<void> {
+		await this.#restored;
+		if (this.join.isJoined() && !this.join.isSpawned()) {
+			// The spawn flag is left as it is: set while joined (Spawn pressed
+			// on another server), the ACP buddy starts once the session leaves.
+			this.join.leave("disconnected");
+			return;
+		}
+		// A spawned agent has no life outside the review: Detach ends it
+		// (its token revoked first, then its process).
+		this.join.spawnedGone("disconnected");
+		await this.join.setSpawned(false);
+		await this.runner.detach();
+	}
+
+	/** The reviewer's Disconnect of a joined session (a spawned agent's ends it, as Detach). */
 	async disconnect(): Promise<void> {
 		await this.#restored;
+		if (this.join.isSpawned()) return this.detach();
 		this.join.leave("disconnected");
 	}
 
 	async close(): Promise<void> {
+		this.#closed = true;
+		if (this.#pageTimer) clearTimeout(this.#pageTimer);
 		await this.#restored;
 		this.join.close();
 		await this.runner.close();
@@ -369,10 +559,13 @@ export class AgentHost {
 		return v.joined ? "joined" : v.joinRequest ? "pending" : null;
 	}
 
-	/** Whether `secret` is the joined session's token (after a restart's restore). */
+	/**
+	 * Whether `secret` is the joined session's token (after a restart's
+	 * restore), or a replaced spawned agent's in its grace (reply only).
+	 */
 	async sessionAllowed(secret: string): Promise<boolean> {
 		await this.#restored;
-		return this.join.check(secret);
+		return this.join.check(secret) || this.join.graceAllows(secret);
 	}
 
 	/** The watcher's lease for `secret`; null for a token not joined here. */
@@ -394,10 +587,10 @@ export class AgentHost {
 
 	/** Waiting questions a joined session can take (not the one the ACP buddy still answers). */
 	async sessionWaiting(): Promise<number> {
-		const busy = this.busyThread();
+		const skipped = this.#skipped();
 		// Joined with GitHub: an orphan is a span thread (its resolve counts).
 		return (await this.#joined(await this.store.read())).filter(
-			(t) => isQuestion(t) && t.id !== busy,
+			(t) => isQuestion(t) && !skipped.has(t.id),
 		).length;
 	}
 
@@ -408,7 +601,7 @@ export class AgentHost {
 	): Promise<SessionReviewFacts> {
 		await this.#token(secret);
 		const { facts } = this.#facts();
-		const { tree: _, ...r } = facts.review();
+		const r = facts.review();
 		const s = sanitizeThirdParty;
 		const out: SessionReviewFacts = {
 			...r,
@@ -433,7 +626,7 @@ export class AgentHost {
 		const { facts, viewer } = this.#facts();
 		const threads = await this.#joined(await this.store.read());
 		const handed = this.join.handedOut();
-		const busy = this.busyThread();
+		const skipped = this.#skipped();
 		const thread =
 			(handed &&
 				threads.find(
@@ -441,7 +634,7 @@ export class AgentHost {
 						t.id === handed.thread &&
 						(t.anchor.subject === "thread" || !t.resolved),
 				)) ||
-			threads.find((t) => isQuestion(t) && t.id !== busy);
+			threads.find((t) => isQuestion(t) && !skipped.has(t.id));
 		if (!thread) return null;
 		// The read took a while: the session may have left meanwhile.
 		if (!this.join.check(secret)) throw new SessionTokenError();
@@ -449,12 +642,19 @@ export class AgentHost {
 		if (!joined) throw new SessionTokenError();
 		const asked = thread.messages.findLast((m) => m.by === "human")?.id;
 		this.join.handOut(thread.id, asked);
+		// The spawned agent's hand-out: its activity and time limit start.
+		const spawned = this.join.isSpawned();
+		const rejected = spawned ? this.runner.takeNotice(thread.id) : undefined;
+		if (spawned) this.runner.handed(thread.id);
 		const head = facts.review().head.commit;
 		const seen = this.#seen?.since === joined.since ? this.#seen : null;
 		const moved =
-			seen && seen.head !== head
-				? `The PR's head moved from ${seen.head} to ${head} since your last question.`
-				: undefined;
+			joinNotices([
+				rejected,
+				seen && seen.head !== head
+					? `The PR's head moved from ${seen.head} to ${head} since your last question.`
+					: undefined,
+			]) ?? undefined;
 		let pr: PromptEnvelope["pr"];
 		if (!seen) {
 			pr = await facts.prFacts().then(
@@ -508,9 +708,16 @@ export class AgentHost {
 		secret: string,
 		r: { thread: string; replyTo: string; text: string },
 	): Promise<AgentThread> {
-		await this.#token(secret);
+		await this.#restored;
+		// A spawned agent replaced by an approved join may still land the
+		// answer it was on (JOIN.acpStopMs): that thread only.
+		const live = this.join.check(secret);
+		if (!live && !this.join.graceAllows(secret)) throw new SessionTokenError();
+		if (!live && !this.join.graceAllows(secret, r.thread)) {
+			throw new NotHandedError(r.thread);
+		}
 		const handed = this.join.handedOut();
-		if (handed?.thread !== r.thread) throw new NotHandedError(r.thread);
+		if (live && handed?.thread !== r.thread) throw new NotHandedError(r.thread);
 		const found = (await this.store.read()).find((t) => t.id === r.thread);
 		if (!found) throw new UnknownAgentThreadError(r.thread);
 		// As next gave it: an orphan is a span thread (no suggestion).
@@ -529,26 +736,48 @@ export class AgentHost {
 			);
 		}
 		// Checked again after the read: a leave meanwhile stores nothing.
-		const joined = this.join.view().joined;
-		if (!joined || !this.join.check(secret)) throw new SessionTokenError();
-		if (this.join.handedOut()?.thread !== r.thread) {
-			throw new NotHandedError(r.thread);
+		let agent: AgentMessage["agent"];
+		let spawned: boolean;
+		if (live) {
+			const joined = this.join.view().joined;
+			if (!joined || !this.join.check(secret)) throw new SessionTokenError();
+			if (this.join.handedOut()?.thread !== r.thread) {
+				throw new NotHandedError(r.thread);
+			}
+			spawned = this.join.isSpawned();
+			agent = spawned
+				? { name: joined.name, version: joined.harness ?? "", via: "acp" }
+				: {
+						name: joined.name,
+						version: joined.harness ?? "",
+						via: "mcp",
+						machine: joined.machine,
+					};
+		} else {
+			const grace = this.join.replaceGrace();
+			if (!grace || !this.join.graceAllows(secret, r.thread)) {
+				throw new NotHandedError(r.thread);
+			}
+			spawned = true;
+			agent = {
+				name: grace.who.name,
+				version: grace.who.harness ?? "",
+				via: "acp",
+			};
 		}
 		const stored = await this.store.message(r.thread, {
 			by: "ai",
 			text,
-			agent: {
-				name: joined.name,
-				version: joined.harness ?? "",
-				via: "mcp",
-				machine: joined.machine,
-			},
+			agent,
 			stop: "end_turn",
-			activity: [],
+			// The spawned agent's tool calls while it held the question.
+			activity: spawned ? this.runner.activity(r.thread) : [],
 			replyTo: r.replyTo,
 			...(suggests ? { suggests: "resolve" as const } : {}),
 		});
-		this.join.replied(r.thread);
+		if (live) this.join.replied(r.thread);
+		else this.join.endGrace();
+		if (spawned) this.runner.replied(r.thread);
 		return this.#view(await this.#joinedOne(stored));
 	}
 
@@ -558,16 +787,24 @@ export class AgentHost {
 		return this.threads();
 	}
 
-	/** The session's own detach. */
+	/**
+	 * The session's own detach. A spawned agent's ends it like Detach
+	 * (process stopped, spawn flag cleared, checkout removed, claim
+	 * released), after this call answers: it comes from inside its turn.
+	 */
 	async sessionDetach(secret: string): Promise<void> {
 		await this.#token(secret);
+		const spawned = this.join.isSpawned();
 		this.join.leave("detached");
+		if (!spawned) return;
+		await this.join.setSpawned(false);
+		void this.runner.detach().catch(() => {});
 	}
 
-	/** A human asked: a joined session's watcher wakes, else the ACP runner. */
+	/** A human asked: a joined session's watcher wakes, else the spawned agent (spawned, or woken over ACP). */
 	async #asked(): Promise<void> {
 		await this.#restored;
-		if (this.join.view().joined) {
+		if (this.join.view().joined && !this.join.isSpawned()) {
 			// A message to the thread the ACP buddy still answers waits for
 			// that turn to end (buildAgentHost wakes the session then).
 			if ((await this.sessionWaiting()) > 0) this.join.wake();
@@ -646,19 +883,6 @@ interface SessionTurn {
 	hunk: string | null;
 }
 
-/** The review without the ACP buddy's checkout (a joined session has its own copy, if any). */
-function noTree(facts: RunnerFacts) {
-	const { tree: _, ...review } = facts.review();
-	return review;
-}
-
-/** The anchor as the envelope gives it, without a path in carbonless's checkout. */
-function bareAnchor(anchor: AgentAnchor & { file?: string }): AgentAnchor {
-	const { file: _, ...rest } = anchor;
-	// Dropping `file` keeps the anchor's kind (a union: Omit would lose it).
-	return rest as AgentAnchor;
-}
-
 /**
  * A span thread's question for a joined session (the runner's span turn,
  * without the checkout): the review, the anchor, the messages, the
@@ -671,7 +895,7 @@ async function sessionSpanTurn(
 	moved: string | undefined,
 	pr: PromptEnvelope["pr"],
 ): Promise<SessionTurn> {
-	const review = noTree(facts);
+	const review = facts.review();
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
@@ -683,7 +907,7 @@ async function sessionSpanTurn(
 		review,
 		thread: {
 			id: thread.id,
-			anchor: bareAnchor(anchorFor(thread.anchor, review)),
+			anchor: anchorFor(thread.anchor, review),
 		},
 		messages,
 		...(notice ? { notice } : {}),
@@ -715,7 +939,7 @@ async function sessionThreadTurn(
 		() => undefined,
 		(error: unknown) => oneError(error),
 	);
-	const review = noTree(facts);
+	const review = facts.review();
 	const { patchsets, current } = facts.views();
 	const view = viewOf(thread, patchsets, review);
 	let github: GithubThreadFacts | null = null;
@@ -755,10 +979,7 @@ async function sessionThreadTurn(
 			...(pr ? { pr } : {}),
 		}),
 	);
-	const envelope: PromptEnvelope = {
-		...env,
-		thread: { ...env.thread, anchor: bareAnchor(env.thread.anchor) },
-	};
+	const envelope: PromptEnvelope = env;
 	const anchored = await facts.anchored(anchor).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
@@ -778,37 +999,49 @@ function oneError(error: unknown): string {
 
 /**
  * The host with its join broker on `dir` (`<agentsDir()>/<review-id>`):
- * the runner is made with the broker's ACP-off flag, and approving a join
- * turns ACP off and stops the runner (its running turn gets
- * JOIN.acpStopMs, then is cancelled).
+ * the runner runs only while the broker's spawn flag is set and no session
+ * is joined, and approving a join clears the flag and stops the runner
+ * (its running turn gets JOIN.acpStopMs, then is cancelled).
  */
 export function buildAgentHost(o: {
 	dir: string;
 	store: AgentThreadStore;
 	code: (anchor: AgentAnchor, at: string) => Promise<CodeWindow | undefined>;
 	github: AgentGithub;
-	runner: (acpOff: () => boolean, claim?: ReviewClaim) => HostRunner;
+	runner: (
+		acpOff: () => boolean,
+		claim: ReviewClaim | undefined,
+		join: SpawnJoin,
+	) => HostRunner;
 	/** The review's agent claim, shared by the runner and the joined session. */
 	claim?: ReviewClaim;
 	now?: () => number;
 	/** What a joined session's tools read (none: those tools fail). */
 	session?: SessionFacts;
+	/** How long no page request ends a spawned agent (default PAGE_IDLE_MS). */
+	pageIdleMs?: number;
+	/** The longest that end waits for a turn (default AGENT_TURN_MS). */
+	idleTurnMs?: number;
 }): AgentHost {
 	let runner: HostRunner | undefined;
-	// The thread the ACP buddy still answers isn't the session's.
+	// The thread a replaced spawned agent still answers isn't the session's.
 	const waiting = async () => {
-		const busy = runner?.inFlight() ?? null;
+		const skipped = new Set(
+			[join.replaceGrace()?.thread, ...(runner?.fenced() ?? [])].filter(
+				(t): t is string => typeof t === "string",
+			),
+		);
 		// Joined with GitHub, as sessionNext reads them: an orphan is a span thread.
 		const folds = await joinRead(await o.store.read(), () =>
 			o.github.threads(),
 		);
-		return folds.some((t) => isQuestion(t) && t.id !== busy);
+		return folds.some((t) => isQuestion(t) && !skipped.has(t.id));
 	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
 		...(o.now ? { now: o.now } : {}),
 		...(o.claim ? { claim: o.claim } : {}),
-		// The broker already set ACP off (before joined.json).
+		// The broker already cleared the spawn flag (before joined.json).
 		// Once the ACP buddy's last turn ends (or is cancelled), what it
 		// left waiting is the session's: wake its watcher.
 		onApproved: async () => {
@@ -822,9 +1055,18 @@ export function buildAgentHost(o: {
 		onLeft: () => {},
 		waiting: () => waiting(),
 	});
-	// A joined session keeps the ACP buddy off even without the file.
-	runner = o.runner(() => join.acpOff() || join.isJoined(), o.claim);
-	return new AgentHost(runner, o.store, o.code, o.github, join, o.session);
+	// Off until the reviewer's Spawn; an outside joined session keeps it
+	// off even with the flag set (the spawned agent is a joined one too).
+	runner = o.runner(
+		() => !join.spawned() || (join.isJoined() && !join.isSpawned()),
+		o.claim,
+		join,
+	);
+	return new AgentHost(runner, o.store, o.code, o.github, join, o.session, {
+		...(o.now ? { now: o.now } : {}),
+		...(o.pageIdleMs !== undefined ? { pageIdleMs: o.pageIdleMs } : {}),
+		...(o.idleTurnMs !== undefined ? { idleTurnMs: o.idleTurnMs } : {}),
+	});
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -984,7 +1226,6 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		src.reviewId,
 		src.viewer,
 	);
-	const tree = join(agentsDir(), src.reviewId, "tree");
 	/** The PR author's login; "" when it can't be read (nobody is then). */
 	const prAuthor = () => src.prAuthor().catch(() => "");
 	const facts: RunnerFacts = {
@@ -998,14 +1239,13 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 				base: { ref: m.baseBranch, commit: m.baseOid ?? s.base },
 				head: { ref: m.headBranch, commit: s.head },
 				mergeBase: s.base,
-				tree,
 			};
 		},
 		prFacts: async () => ({
 			...(await src.prFacts()),
 			files: src.snapshot().files.map((f) => f.path),
 		}),
-		anchored: (anchor) => anchoredFile(src, tree, anchor),
+		anchored: (anchor) => anchoredFile(src, anchor),
 		hunk: (anchor) => anchorHunk(src, anchor),
 		authorOf: async (login) =>
 			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
@@ -1061,8 +1301,10 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			pid: process.pid,
 			port: serverPort(),
 		})),
-		runner: (acpOff, claim) =>
+		runner: (acpOff, claim, join) =>
 			new AgentRunner({
+				join,
+				mcp: serverMcp,
 				reviewId: src.reviewId,
 				config: async () => ({
 					...(await agentConfig()),
@@ -1082,15 +1324,14 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 
 /**
  * The anchored file's text at the anchor's commit (the merge base for a
- * LEFT anchor), read from the clone with a checked OID and a path that
- * stays inside the tree; null when it can't be read, is binary or large.
+ * LEFT anchor), read from the clone with a checked OID and a relative
+ * path; null when it can't be read, is binary or large.
  */
 export async function anchoredFile(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
 		Partial<Pick<ReviewAgentSource, "patchsets">>,
-	tree: string,
 	anchor: AgentAnchor,
-): Promise<{ uri: string; mimeType: string; text: string } | null> {
+): Promise<{ text: string } | null> {
 	if (!isSafePath(anchor.path)) return null;
 	let commit = anchor.commit;
 	if (anchor.subject !== "file" && anchor.side === "LEFT") {
@@ -1109,11 +1350,7 @@ export async function anchoredFile(
 	if (blob.length === 0 || blob.length > MAX_ANCHORED || blob.includes(0)) {
 		return null;
 	}
-	return {
-		uri: pathToFileURL(join(tree, anchor.path)).href,
-		mimeType: mimeTypeOf(anchor.path),
-		text: blob.toString("utf8"),
-	};
+	return { text: blob.toString("utf8") };
 }
 
 /**

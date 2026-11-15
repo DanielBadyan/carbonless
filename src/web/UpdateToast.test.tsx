@@ -12,6 +12,16 @@ import { BACK_LIMIT_MS, BACK_POLL_MS, UpdateToast } from "./UpdateToast";
 const page = vi.hoisted(() => ({ unsaved: false }));
 vi.mock("./files/useSetStates", () => ({ useUnsaved: () => page.unsaved }));
 
+// user-event stubs the Clipboard API; what reaches the clipboard is
+// copyText's (copyText.test.ts). Here: what each outcome shows.
+const copied = vi.hoisted(() => ({ ok: true, texts: [] as string[] }));
+vi.mock("./copyText", () => ({
+	copyText: async (text: string) => {
+		copied.texts.push(text);
+		return copied.ok;
+	},
+}));
+
 const OFFER: UpdateInfo = {
 	current: "0.2.0",
 	available: "0.3.0",
@@ -20,6 +30,13 @@ const OFFER: UpdateInfo = {
 	command: "npm install -g carbonless-review@0.3.0",
 	state: "idle",
 	failed: null,
+	commit: "c".repeat(40),
+	channel: "latest",
+	install: "npm",
+	byHand: false,
+	lastChecked: "2026-11-12T10:00:00.000Z",
+	checkError: null,
+	checksOff: null,
 };
 
 const json = (status: number, body: unknown) =>
@@ -149,6 +166,22 @@ describe("UpdateToast", () => {
 			OFFER.command,
 		);
 		expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+	});
+
+	it("Copy command says Copied, or Copy failed with the command selected (CAR-121)", async () => {
+		serve({ info: () => ({ ...OFFER, oneClick: false }) });
+		show();
+		await toast();
+		copied.ok = true;
+		copied.texts = [];
+		await userEvent.click(screen.getByRole("button", { name: "Copy command" }));
+		expect(copied.texts).toEqual([OFFER.command]);
+		await screen.findByRole("button", { name: "Copied" });
+		copied.ok = false;
+		await userEvent.click(screen.getByRole("button", { name: "Copied" }));
+		await screen.findByRole("button", { name: "Copy failed" });
+		expect(window.getSelection()?.toString()).toBe(OFFER.command);
+		window.getSelection()?.removeAllRanges();
 	});
 
 	it("Update: posts the version, shows it updating, reloads once crb answers the new version", async () => {

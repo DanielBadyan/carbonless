@@ -18,6 +18,7 @@
 		"enabled": true,
 		"indentStyle": "tab"
 	},
+	"plugins": ["./biome-plugins/no-static-private-method.grit"],
 	"linter": {
 		"enabled": true,
 		"rules": {

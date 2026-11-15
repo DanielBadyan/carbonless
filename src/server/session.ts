@@ -503,10 +503,11 @@ export class Session {
 		}
 	}
 
-	// TS-private statics, not `static #…`: V8 (Node 24.22) reads a static
+	// TS-private statics, not `static #…`: V8 in Node 24 reads a static
 	// private method back wrong from Node's compile cache (cli.ts) in a
-	// class with this many private methods: the next start crashes
-	// ("Receiver must be class #…", or a segfault).
+	// class with this many private names: the next start crashes
+	// ("Receiver must be class #…", or a segfault). Lint forbids them
+	// (biome-plugins/no-static-private-method.grit).
 	private static async openReview(
 		arg: string,
 		cwd: string,
@@ -848,10 +849,14 @@ export class Session {
 				]);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				this.#placing.set(`${target.revision}|${readId}`, job);
+				// When GitHub gave the threads' current lines (each with the
+				// head it counts on): one time per read.
+				const at = new Date(read.started).toISOString();
 				const open = await this.#placer.inputs(
 					target,
 					view.threads.filter((t) => !t.resolved),
 					this.#diffBase(),
+					at,
 				);
 				job.done = { target, inputs: open, complete: false };
 				// The resolved threads join after; their failure never takes
@@ -861,6 +866,7 @@ export class Session {
 						target,
 						view.threads.filter((t) => t.resolved),
 						this.#diffBase(),
+						at,
 					)
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };

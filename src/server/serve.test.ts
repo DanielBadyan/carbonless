@@ -130,3 +130,20 @@ describe("startServer", () => {
 		expect(s.url).toBe(`http://127.0.0.1:${port}`);
 	});
 });
+
+describe("selfMcp", () => {
+	it("is the bound address (loopback for a wildcard), with the key apart from the URL", async () => {
+		const { selfMcp } = await import("./serve.js");
+		expect(selfMcp("127.0.0.1", 4800, null)).toEqual({
+			url: "http://127.0.0.1:4800/mcp",
+			key: null,
+		});
+		expect(selfMcp("0.0.0.0", 4800, "k").url).toBe("http://127.0.0.1:4800/mcp");
+		expect(selfMcp("::", 4800, "k").url).toBe("http://127.0.0.1:4800/mcp");
+		expect(selfMcp("100.64.0.1", 4800, "k")).toEqual({
+			url: "http://100.64.0.1:4800/mcp",
+			key: "k",
+		});
+		expect(selfMcp("::1", 4800, null).url).toBe("http://[::1]:4800/mcp");
+	});
+});

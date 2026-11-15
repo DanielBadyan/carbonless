@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	acpLog,
@@ -22,10 +23,13 @@ import {
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { agentsDir } from "./agent/checkout";
+import { setServerMcp } from "./agent/host";
 import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
+import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
+import type { SessionRegistry } from "./registry";
 import { answerRereview } from "./rereview/engine";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
@@ -1369,6 +1373,64 @@ describe("Session", () => {
 				]),
 			);
 
+		it("a thread with no commit sits on GitHub's line counted on the head of the same answer, never on a head checked later (CAR-116)", async () => {
+			const noCommit = () =>
+				reviewThread({ path: "a.txt", line: 20, diffSide: "RIGHT" }, [
+					threadComment({ login: "rev1", text: "No commit" }),
+				]);
+			const serve = (head: string) =>
+				pr.scenario({
+					prs: {
+						12: {
+							view: prView({ headRefOid: head, baseRefName: "main" }),
+							graphql: { reviewThreads: [noCommit()], reviews: [] },
+						},
+					},
+				});
+			const h2 = pr.head();
+			serve(h2);
+			const s = await Session.open(pr.arg, process.cwd());
+			const { readId } = await s.overview();
+			const [read] = (await s.threads(readId, "summary")).threads;
+			expect(read).toMatchObject({
+				commit: "",
+				currentLine: 20,
+				currentHead: h2,
+			});
+			const placed = async (head: string) => {
+				for (;;) {
+					const answer = await s.placements({ head }, readId);
+					if (!("pending" in answer)) return answer.threads[0]?.placement;
+					await new Promise((r) => setTimeout(r, 20));
+				}
+			};
+			const on = (line: number) => ({
+				kind: "placed",
+				anchor: {
+					path: "a.txt",
+					startSide: "RIGHT",
+					startLine: line,
+					side: "RIGHT",
+					line,
+				},
+				changed: false,
+				source: "github",
+			});
+			expect(await placed(h2)).toEqual(on(20));
+			// A push adds five lines on top; the head check sees it, the
+			// threads aren't read again: line 20 is still H2's.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const top = Array.from({ length: 5 }, (_, i) => `top ${i + 1}`);
+			const h3 = pr.moveHead({
+				"a.txt": `${[...top, ...lines].join("\n")}\n`,
+			});
+			serve(h3);
+			expect(await s.checkHead()).toMatchObject({ currentHead: h3 });
+			expect(await placed(h3)).toEqual(on(25));
+		});
+
 		it("answers pending at once, then the answer; the viewed head carries provisionally; the first mark starts PS2 with the carries", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
@@ -2142,7 +2204,31 @@ describe("Session", () => {
 				hold: ["initialize"],
 			});
 		});
-		afterEach(() => fake.restore());
+		afterEach(() => {
+			fake.restore();
+			setServerMcp(null);
+		});
+
+		/** crb's /mcp for session `s` alone, where its spawned agent attaches. */
+		const serveMcp = async (s: Session) => {
+			const app = Fastify();
+			registerMcp(app, {
+				registry: {
+					get: async () => s,
+					peek: () => s,
+					touch: () => {},
+				} as unknown as SessionRegistry,
+				reviews: async () => [],
+				accessKey: null,
+				baseUrl: () => "http://127.0.0.1",
+				joinedOnDisk: () => false,
+			});
+			await app.listen({ port: 0, host: "127.0.0.1" });
+			const address = app.server.address();
+			if (!address || typeof address === "string") throw new Error("no port");
+			setServerMcp({ url: `http://127.0.0.1:${address.port}/mcp`, key: null });
+			return app;
+		};
 
 		it("a --viewer session has no agent host; an as-of one neither", async () => {
 			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
@@ -2246,8 +2332,11 @@ describe("Session", () => {
 			).map((m) => vi.spyOn(Session.prototype, m));
 			try {
 				const s = await Session.open(pr.arg, process.cwd());
+				const mcp = await serveMcp(s);
 				const host = s.agent;
 				if (!host) throw new Error("no agent");
+				// The reviewer's Spawn: nothing starts by itself.
+				await host.startAcp();
 				const { readId } = await s.overview();
 				const [rt] = (await s.threads(readId, "summary")).threads;
 				if (!rt) throw new Error("no thread");
@@ -2267,12 +2356,14 @@ describe("Session", () => {
 					by: "ai",
 					text: "Fixed in the viewed head.",
 					suggests: "resolve",
-					head,
+					agent: { via: "acp" },
 				});
-				const sent = acpLog(fake.log).find((e) => e.method === "session/prompt")
-					?.params as { prompt: Array<{ text?: string }> };
-				const text = sent.prompt[0]?.text ?? "";
-				const env = JSON.parse(text.slice(text.indexOf("\n\n{") + 2));
+				// The question came through next, never in a prompt.
+				const next = acpLog(fake.log).find((e) => e.method === "mcp/next")
+					?.response as { value: { envelope: Record<string, unknown> } };
+				const env = next.value.envelope as {
+					messages: { author: unknown }[];
+				};
 				expect(env).toMatchObject({
 					kind: "github_thread_conversation",
 					current: head,
@@ -2290,7 +2381,7 @@ describe("Session", () => {
 					},
 					placement: { kind: "placed" },
 				});
-				expect(env.messages[0].author).toEqual({
+				expect(env.messages[0]?.author).toEqual({
 					login: "octo-cat",
 					role: "reviewer",
 				});
@@ -2301,6 +2392,7 @@ describe("Session", () => {
 				);
 				expect(t?.resolved).toBe(false);
 				await s.close();
+				await mcp.close();
 			} finally {
 				for (const w of writes) w.mockRestore();
 			}
@@ -2308,16 +2400,22 @@ describe("Session", () => {
 
 		it("close() closes the host (checkout removed)", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
+			const mcp = await serveMcp(s);
 			const host = s.agent;
 			if (!host) throw new Error("no agent");
-			host.start();
+			// The reviewer's Spawn: nothing starts by itself.
+			await host.startAcp();
 			await vi.waitFor(
 				async () => expect((await host.status()).state).toBe("starting"),
 				{ timeout: 20_000, interval: 20 },
 			);
 			releaseAcp(fake.scenario, "initialize");
 			await vi.waitFor(
-				async () => expect((await host.status()).state).toBe("ready"),
+				async () =>
+					expect(await host.status()).toMatchObject({
+						state: "ready",
+						via: "acp",
+					}),
 				{ timeout: 20_000, interval: 20 },
 			);
 			const tree = join(agentsDir(), s.id, "tree");
@@ -2327,6 +2425,7 @@ describe("Session", () => {
 			expect(() => readFileSync(join(tree, "a.txt"))).toThrow();
 			expect(() => process.kill(pid, 0)).toThrow();
 			expect((await host.status()).state).toBe("off");
+			await mcp.close();
 		});
 	});
 });
