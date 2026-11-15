@@ -215,6 +215,12 @@ loading never looking empty, checking against a real PR):
   `pauseAt`. No automatic retries (Playwright `retries`, Vitest `retry`):
   a flaky test fails visibly and gets fixed. Playwright's expects wait
   10 s (a reload's chained reads); a test that needs longer says why.
+- A runner killed mid-test (a Playwright worker past its teardown timeout,
+  an interrupted run) never runs its cleanup. What a test starts carries
+  `$CRB_OWNER` (`test/setup.ts`, `crbEnv` in `e2e/pr-setup.ts`): `crb serve`,
+  `queue.mjs` and the fake agent exit once that owner is gone
+  (`scripts/owner.mjs`). A new fake or helper that can wait forever (a hold,
+  a loop on a file) does the same with `watchOwner`.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`
   adds L busy loops (default none: the devbox is loaded enough by other

@@ -26,9 +26,14 @@
 // run killed with SIGKILL leaves a ticket the next reader drops (its pid is
 // gone, a zombie, or now another process); a stopped run (Ctrl-Z) keeps its
 // ticket but lets the runs behind it go.
+//
+// The run holding a slot is a child of the run that waited for it, and
+// stops its command as SIGTERM does once that one is gone (killed with
+// SIGKILL); either stops once $CRB_OWNER is gone (owner.mjs).
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownerToken, watchOwner } from "./owner.mjs";
 import { home, queueSlots } from "./queue-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -62,6 +67,21 @@ for (const sig of SIGNALS) {
 		} catch {}
 	});
 }
+
+// A command that outlives its SIGTERM by this long gets SIGKILL.
+const STOP_GRACE_MS = 10_000;
+
+/** Stops as on SIGTERM; SIGKILLs the command's group if it lingers. */
+function stopForGone() {
+	process.kill(process.pid, "SIGTERM");
+	setTimeout(() => {
+		try {
+			if (current?.group) process.kill(-current.child.pid, "SIGKILL");
+		} catch {}
+		process.exit(128 + SIGNAL_CODES.SIGTERM);
+	}, STOP_GRACE_MS).unref();
+}
+watchOwner(stopForGone);
 
 /** Runs `c` to its end: its exit status, or 128 + the signal that ended it. */
 function run(c, a, { group = false, env = process.env } = {}) {
@@ -98,6 +118,8 @@ if (process.env.CRB_QUEUE_HELD) {
 	const since = process.env.CRB_QUEUE_SINCE;
 	if (!since) process.exit(await run(cmd, args));
 	delete process.env.CRB_QUEUE_SINCE;
+	watchOwner(stopForGone, process.env.CRB_QUEUE_WAITER);
+	delete process.env.CRB_QUEUE_WAITER;
 	try {
 		writeFileSync(
 			process.env.CRB_QUEUE_HELD,
@@ -162,6 +184,7 @@ for (;;) {
 					CRB_QUEUE_HELD: `${lock(i)}.holder`,
 					CRB_QUEUE_SINCE: String(start),
 					CRB_QUEUE_SLOTS: String(slots),
+					CRB_QUEUE_WAITER: ownerToken(),
 				},
 			},
 		);

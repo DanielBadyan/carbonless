@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { runClient } from "./client.js";
 import { killDetachedGits } from "./server/git.js";
+import { watchOwner } from "./server/owner.js";
 import { tracer } from "./server/trace.js";
 import { BUILD, formatVersion } from "./server/version.js";
 
@@ -170,6 +171,10 @@ async function serve(values: {
 
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
+	watchOwner(() => {
+		console.error("crb: the test process that started it is gone");
+		void shutdown();
+	});
 	// Tests and agents parse this line to find the server.
 	const key = server.key ? `?key=${server.key}` : "";
 	const traced = tracer();
