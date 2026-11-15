@@ -289,9 +289,12 @@ function setup(
 	}
 	const onToggle = vi.fn();
 	const onCrossOff = vi.fn();
-	const threads: DiffThreads | undefined = opts.threads
-		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
-		: undefined;
+	const threadsOf = (
+		ts: ReviewThread[] | undefined,
+	): DiffThreads | undefined =>
+		ts ? { readId: "r", snapshotHead: HEAD, threads: ts } : undefined;
+	/** The threads shown now: `rethread` brings others in (no remount). */
+	const placed = { threads: threadsOf(opts.threads) };
 	/** One file view per clusters list: a rerender with another find keeps it. */
 	const files = new Map<ClusterView[], FileView>();
 	const fileOf = (cs: ClusterView[]) => {
@@ -305,7 +308,7 @@ function setup(
 			revision="r1"
 			onToggle={onToggle}
 			onCrossOff={onCrossOff}
-			threads={threads}
+			threads={placed.threads}
 			landing={opts.landing}
 			lead={opts.lead}
 			find={find}
@@ -360,6 +363,11 @@ function setup(
 		user: userEvent.setup(),
 		/** DiffBody's own root element. */
 		root: container.firstElementChild as HTMLElement,
+		/** The same DiffBody with other review threads (they arrived). */
+		rethread: (ts: ReviewThread[]) => {
+			placed.threads = threadsOf(ts);
+			rerender(tree(shown.cs, shown.find));
+		},
 		/** The same DiffBody with another find. */
 		refind: (find: DiffFind | undefined) => {
 			shown.find = find;
@@ -1909,13 +1917,11 @@ describe("DiffBody side by side", () => {
 				[...cells].every(
 					(el) =>
 						el.className.includes("w-[var(--num-w,3rem)]") &&
-						el.className.includes(
-							"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-						),
+						el.className.includes("min-w-[var(--num-w,3rem)]"),
 				)
 			);
 		};
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 		expect(document.querySelectorAll("col")).toHaveLength(6);
 		expect(
 			[...document.querySelectorAll("col")].filter((c) =>
@@ -1933,11 +1939,11 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("new seven");
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// Unified too.
 		act(() => sideBySide.set(false));
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// A deleted tail numbers higher on the old side than the new file is long.
 		cleanup();
@@ -1957,7 +1963,7 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("gone");
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 	});
 
 	it("keeps unified's markup, its code cell naming its side", async () => {
@@ -2155,13 +2161,11 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		);
 		const row = await screen.findByTestId("diff-line");
 		expect(row.closest("table")?.style.getPropertyValue("--num-w")).toBe(
-			"calc(4ch + 1rem)",
+			"calc(4ch + var(--num-pad, 1rem))",
 		);
 		const number = within(row).getByTestId("new");
 		expect(number.className).toContain("w-[var(--num-w,3rem)]");
-		expect(number.className).toContain(
-			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-		);
+		expect(number.className).toContain("min-w-[var(--num-w,3rem)]");
 	});
 });
 
@@ -3514,5 +3518,268 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		expect(row.dataset.hot).toBeUndefined();
 		fireEvent.click(row.lastElementChild as HTMLElement);
 		expect(held).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("the diff's scrollbar proxy (useScrollbarProxy)", () => {
+	const proxy = () =>
+		document.querySelector<HTMLElement>('[data-testid="diff-scrollbar"]');
+	/** The bar's scroller: the table's box right before it. */
+	const scrollerOf = (bar: HTMLElement) =>
+		bar.previousElementSibling as HTMLElement;
+	const scroller = () =>
+		[...document.querySelectorAll<HTMLElement>("div.overflow-x-auto")].find(
+			(el) => el.querySelector("table") !== null,
+		) as HTMLElement;
+	/** The scroller's table is `scroll` wide in a `client` box; everything else keeps jsdom's 0. */
+	const widths = (scroll: number, client: number) => {
+		const isScroller = (el: Element) =>
+			el.classList.contains("overflow-x-auto") &&
+			el.querySelector("table") !== null;
+		vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? scroll : 0;
+			},
+		);
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? client : 0;
+			},
+		);
+	};
+	// An earlier describe's tree may still be in the document: only this one's.
+	beforeEach(() => cleanup());
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
+
+	it("scrolls the table and follows it, writing nothing that is already there", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		expect(bar).not.toBeNull();
+		if (!bar) return;
+		// Out of the Tab order, with a spacer as wide as the table.
+		expect(bar.tabIndex).toBe(-1);
+		expect((bar.firstElementChild as HTMLElement).style.width).toBe("3000px");
+		const table = scrollerOf(bar);
+		expect(table.querySelector("table")).not.toBeNull();
+		const set = vi.spyOn(Element.prototype, "scrollLeft", "set");
+		table.scrollLeft = 120;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(120);
+		// The echo (the bar's own scroll event, nothing to change) writes
+		// nothing: no loop.
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+		expect(table.scrollLeft).toBe(120);
+		// The other way round: the bar drives the table.
+		bar.scrollLeft = 40;
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).toHaveBeenCalledTimes(1);
+		expect(table.scrollLeft).toBe(40);
+		set.mockClear();
+		table.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+	});
+
+	it("leaves a smooth scroll to the box being scrolled: a write's late echo sets nothing back", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		if (!bar) throw new Error("no bar");
+		const table = scrollerOf(bar);
+		// The table's first step: the bar follows.
+		table.scrollLeft = 10;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(10);
+		// The table's next step lands before the bar's echo of the first.
+		table.scrollLeft = 20;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(20);
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(20);
+		// The same the other way: a click on the bar's track, animated.
+		bar.dispatchEvent(new Event("scroll"));
+		bar.scrollLeft = 300;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(300);
+		bar.scrollLeft = 340;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(340);
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(340);
+	});
+
+	it("isn't there while the table fits its box", async () => {
+		widths(800, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		expect(proxy()).toBeNull();
+		expect(scroller().scrollLeft).toBe(0);
+	});
+});
+
+describe("touch controls: a cluster's pair stacks only where its own rows have room (StackControls)", () => {
+	beforeEach(() => {
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		contextRanges.reset();
+		resetComposers();
+		resetAgentComposers();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	/** One cluster of `n` added lines (new lines 2…n+1) between two context lines. */
+	const addedHunks = (
+		n: number,
+		over: Partial<DiffLine>[] = [],
+	): FileHunks => ({
+		newLineCount: n + 2,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 2,
+				newStart: 1,
+				newCount: n + 2,
+				lines: [
+					ctx(1, 1),
+					...Array.from({ length: n }, (_, i) => ({
+						...add(i + 2, `added ${i + 2}`, "c"),
+						...over[i],
+					})),
+					ctx(2, n + 2),
+				],
+			},
+		],
+	});
+	const addedCluster = (n: number) =>
+		cluster("c", {
+			oldStart: 2,
+			oldCount: 0,
+			newStart: 2,
+			newCount: n,
+			lines: n,
+		});
+	const open = (n: number, more: Parameters<typeof setup>[0] = {}) =>
+		setup({
+			hunks: addedHunks(n),
+			clusters: [addedCluster(n)],
+			threads: [],
+			...more,
+		});
+	/** Whether the cluster's controls stack (on touch: its slot says so). */
+	const stacked = () =>
+		document
+			.querySelector("[data-sticky-slot]")
+			?.hasAttribute("data-stacked") ?? null;
+	const lineSpan = (line: number): CodeSpan => ({
+		path: PATH,
+		commit: HEAD,
+		subject: "line",
+		startSide: "RIGHT",
+		startLine: line,
+		side: "RIGHT",
+		line,
+		startCol: null,
+		endCol: null,
+	});
+
+	it("stacks in a run of four rows, not of three", async () => {
+		open(3);
+		await screen.findByText("added 4");
+		expect(stacked()).toBe(false);
+		cleanup();
+		open(4);
+		await screen.findByText("added 5");
+		expect(stacked()).toBe(true);
+	});
+
+	it("not when the first three rows have a thread under one; a thread on the fourth leaves room", async () => {
+		// Row 3 is new line 4.
+		open(6, { threads: [thread("RIGHT", 4)] });
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(false);
+		cleanup();
+		open(6, { threads: [thread("RIGHT", 5)] });
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(true);
+	});
+
+	it("not when a row of the first three has no newline at its end", async () => {
+		setup({
+			hunks: addedHunks(6, [{}, { noNewline: true }]),
+			clusters: [addedCluster(6)],
+			threads: [],
+		});
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(false);
+	});
+
+	it("not when the agent has a thread on the first row, or a composer is open there", async () => {
+		open(6, { agentThreads: [agentThread(2)] });
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(false);
+		cleanup();
+		openComposer(lineSpan(2));
+		open(6);
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(false);
+		resetComposers();
+		cleanup();
+		openAgentComposer(lineSpan(3));
+		open(6);
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(false);
+	});
+
+	it("keeps its first choice while things open or arrive under its rows; their rows keep clear of the controls", async () => {
+		const { rethread } = open(6);
+		await screen.findByText("added 7");
+		expect(stacked()).toBe(true);
+		// A comment box opens on the first row: no flip, the box's row is inset.
+		act(() => {
+			openComposer(lineSpan(2));
+		});
+		const box = await screen.findByTestId("new-thread-row");
+		expect(stacked()).toBe(true);
+		expect(box).toHaveAttribute("data-clear-of-controls");
+		// The agent's composer, and a thread arriving, likewise.
+		act(() => {
+			openAgentComposer(lineSpan(3));
+		});
+		expect(await screen.findByTestId("agent-composer-row")).toHaveAttribute(
+			"data-clear-of-controls",
+		);
+		rethread([thread("RIGHT", 2)]);
+		expect(stacked()).toBe(true);
+		act(() => {
+			resetComposers();
+			resetAgentComposers();
+		});
+		expect(stacked()).toBe(true);
+	});
+
+	it("chooses again on a re-layout the reviewer asks for (a setting)", async () => {
+		const { rethread } = open(6);
+		await screen.findByText("added 7");
+		rethread([thread("RIGHT", 2)]);
+		expect(stacked()).toBe(true);
+		act(() => ignoreWhitespace.set(true));
+		await waitFor(() => expect(stacked()).toBe(false));
 	});
 });

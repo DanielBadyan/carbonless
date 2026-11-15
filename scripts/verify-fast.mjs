@@ -116,6 +116,9 @@ const E2E_MAP = [
 			"saves",
 			"tree-resize",
 			"find",
+			"gutter-pin",
+			"diff-scrollbar",
+			"keepalive",
 		],
 	],
 	[
@@ -196,7 +199,7 @@ const E2E_MAP = [
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],
-	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
+	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile", "gutter-pin"]],
 	[
 		/^e2e\/agent-ui\.ts$/,
 		["agent", "agent-setup", "agent-join", "thread-agent"],

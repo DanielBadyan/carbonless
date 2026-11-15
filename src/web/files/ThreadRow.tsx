@@ -5,7 +5,7 @@ import {
 	HistoryIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
@@ -17,6 +17,7 @@ import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
+import { StackControls } from "./stickyControls";
 import {
 	ChangedChip,
 	ChangedSince,
@@ -130,7 +131,11 @@ const CARD =
  * side-by-side row (which never scrolls sideways): the rail and controls
  * cells, then the card over that side's number and code columns and a
  * blank over the other side's, in the blank side's tone. Text wraps to the
- * card's width; wide code in a comment scrolls in the comment.
+ * card's width; wide code in a comment scrolls in the comment. Right under
+ * a cluster's first row on touch, it starts 10px lower: below that row's
+ * side-by-side controls' 40px targets (DiffBody's UNDER_CONTROLS); in a run
+ * whose controls stack, it starts past the controls column. Either way
+ * neither covers the other.
  */
 export function TailRow(props: {
 	testId: string;
@@ -141,12 +146,24 @@ export function TailRow(props: {
 	children: ReactNode;
 }) {
 	const { place } = props;
+	// In a cluster run whose touch controls stack (StackControls), the card
+	// starts past the controls column, where the stacked cross-off hangs:
+	// neither covers the other, whenever the card opens, and nothing else
+	// moves.
+	const clear = useContext(StackControls);
 	if ("columns" in place) {
 		return (
-			<tr data-testid={props.testId} id={props.id}>
-				<td colSpan={place.columns} className="p-0">
+			<tr
+				data-testid={props.testId}
+				id={props.id}
+				data-clear-of-controls={clear || undefined}
+			>
+				<td
+					colSpan={place.columns}
+					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""}`}
+				>
 					<div
-						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 ${CARD}`}
+						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${clear ? "pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""} ${CARD}`}
 					>
 						{props.rail && (
 							<span
