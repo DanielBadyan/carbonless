@@ -1347,12 +1347,6 @@ function FileMarkActions(props: {
 }
 
 /**
- * A file of the since view that the viewed snapshot no longer changes:
- * everything the reviewer saw of it on the compared patch set was undone,
- * so its clusters are gone. Its header names it; its body is the interdiff,
- * each piece marked on its own (since marks: pieces.ts).
- */
-/**
  * When a file opened by a move-on takes marks again: `until`, or later
  * once its lines (or what shows instead: `bodyIn`) arrive under the
  * pointer, just as unseen, restarting the wait (UNDO_ARM_MS from then).
@@ -1373,6 +1367,12 @@ function useMarksWait(
 		: Math.max(until, bodyInAt === null ? 0 : bodyInAt + UNDO_ARM_MS);
 }
 
+/**
+ * A file of the since view that the viewed snapshot no longer changes:
+ * everything the reviewer saw of it on the compared patch set was undone,
+ * so its clusters are gone. Its header names it; its body is the interdiff,
+ * each piece marked on its own (since marks: pieces.ts).
+ */
 export function GoneFile(props: {
 	index: number;
 	path: string;

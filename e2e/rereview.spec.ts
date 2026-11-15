@@ -2777,6 +2777,8 @@ test("in the since view, finishing a file opens the next with only a reverted pi
 	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
 		0,
 	);
+	// The verdict rises into view.
+	await expect(page.locator("#files-verdict")).toBeInViewport();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });
