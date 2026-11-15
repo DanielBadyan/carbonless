@@ -1422,8 +1422,7 @@ describe("API", () => {
 				expect(res.statusCode, res.body).toBe(200);
 				return res.json();
 			};
-			// The beforeEach's start: Spawn's is done, Invite's isn't.
-			expect(await done()).toEqual({ invite: false, spawn: true });
+			// The state dir is the file's: start from none done.
 			rmSync(
 				join(process.env.XDG_STATE_HOME as string, "carbonless", "agent-setup"),
 				{ recursive: true, force: true },
