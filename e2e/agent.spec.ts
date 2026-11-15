@@ -39,6 +39,15 @@ async function shot(page: Page, name: string, isMobile: boolean) {
 	});
 }
 
+/**
+ * Holds every seen mark for the rest of the test (the route outlives the
+ * gotos): an open, answered card counts as seen after a second in view, so
+ * on a loaded machine a test that checks an answer is still new would race
+ * that timer. Every answer stays new (no timer race).
+ */
+const holdSeenMarks = (page: Page) =>
+	page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
+
 const REPLY = [
 	"No: it adds **v1 and v2** only.",
 	"",
@@ -182,6 +191,8 @@ test("Resolve closes the card, still the agent's; it opens to Unresolve, kept ac
 }) => {
 	await pr(fixture);
 	const s = await agentCrb();
+	// The answer is still new after the reload (holdSeenMarks).
+	await holdSeenMarks(page);
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Why?");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
@@ -604,6 +615,8 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 		],
 	});
 	const s = await agentCrb();
+	// Calc's answer is still new after the push (holdSeenMarks).
+	await holdSeenMarks(page);
 	const asks = [
 		[CALC, 3, "About calc"],
 		[OTHER, 2, "About other"],
@@ -699,12 +712,9 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	test.slow();
 	const p = await pr(fixture);
 	const s = await agentCrb();
-	// Hold every seen mark for the whole test (the route outlives the
-	// gotos): an open card counts as seen after a second, so on a loaded
-	// machine the first answer could be seen before the push. Every answer
-	// on the line, the first one's and the later one's, stays new (no
-	// timer race).
-	await page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
+	// The first answer must still be new after the push (holdSeenMarks),
+	// and so must the later one.
+	await holdSeenMarks(page);
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Asked on PS1");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
