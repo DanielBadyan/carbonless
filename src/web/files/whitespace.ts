@@ -52,10 +52,6 @@ export type DiffRow =
 	| { kind: "ws"; del: DiffLine; add?: DiffLine }
 	| { kind: "ws"; del?: DiffLine; add: DiffLine };
 
-/** Every row is whitespace-only: the run changes nothing but whitespace. */
-export const whitespaceOnly = (rows: DiffRow[]): boolean =>
-	rows.length > 0 && rows.every((r) => r.kind === "ws");
-
 /** Splits a hunk into runs of context lines and runs of one cluster's lines. */
 export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 	// A changed run without a key stays apart from context (pieces.ts).

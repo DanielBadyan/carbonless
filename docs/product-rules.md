@@ -545,9 +545,11 @@ The view still pairs whitespace-equal lines as quiet `~` rows
 (`src/web/files/whitespace.ts`), over the whole display hunk, context
 included: a line's twin may be a context line or sit in another cluster
 (a one-sided `~` row). It never changes clusters, their keys or the +/−
-counts. A whitespace-only cluster collapses to one row, keeps its checkbox
-and cross-off, and stays open while a thread or a thread link's landing
-sits on one of its lines. What the rows guarantee, pure and checked for any
+counts. A whitespace-only cluster (the server's flag) collapses to one
+row, keeps its checkbox and cross-off, and stays open while a thread or a
+thread link's landing sits on one of its lines; a change cluster whose
+lines' twins sit across a context line or in another hunk shows its `~`
+rows open, since progress counts it. What the rows guarantee, pure and checked for any
 input (principle 2): every line of the hunk is in the rows exactly once,
 and dropping the lines shown as added or removed from the two sides leaves
 them whitespace-equal, so a block moved across an unchanged line, or a line

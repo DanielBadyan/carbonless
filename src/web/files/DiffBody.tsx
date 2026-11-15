@@ -141,7 +141,7 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { type DiffRow, hunkView } from "./whitespace";
 import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
@@ -3994,13 +3994,12 @@ function HunkRows(props: {
 						</tbody>
 					);
 				}
-				// Whitespace only: the server's flag on the cluster (its git hunk's
-				// whitespace-only run, CAR-156), or every row of the run paired.
-				if (
-					state &&
-					ignoreWhitespace &&
-					(cluster?.whitespaceOnly || whitespaceOnly(rows))
-				) {
+				// Whitespace only: the server's flag (a git hunk's whitespace-only
+				// run is a cluster of its own, CAR-156), the clusters progress
+				// leaves out with the switch on. A change cluster whose lines'
+				// twins sit elsewhere (a context line, another hunk) shows its `~`
+				// rows open: it still counts.
+				if (state && ignoreWhitespace && cluster?.whitespaceOnly) {
 					// A bubble, a pick, a landed-on line or the find's current hit
 					// (once a step showed it: typing never changes the layout)
 					// must never be hidden by the setting: the cluster stays open

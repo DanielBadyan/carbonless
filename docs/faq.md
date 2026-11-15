@@ -128,8 +128,8 @@ an `if` shows the `if`, its `}` and the `log` line that crossed the loop's
 closing brace; the rest of the body goes quiet). It can show a little more
 as changed than `git diff -w` would, never less. Clusters are cut within
 one of git's hunks only, so a line whose twin sits in another hunk, or is
-a context line, stays in a change cluster: it reads as `~`, but progress
-counts it.
+a context line, stays in a change cluster: its rows read as `~` but stay
+open, and progress counts it.
 
 ## Why are lines in a different order, or marked where GitHub shows none?
 
