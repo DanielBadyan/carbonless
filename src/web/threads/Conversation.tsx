@@ -107,8 +107,8 @@ export function useCanAct(thread: ReviewThread): boolean {
 
 /**
  * The reply box with the Resolve button beside it (below it on a phone
- * while the box is open, or always with the agent's handle) and the
- * thread agent's handle at the row's right end: each only where the
+ * while the box is open) and the thread agent's handle at the row's
+ * right end: each only where the
  * viewer may; the handle alone when they may do neither.
  */
 export function ThreadActions(props: {
@@ -128,10 +128,10 @@ export function ThreadActions(props: {
 	// Nothing to do here but the agent: its handle alone, at the row's end.
 	if (!canAct && !asking) return agent ? <AgentHandleRow /> : null;
 	const box = asking ? !thread.resolved : on && thread.viewerCan.reply;
-	// With the agent's handle beside Resolve, a phone's line is too short
-	// for the closed box too: Resolve and the handle go under it, the box
-	// keeps the width (owner: the handle "shouldn't limit the width").
-	const stacked = box && (boxOpen || agent !== null);
+	// One row on a phone too, closed: the box narrow beside Resolve and the
+	// agent's handle (its hint clipped inside it), the full width once
+	// tapped (owner, 2026-11-15: "One row, narrow box").
+	const stacked = box && boxOpen;
 	return (
 		<div
 			data-testid="thread-actions"

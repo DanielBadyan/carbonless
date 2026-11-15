@@ -142,7 +142,9 @@ export function ReplyBox(props: {
 				{!text && (
 					<span
 						aria-hidden
-						className="pointer-events-none absolute top-2 left-3 text-sm leading-normal text-faint"
+						// Clipped inside the box: closed on a phone beside Resolve and
+						// the agent's handle it can be narrower than its hint.
+						className="pointer-events-none absolute top-2 right-3 left-3 overflow-hidden text-sm leading-normal text-ellipsis whitespace-nowrap text-faint"
 					>
 						<span
 							className={`transition-opacity duration-200 motion-reduce:transition-none ${asking ? "opacity-0" : "opacity-100"}`}

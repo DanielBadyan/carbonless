@@ -589,8 +589,9 @@ config). Answering:
   the agent threads load. While a card's actions row is closed (an
   Overview card or unplaced row not expanded), the handle sits at the right
   end of the Show more row, the toggle kept centred in equal columns; with
-  no such row, alone at the card's bottom right. On a phone Resolve and the
-  handle go under the reply box, so the box keeps the line. The thread
+  no such row, alone at the card's bottom right. On a phone too the closed
+  reply box shares the line with Resolve and the handle, narrow, its hint
+  clipped inside it; tapped, it takes the line. The thread
   keeps its full width: nothing is reserved for the handle. An `accent`
   dot on the handle's top-left (and in the file tree, on a file and its
   folders) is an unseen agent message: unread, never a state. Pressed, the
