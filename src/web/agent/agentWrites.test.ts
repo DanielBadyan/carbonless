@@ -330,4 +330,53 @@ describe("agent writes", () => {
 			"text is too long",
 		);
 	});
+
+	it("askReview: a 409 that names no conversation is a visible refusal; nothing else is posted", async () => {
+		fetchMock.mockResolvedValue(answer(409, { error: "There is one already" }));
+		const got = askReview(client, "mine", "c1");
+		const settled = got.then(
+			() => "resolved",
+			(e: unknown) => e,
+		);
+		await vi.runAllTimersAsync();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const item = getAgentWrites().pending.get("c1");
+		expect(item?.retrying).toBe(false);
+		expect((item?.error as { status?: number } | undefined)?.status).toBe(409);
+		expect(await settled).toBe(item?.error);
+	});
+
+	it("askReview: a transient failure on the joining message resends under the same clientId, never a second conversation", async () => {
+		const existing: AgentThread = {
+			...thread("R0", "first tab"),
+			anchor: { subject: "review" },
+		};
+		fetchMock
+			.mockResolvedValueOnce(answer(409, { error: "exists", thread: "R0" }))
+			.mockResolvedValueOnce(answer(503, { error: "busy" }))
+			.mockResolvedValueOnce(answer(409, { error: "exists", thread: "R0" }))
+			.mockResolvedValue(answer(200, existing));
+		const got = askReview(client, "mine", "c2");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getAgentWrites().pending.get("c2")?.retrying).toBe(true);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		await expect(got).resolves.toEqual(existing);
+		const sent = bodies();
+		expect(sent.map((b) => b.url)).toEqual([
+			"/api/agent/threads",
+			"/api/agent/threads/R0/messages",
+			"/api/agent/threads",
+			"/api/agent/threads/R0/messages",
+		]);
+		expect(new Set(sent.map((b) => b.body.clientId))).toEqual(new Set(["c2"]));
+		// Every open names the review: none is a fresh span or thread open.
+		for (const b of sent.filter((x) => x.url === "/api/agent/threads")) {
+			expect(b.body).toEqual({ clientId: "c2", text: "mine", review: true });
+		}
+		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
+			threads: [existing],
+		});
+		expect(getAgentWrites().pending.size).toBe(0);
+	});
 });
