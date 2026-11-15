@@ -275,6 +275,20 @@ export async function ghIdle(timeoutMs?: number): Promise<void> {
 	}
 }
 
+/** Times a gh call found gh logged out (ViewerCache drops its login on one). */
+let loggedOutSeen = 0;
+
+/** How many gh calls so far found gh logged out. */
+export function loggedOutCount(): number {
+	return loggedOutSeen;
+}
+
+/** The error a call that found gh logged out fails with (counted). */
+function loggedOut(): GhError {
+	loggedOutSeen++;
+	return new GhError(NOT_LOGGED_IN);
+}
+
 export function runGh(
 	args: string[],
 	opts: Parameters<typeof runGhNow>[1] = {},
@@ -303,7 +317,7 @@ async function runGhNow(
 	});
 	if (result.code === 0) return result.stdout;
 	if (opts.partial?.(result.stdout)) return result.stdout;
-	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
+	if (LOGGED_OUT.test(result.stderr)) throw loggedOut();
 	const isAuthStatus = args[0] === "auth" && args[1] === "status";
 	if (!isAuthStatus) {
 		const host = env.GH_HOST || "github.com";
@@ -311,9 +325,7 @@ async function runGhNow(
 			["auth", "status", "--active", "--hostname", host],
 			{ cwd: opts.cwd, env, signal: opts.signal },
 		);
-		if (auth.code !== 0 && LOGGED_OUT.test(auth.stderr)) {
-			throw new GhError(NOT_LOGGED_IN);
-		}
+		if (auth.code !== 0 && LOGGED_OUT.test(auth.stderr)) throw loggedOut();
 	}
 	throw new GhError(
 		problemLine(result.stderr) || `gh exited with code ${result.code}`,
@@ -364,19 +376,6 @@ function safeJson(text: string): unknown {
 	} catch {
 		throw new GhError("gh returned output that is not JSON");
 	}
-}
-
-export async function viewerSlug(): Promise<string> {
-	return slugify(await viewerLogin());
-}
-
-async function viewerLogin(): Promise<string> {
-	const user = safeJson(await runGh(["api", "user"])) as { login?: unknown };
-	const login = typeof user?.login === "string" ? user.login : "";
-	if (!slugify(login).replace(/-/g, "")) {
-		throw new GhError("Could not determine your GitHub login from gh api user");
-	}
-	return login;
 }
 
 function isNotFound(error: unknown): boolean {
@@ -485,23 +484,12 @@ export async function fetchPrMeta(
 	};
 }
 
-/**
- * A page of a PR connection: from the start (after a cursor), or `last`,
- * the final page.
- */
-function connectionQuery(
-	connection: string,
-	nodeFields: string,
-	end: "first" | "last" = "first",
-): string {
-	const [cursor, page] =
-		end === "first"
-			? [", $endCursor: String", "first: 100, after: $endCursor"]
-			: ["", "last: 100"];
-	return `query($owner: String!, $name: String!, $number: Int!${cursor}) {
+/** A page of a PR connection: from the start, or after a cursor. */
+function connectionQuery(connection: string, nodeFields: string): string {
+	return `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      ${connection}(${page}) {
+      ${connection}(first: 100, after: $endCursor) {
         totalCount
         pageInfo { hasNextPage endCursor }
         nodes { ${nodeFields} }
@@ -546,20 +534,36 @@ const CONTENT_FIELDS = `id comments(first: 100) { totalCount ${COMMENT_PAGE} nod
 /** Threads whose content one query reads (about 1 s for 50). */
 const CONTENT_BATCH = 50;
 export const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
-/** The last page of threads, asked for alongside the first (fetchConnection). */
-const LAST_THREADS_QUERY = connectionQuery(
-	"reviewThreads",
-	THREAD_FIELDS,
-	"last",
-);
+/**
+ * The threads' last page, asked for alongside the first
+ * (fetchThreadSummaries): up to 199 threads in one round trip. Two calls
+ * at once, not one query: merged, GitHub answers about 0.24 s slower (a
+ * real PR, 106 threads).
+ */
+const LAST_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: 100) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { ${THREAD_FIELDS} }
+      }
+    }
+  }
+}`;
+/**
+ * What the overview reads of each comment and review; the id joins the
+ * first and last pages (joinEnds).
+ */
+const OVERVIEW_NODES = {
+	comments: `id ${AUTHOR} createdAt`,
+	// The commit a review was made on dates the PR's head (as-of mode).
+	reviews: `id ${AUTHOR} state submittedAt url commit { oid }`,
+};
 const QUERIES = {
 	reviewThreads: connectionQuery("reviewThreads", THREAD_FIELDS),
-	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
-	// The commit a review was made on dates the PR's head (as-of mode).
-	reviews: connectionQuery(
-		"reviews",
-		`${AUTHOR} state submittedAt url commit { oid }`,
-	),
+	comments: connectionQuery("comments", OVERVIEW_NODES.comments),
+	reviews: connectionQuery("reviews", OVERVIEW_NODES.reviews),
 	commits: connectionQuery(
 		"commits",
 		"commit { oid committedDate pushedDate }",
@@ -671,10 +675,41 @@ const verdictQuery = (
   }
 }`;
 
-/** The description as GitHub renders it (HTML comments dropped, emoji and images resolved). */
-const BODY_HTML_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+/** A connection's first or last 100, under `alias`, as one page (pageOf). */
+const endPage = (
+	alias: string,
+	connection: string,
+	end: "first" | "last",
+	nodeFields: string,
+) =>
+	`${alias}: ${connection}(${end}: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { ${nodeFields} } }`;
+
+/** A commit's first 100 check contexts (fetchCommitChecks reads on). */
+const COMMIT_CHECKS = `statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage endCursor } nodes { ${checkFields(false)} } } }`;
+
+/**
+ * The overview's whole first paint in one round trip (fetchOverview): the
+ * PR's fields, its description as GitHub renders it (HTML comments
+ * dropped, emoji and images resolved), its requested reviewers (users
+ * and teams, as `gh pr view --json` exports them), the first
+ * and last 100 of its comments and reviews (joinEnds: up to 199 each in
+ * this one call) and the checks: the head's, or as of a cutoff (`asOf`)
+ * those of the snapshot head `$oid`. Light fields only: merging the review
+ * threads or the timeline in would hold the first paint (they add up on
+ * GitHub's side, about 1.4 s on a real PR).
+ */
+const overviewQuery = (
+	asOf: boolean,
+) => `query PrOverview($owner: String!, $name: String!, $number: Int!${asOf ? ", $oid: GitObjectID!" : ""}) {
   repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) { bodyHTML }
+    pullRequest(number: $number) {
+      number title url ${AUTHOR} body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable
+      reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name slug } } } }
+      ${endPage("comments", "comments", "first", OVERVIEW_NODES.comments)}
+      ${endPage("commentsLast", "comments", "last", OVERVIEW_NODES.comments)}
+      ${endPage("reviews", "reviews", "first", OVERVIEW_NODES.reviews)}
+      ${endPage("reviewsLast", "reviews", "last", OVERVIEW_NODES.reviews)}${asOf ? "" : `\n      headCommit: commits(last: 1) { nodes { commit { oid ${COMMIT_CHECKS} } } }`}
+    }${asOf ? `\n    asOfHead: object(oid: $oid) { ... on Commit { ${COMMIT_CHECKS} } }` : ""}
   }
 }`;
 
@@ -716,12 +751,13 @@ async function fetchPage(
 		),
 	);
 	const conn = rec(rec(rec(rec(out).data).repository).pullRequest)[connection];
+	return pageOrFail(conn, connection);
+}
+
+/** A connection as GitHub answered it as a Page; null when it isn't one. */
+function pageOf(conn: unknown): Page | null {
 	const { nodes, pageInfo, totalCount } = rec(conn);
-	if (!Array.isArray(nodes)) {
-		throw new GhError(
-			`gh returned an unexpected response for the PR ${connection}`,
-		);
-	}
+	if (!Array.isArray(nodes)) return null;
 	const info = rec(pageInfo);
 	return {
 		nodes,
@@ -736,6 +772,17 @@ async function fetchPage(
 				? totalCount
 				: null,
 	};
+}
+
+/** pageOf, failing on what isn't a page of PR connection `connection`. */
+function pageOrFail(conn: unknown, connection: string): Page {
+	const page = pageOf(conn);
+	if (!page) {
+		throw new GhError(
+			`gh returned an unexpected response for the PR ${connection}`,
+		);
+	}
+	return page;
 }
 
 /**
@@ -766,12 +813,7 @@ export function joinEnds(first: Page, last: Page): unknown[] | null {
 	return [...first.nodes, ...last.nodes.slice(skip)];
 }
 
-/**
- * Every node of one PR connection, following `pageInfo` until the end.
- * Review threads are the slow read (about two seconds a page), so their
- * last page is read alongside the first: up to 199 threads take one round
- * trip. Past that, or if the two don't join, the pages are read in turn.
- */
+/** Every node of one PR connection, following `pageInfo` until the end. */
 async function fetchConnection(
 	ref: PrRef,
 	connection: keyof typeof QUERIES,
@@ -779,14 +821,23 @@ async function fetchConnection(
 	/** The connection's query with other node fields (same paging). */
 	query: string = QUERIES[connection],
 ): Promise<unknown[]> {
-	const [first, last] = await Promise.all([
-		fetchPage(ref, connection, query, undefined, read),
-		connection === "reviewThreads"
-			? fetchPage(ref, connection, LAST_THREADS_QUERY, undefined, read).catch(
-					() => null,
-				)
-			: null,
-	]);
+	const first = await fetchPage(ref, connection, query, undefined, read);
+	return restOf(ref, connection, first, null, read, query);
+}
+
+/**
+ * Every node of a PR connection from its first page, and its last when
+ * read with it: the two joined when they hold it all (joinEnds), else the
+ * pages after the first read in turn.
+ */
+async function restOf(
+	ref: PrRef,
+	connection: keyof typeof QUERIES,
+	first: Page,
+	last: Page | null,
+	read: ReadSignal,
+	query: string = QUERIES[connection],
+): Promise<unknown[]> {
 	if (first.next === null) return first.nodes;
 	const joined = last && joinEnds(first, last);
 	if (joined) return joined;
@@ -949,32 +1000,35 @@ async function withAllComments(raw: unknown, viewer: string): Promise<unknown> {
 	return raw;
 }
 
-async function fetchBodyHtml(
+/**
+ * Every check context of a commit as overviewQuery read it (`commit`: its
+ * `statusCheckRollup`), its pages past the first 100 read on; [] when it
+ * has none.
+ */
+async function checksFrom(
 	ref: PrRef,
-	read: ReadSignal = {},
-): Promise<string> {
-	const out = safeJson(
-		await runGh(
-			[
-				"api",
-				"graphql",
-				"-f",
-				`query=${BODY_HTML_QUERY}`,
-				"-f",
-				`owner=${ref.owner}`,
-				"-f",
-				`name=${ref.repo}`,
-				"-F",
-				`number=${ref.number}`,
-			],
-			{ ...read, what: "the description" },
-		),
-	);
-	const html = rec(rec(rec(rec(out).data).repository).pullRequest).bodyHTML;
-	if (typeof html !== "string") {
-		throw new GhError("gh returned an unexpected response for the PR body");
+	oid: string,
+	commit: unknown,
+	read: ReadSignal,
+): Promise<unknown[]> {
+	const unexpected = () =>
+		new GhError("gh returned an unexpected response for the checks");
+	const c = rec(commit);
+	if (!("statusCheckRollup" in c)) throw unexpected();
+	// No checks ever reported for this commit.
+	if (c.statusCheckRollup === null) return [];
+	const conn = rec(rec(c.statusCheckRollup).contexts);
+	if (!Array.isArray(conn.nodes)) throw unexpected();
+	const info = rec(conn.pageInfo);
+	if (info.hasNextPage !== true) return conn.nodes;
+	// More, but nowhere to read on from: as fetchCommitChecks, never fewer.
+	if (typeof info.endCursor !== "string") {
+		throw new GhError("Too many checks to read for this commit");
 	}
-	return html;
+	return fetchCommitChecks(ref, oid, read, {
+		after: info.endCursor,
+		nodes: conn.nodes,
+	});
 }
 
 /** The overview's own fields, without the read's stamps. */
@@ -985,7 +1039,8 @@ export type OverviewFields = Omit<
 
 /**
  * The PR's overview but its review threads (fetchThreadSummaries,
- * fetchThreadContents): the fast part, a few calls at once.
+ * fetchThreadContents): the fast part, one query (overviewQuery), and
+ * more only past 199 comments or reviews, or 100 checks.
  */
 export async function fetchOverview(
 	ref: PrRef,
@@ -995,20 +1050,104 @@ export async function fetchOverview(
 	read: ReadSignal = {},
 ): Promise<OverviewFields> {
 	return notFoundAsPr(ref, async () => {
-		const [view, bodyHTML, comments, reviews, checks] = await Promise.all([
-			prView(
+		const out = safeJson(
+			await runGh(
+				[
+					"api",
+					"graphql",
+					"-f",
+					`query=${overviewQuery(asOf !== undefined)}`,
+					// -f keeps a numeric-looking owner a string; only the number is typed.
+					"-f",
+					`owner=${ref.owner}`,
+					"-f",
+					`name=${ref.repo}`,
+					"-F",
+					`number=${ref.number}`,
+					...(asOf ? ["-f", `oid=${asOf.head}`] : []),
+				],
+				{ ...read, what: "the PR" },
+			),
+		);
+		const repo = rec(rec(rec(out).data).repository);
+		const pr = repo.pullRequest;
+		if (pr === null || typeof pr !== "object" || Array.isArray(pr)) {
+			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);
+		}
+		const p = rec(pr);
+		if (typeof p.bodyHTML !== "string") {
+			throw new GhError("gh returned an unexpected response for the PR body");
+		}
+		let checks: Promise<unknown[]>;
+		if (asOf) {
+			const object = repo.asOfHead;
+			if (object === null || typeof object !== "object") {
+				throw new GhError(`Commit ${asOf.head} is missing on GitHub`);
+			}
+			checks = checksFrom(ref, asOf.head, object, read);
+		} else {
+			const nodes = rec(p.headCommit).nodes;
+			if (!Array.isArray(nodes)) {
+				throw new GhError("gh returned an unexpected response for the checks");
+			}
+			// A PR without a commit has no checks; a head commit has an oid.
+			const head = rec(nodes[0]).commit;
+			const oid = rec(head).oid;
+			if (
+				nodes.length > 0 &&
+				(typeof oid !== "string" || !OID_FORM.test(oid))
+			) {
+				throw new GhError("gh returned an unexpected response for the checks");
+			}
+			checks =
+				typeof oid === "string"
+					? checksFrom(ref, oid, head, read)
+					: Promise.resolve([]);
+		}
+		const [comments, reviews, contexts] = await Promise.all([
+			restOf(
 				ref,
-				"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
+				"comments",
+				pageOrFail(p.comments, "comments"),
+				pageOf(p.commentsLast),
 				read,
 			),
-			fetchBodyHtml(ref, read),
-			fetchConnection(ref, "comments", read),
-			fetchConnection(ref, "reviews", read),
-			asOf ? fetchCommitChecks(ref, asOf.head, read) : undefined,
+			restOf(
+				ref,
+				"reviews",
+				pageOrFail(p.reviews, "reviews"),
+				pageOf(p.reviewsLast),
+				read,
+			),
+			checks,
 		]);
+		// The PR's own fields as mapOverview reads them (`gh pr view`'s
+		// shapes: requested reviewers and checks as plain lists, any author
+		// but a user (a bot, a mannequin, an organization) as `app/<login>`,
+		// which is how the attention sets know a bot PR).
+		const author = rec(p.author);
+		const view = {
+			...p,
+			author:
+				author.__typename !== "User" && typeof author.login === "string"
+					? { ...author, login: `app/${author.login}` }
+					: p.author,
+			// Users and teams only, as gh's export keeps (a bot's request isn't listed).
+			reviewRequests: (
+				(rec(p.reviewRequests).nodes as unknown[] | undefined) ?? []
+			)
+				.map((n) => rec(n).requestedReviewer)
+				.filter((r) => ["User", "Team"].includes(String(rec(r).__typename))),
+			statusCheckRollup: asOf ? [] : contexts,
+		};
 		return mapOverview(
 			view,
-			{ bodyHTML, comments, reviews, checks },
+			{
+				bodyHTML: p.bodyHTML,
+				comments,
+				reviews,
+				checks: asOf ? contexts : undefined,
+			},
 			viewer,
 			asOf?.at,
 		);
@@ -1035,7 +1174,17 @@ export function fetchThreadSummaries(
 	read: ReadSignal = {},
 ): Promise<unknown[]> {
 	return notFoundAsPr(ref, async () => {
-		const nodes = await fetchConnection(ref, "reviewThreads", read);
+		const [first, last] = await Promise.all([
+			fetchPage(ref, "reviewThreads", QUERIES.reviewThreads, undefined, read),
+			fetchPage(
+				ref,
+				"reviewThreads",
+				LAST_THREADS_QUERY,
+				undefined,
+				read,
+			).catch(() => null),
+		]);
+		const nodes = await restOf(ref, "reviewThreads", first, last, read);
 		const paged = await withEveryComment(nodes, SUMMARY_COMMENT, read);
 		// Deleted while paged: listed as read (its content read says gone).
 		return paged.map((node, i) => node ?? nodes[i]);

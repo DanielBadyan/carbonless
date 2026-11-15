@@ -56,8 +56,6 @@ import {
 	type PrMeta,
 	type PrRef,
 	resolvePrRef,
-	runGh,
-	viewerSlug,
 } from "./gh.js";
 import { runGit } from "./git.js";
 import {
@@ -121,9 +119,22 @@ import {
 	type VerdictRecord,
 	type VerdictTarget,
 } from "./verdict.js";
+import { ViewerCache } from "./viewerCache.js";
 
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
+
+/**
+ * How young the open's read of the PR's head must be to answer the page's
+ * first head check (`GET /head`, checkHead's reuseOpen): the page asks
+ * right after `crb <pr>` opened the review (about a second later with a
+ * warm clone), which would repeat the
+ * open's read. A third of the page's own 30 s staleTime for the head, so
+ * that answer is never staler than what the page takes from a check
+ * anyway; an open that cloned (often longer) asks again. Only the first
+ * check: a reload after a push always asks, and so does an agent's turn.
+ */
+export const HEAD_REUSE_MS = 10_000;
 
 /** commentLeft for one snapshot: asked of GitHub, then known. */
 interface CommentLeft {
@@ -172,6 +183,13 @@ export interface SessionOptions {
 	 * own. Everything else stays live. Not with `asOf`.
 	 */
 	head?: HeadSpec;
+	/** The server's gh login (one for every open); none: read it now. */
+	viewers?: ViewerCache;
+	/**
+	 * The first head check answers from the open's read when it is younger
+	 * than HEAD_REUSE_MS (the server's opens: a page loads right after).
+	 */
+	reuseOpenHead?: boolean;
 }
 
 /** Comparison endpoints: merge-base(origin/<base>, head) → head. */
@@ -255,6 +273,11 @@ export class Session {
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
+	/**
+	 * When the open read the PR's head, until the page's first head check
+	 * or a Refresh (checkHead's reuseOpen; opens through the server only).
+	 */
+	#openHeadAt: number | null = null;
 	/** Thread code from the clone; a Refresh retries what failed. */
 	readonly #threadCode: ThreadCodeSource;
 	/** Reads of GitHub, oldest first; see overview(). */
@@ -520,12 +543,19 @@ export class Session {
 			const span = traced.start(name);
 			return traced.run(span, run).finally(() => span.end());
 		};
-		await runGh(["auth", "status"]);
+		// No `gh auth status` first: a logged-out gh fails the first call
+		// below as "not logged in" all the same (runGh), and that check was
+		// 0.7 s before anything else on a real open.
 		const ref = await resolvePrRef(arg, cwd);
-		// Independent reads: at once (each gh call is a few hundred ms).
+		// Independent reads: at once (each gh call is a few hundred ms). The
+		// login is the server's (ViewerCache), read only when it has none.
+		let metaAt = 0;
 		const [viewer, prMeta] = await Promise.all([
-			viewerSlug(),
-			fetchPrMeta(ref),
+			(options.viewers ?? new ViewerCache()).slug(),
+			fetchPrMeta(ref).then((m) => {
+				metaAt = Date.now();
+				return m;
+			}),
 		]);
 		const { asOf } = options;
 		let meta = prMeta;
@@ -599,7 +629,7 @@ export class Session {
 							fetched.mergeBase,
 						),
 					};
-		return new Session(
+		const session = new Session(
 			repo,
 			viewer,
 			reviewId,
@@ -612,6 +642,8 @@ export class Session {
 			pinned,
 			headInfo,
 		);
+		if (options.reuseOpenHead && !asOf) session.#openHeadAt = metaAt;
+		return session;
 	}
 
 	/** The review's id (its `/r/<id>` URL). */
@@ -2003,6 +2035,8 @@ export class Session {
 	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
+		// Always asks GitHub, and no head check answers from the open's after it.
+		this.#openHeadAt = null;
 		// Commits and code that couldn't be had may be there now.
 		this.#threadCode.forgetFailures();
 		this.#verdictRead = null;
@@ -2047,8 +2081,22 @@ export class Session {
 	 * no fetch; the same head under a moved base oid does (its merge base
 	 * may have moved).
 	 */
-	async checkHead(): Promise<SessionInfo> {
+	async checkHead(
+		/**
+		 * The page's own check (`GET /head`): its first, right after `crb <pr>`,
+		 * would ask what the open just read, so the open's answer serves it,
+		 * once, if young enough. Any other caller (an agent's turn) asks.
+		 */
+		options: { reuseOpen?: boolean } = {},
+	): Promise<SessionInfo> {
 		if (this.options.asOf) return this.info();
+		if (options.reuseOpen) {
+			const openAt = this.#openHeadAt;
+			this.#openHeadAt = null;
+			if (openAt !== null && Date.now() - openAt <= HEAD_REUSE_MS) {
+				return this.info();
+			}
+		}
 		const seq = ++this.#metaSeq;
 		const meta = await fetchPrMeta(this.#ref(), { signal: this.#stop.signal });
 		this.#setMeta(seq, meta);

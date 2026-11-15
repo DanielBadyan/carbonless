@@ -41,9 +41,12 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+):([0-9a-f]{32})$ ]] &&
 	# The server read the scenario: the call goes in the log it names
 	# ("log <path>"), written by this gh while alive, as a gh process does.
 	# A log that can't be written fails the call (and the server sees this
-	# gh gone).
+	# gh gone). bash line-buffers its stdout, so a call of several lines
+	# (a GraphQL query) goes out a write() per line: an exclusive lock on
+	# the log keeps another gh's lines from landing between them, which
+	# would split both calls in the log (test/gh-log.ts).
 	if [[ $line == "log "* ]]; then
-		printf '%s\n' "$*" >>"${line#log }" || exit 1
+		{ flock 9 && printf '%s\n' "$*" >&9; } 9>>"${line#log }" || exit 1
 		printf k >&3
 		answer
 	fi

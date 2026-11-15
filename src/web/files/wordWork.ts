@@ -1,7 +1,6 @@
 import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
-import type { DiffRow } from "./whitespace";
-import { hunkPairs } from "./wordBlocks";
+import type { LinePair } from "./wordBlocks";
 import { wordMarks } from "./wordDiff";
 
 /**
@@ -340,16 +339,16 @@ export interface HunkWords {
 const NONE: ReadonlySet<DiffLine> = new Set();
 
 /**
- * The hunk's word marks (hunkPairs): every pair done before, and new ones
- * while the task's render budget lasts; the rest are `later`, for
- * `requestMarks`.
+ * The word marks of a hunk's pairs (hunkView's): every pair done before,
+ * and new ones while the task's render budget lasts; the rest are `later`,
+ * for `requestMarks`.
  */
-export function hunkWords(rows: readonly DiffRow[]): HunkWords {
+export function hunkWords(pairs: readonly LinePair[]): HunkWords {
 	const marks = new Map<DiffLine, readonly Mark[]>();
 	const pending = new Set<DiffLine>();
 	const failed = new Set<DiffLine>();
 	const later: [DiffLine, DiffLine][] = [];
-	for (const [del, add] of hunkPairs(rows)) {
+	for (const [del, add] of pairs) {
 		let pair = lookup(done, del, add);
 		if (!pair) {
 			pair = markNow(del, add);

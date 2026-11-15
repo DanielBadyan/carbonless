@@ -3,20 +3,27 @@ import { cpuOf } from "../../../test/cpu";
 import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
 import type { DiffRow } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { hunkPairs, pairWordMarks } from "./wordBlocks";
 import { tokenize, wordMarks } from "./wordDiff";
 import {
 	CHUNK,
 	configureWordWork,
 	Dropped,
-	hunkWords,
 	markPairs,
+	hunkWords as pairsWords,
 	type Runner,
 	requestMarks,
 	resetWordWork,
 	slicedRunner,
 	wordWorkFallback,
 } from "./wordWork";
+
+// The rows' pairs as the page gets them (hunkView pairs git-order rows
+// with hunkPairs), so these tests read rows.
+const hunkWords = (rows: readonly DiffRow[]) => pairsWords(hunkPairs(rows));
+/** Every pair marked at once, in render: the marks before CAR-135. */
+const hunkWordMarks = (rows: readonly DiffRow[]) =>
+	pairWordMarks(hunkPairs(rows));
 
 const del = (text: string): DiffLine => ({
 	kind: "del",
