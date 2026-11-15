@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	onTestFinished,
+	vi,
+} from "vitest";
 import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
 import { prView } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
@@ -10,6 +18,7 @@ import {
 	SessionRegistry,
 	UnknownReviewError,
 } from "./registry";
+import { HEAD_REUSE_MS } from "./session";
 
 // The reopens' lookups of a review by id, in order.
 const lookups = vi.hoisted(() => [] as string[]);
@@ -60,6 +69,50 @@ describe("SessionRegistry", () => {
 	afterEach(async () => {
 		await Promise.all(registries.splice(0).map((r) => r.closeAll()));
 		await pr.cleanup();
+	});
+
+	it("answers the page's first head check from the open's read when young; an agent's check, later checks and a Refresh ask GitHub", async () => {
+		// The clock stands still: the open's read is as young as it gets.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
+		const metas = () =>
+			(pr.ghLog().match(/^pr view .*headRefOid/gm) ?? []).length;
+		const page = { reuseOpen: true };
+		const r = registry();
+		const { session } = await r.open({ pr: pr.arg });
+		const opened = metas();
+		// An agent's turn checks first: it always asks GitHub, and leaves the
+		// page its one reuse.
+		await session.checkHead();
+		expect(metas()).toBe(opened + 1);
+		expect(await session.checkHead(page)).toMatchObject({
+			currentHead: pr.head(),
+		});
+		expect(metas()).toBe(opened + 1);
+		// Only the first: a reload after a push asks.
+		const pushed = pr.moveHead({ "later.txt": "later\n" });
+		expect(await session.checkHead(page)).toMatchObject({
+			currentHead: pushed,
+			headMoved: true,
+		});
+		expect(metas()).toBe(opened + 2);
+
+		// An open whose read is older than HEAD_REUSE_MS: its first check asks.
+		const other = (await r.open({ pr: pr.arg, viewer: "someone-else" }))
+			.session;
+		vi.setSystemTime(Date.now() + HEAD_REUSE_MS + 1);
+		const before = metas();
+		await other.checkHead(page);
+		expect(metas()).toBe(before + 1);
+
+		// A Refresh asks, and so does the check after it.
+		const third = (await r.open({ pr: pr.arg, viewer: "a-third" })).session;
+		const refreshed = metas();
+		await third.refresh();
+		await third.checkHead(page);
+		expect(metas()).toBe(refreshed + 2);
 	});
 
 	it("opening a PR twice gives the same review and one session", async () => {

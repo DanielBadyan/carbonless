@@ -39,6 +39,8 @@ describe("/api/update", () => {
 			channel: expect.stringMatching(/^(rc|latest)$/),
 			install: null,
 			byHand: false,
+			byHandReason: null,
+			byHandManager: null,
 			lastChecked: null,
 			checkError: null,
 			checksOff: "unavailable",
@@ -141,6 +143,7 @@ describe("/api/update", () => {
 			expect(res.json()).toMatchObject({
 				available: "0.3.0",
 				byHand: true,
+				byHandReason: "no-install",
 				command: "npm install -g carbonless-review@0.3.0",
 				checkError: null,
 			});

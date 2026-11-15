@@ -78,6 +78,11 @@ describe("API", () => {
 	};
 	const post = (url: string, payload?: unknown) =>
 		inject(url, { method: "POST", payload: payload as object });
+	/**
+	 * The page's first head check, which the open's read may answer
+	 * (HEAD_REUSE_MS): the checks after it ask GitHub.
+	 */
+	const firstHeadCheck = () => get("/api/head");
 	const revision = async (): Promise<string> =>
 		(await get("/api/review")).revision;
 	const keys = (view: ReviewView) =>
@@ -567,6 +572,8 @@ describe("API", () => {
 			revision: await revision(),
 			changes: [{ key, state: "reviewed" }],
 		});
+		// The page's first check answers from the open (HEAD_REUSE_MS).
+		await firstHeadCheck();
 		const newHead = pr.moveHead({ "later.txt": "later\n" });
 		expect(await get("/api/head")).toMatchObject({
 			headMoved: true,
@@ -768,6 +775,7 @@ describe("API", () => {
 	});
 
 	it("maps a gh failure to 502", async () => {
+		await firstHeadCheck();
 		pr.scenario({ prs: {} });
 		const res = await inject("/api/head");
 		expect(res.statusCode).toBe(502);
@@ -2645,6 +2653,7 @@ describe("API", () => {
 			const ps1: ReviewView = await get("/api/review");
 			const [key = ""] = keys(ps1);
 			await mark(ps1.revision, key);
+			await firstHeadCheck();
 			const newHead = pr.moveHead({ "later.txt": "later\n" });
 			expect((await get("/api/head")).head).toMatchObject({
 				oid: newHead,

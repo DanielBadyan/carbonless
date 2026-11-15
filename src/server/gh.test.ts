@@ -112,7 +112,7 @@ describe("runGh", () => {
  * FAKE_AUTH_SLEEP (auth status answers after that long, then logs "auth answered"),
  * FAKE_PRVIEW_ERR / FAKE_GQL_ERR (stderr of a failing call), FAKE_VIEW (stdout
  * of `pr view`), FAKE_GQL_DIR (dir with <connection>-<page>.json responses,
- * and body-1.json for the description's bodyHTML).
+ * and overview-1.json for the overview's one query).
  * Every call's arguments are appended to FAKE_LOG.
  */
 const FAKE_GH = `#!/bin/sh
@@ -130,7 +130,7 @@ case "$1 $2" in
 "api graphql")
   [ -n "$FAKE_GQL_ERR" ] && { printf '%s\\n' "$FAKE_GQL_ERR" >&2; exit 1; }
   case "$*" in *"node(id:"*) c=pages-$(printf '%s' "$*" | sed -n 's/.*after: "\\([^"]*\\)".*/\\1/p');;
-  *"nodes(ids:"*) c=content;; *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
+  *"nodes(ids:"*) c=content;; *"query PrOverview("*) c=overview;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
   case "$*" in *endCursor=*) p=2;; *) p=1;; esac
   cat "$FAKE_GQL_DIR/$c-$p.json" || exit 1; exit 0 ;;
 esac
@@ -338,22 +338,42 @@ describe("runGh with a fake gh", () => {
 		await expect(fetchPrMeta(ref)).rejects.toThrow(GhError);
 	});
 
-	it("follows pagination for review threads", async () => {
-		const page = (nodes: unknown[], next: boolean) =>
-			JSON.stringify({
-				data: {
-					repository: {
-						pullRequest: {
-							reviewThreads: {
-								pageInfo: { hasNextPage: next, endCursor: "c1" },
-								nodes,
-							},
-							comments: { pageInfo: { hasNextPage: false }, nodes: [] },
-							reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
-						},
+	/** The overview query's answer (overviewQuery): an empty PR with `over`. */
+	const overviewAnswer = (over: Record<string, unknown> = {}) => {
+		const none = {
+			totalCount: 0,
+			pageInfo: { hasNextPage: false, endCursor: null },
+			nodes: [],
+		};
+		return JSON.stringify({
+			data: {
+				repository: {
+					pullRequest: {
+						number: 12,
+						title: "T",
+						url: "https://github.com/Acme/Widget/pull/12",
+						author: { login: "octo-author", __typename: "User" },
+						body: "",
+						bodyHTML: "",
+						state: "OPEN",
+						reviewRequests: { nodes: [] },
+						comments: none,
+						commentsLast: none,
+						reviews: none,
+						reviewsLast: none,
+						headCommit: { nodes: [] },
+						...over,
 					},
 				},
-			});
+			},
+		});
+	};
+
+	it("follows pagination for review threads", async () => {
+		const page = (nodes: unknown[], next: boolean) => ({
+			pageInfo: { hasNextPage: next, endCursor: "c1" },
+			nodes,
+		});
 		const thread = (path: string) => ({
 			isResolved: false,
 			isOutdated: false,
@@ -377,29 +397,31 @@ describe("runGh with a fake gh", () => {
 		const gql = join(dir, "gql");
 		const { mkdirSync } = await import("node:fs");
 		mkdirSync(gql);
-		for (const c of ["reviewThreads", "comments", "reviews"]) {
-			writeFileSync(
-				join(gql, `${c}-1.json`),
-				page(
-					c === "reviewThreads" ? [thread("one.ts")] : [],
-					c === "reviewThreads",
-				),
-			);
-		}
 		writeFileSync(
-			join(gql, "reviewThreads-2.json"),
-			page([thread("two.ts")], false),
-		);
-		writeFileSync(
-			join(gql, "body-1.json"),
+			join(gql, "reviewThreads-1.json"),
 			JSON.stringify({
-				data: { repository: { pullRequest: { bodyHTML: "<p>Hi</p>" } } },
+				data: {
+					repository: {
+						pullRequest: { reviewThreads: page([thread("one.ts")], true) },
+					},
+				},
 			}),
 		);
-		setEnv({
-			FAKE_GQL_DIR: gql,
-			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
-		});
+		writeFileSync(
+			join(gql, "reviewThreads-2.json"),
+			JSON.stringify({
+				data: {
+					repository: {
+						pullRequest: { reviewThreads: page([thread("two.ts")], false) },
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({ bodyHTML: "<p>Hi</p>" }),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
 		const o = await fetchOverview(ref, "me");
 		expect(o.bodyHtml).toBe("<p>Hi</p>");
 		// The overview reads no threads: they come apart.
@@ -409,10 +431,10 @@ describe("runGh with a fake gh", () => {
 			"one.ts",
 			"two.ts",
 		]);
-		// One description query; the threads' last page asked for alongside
-		// the first (it had no answer here), then the second page.
-		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
-		expect(log().match(/reviewThreads\(first/g)).toHaveLength(2);
+		// One overview query; the threads' last page asked for alongside the
+		// first (it had no answer here), then the second page.
+		expect(log().match(/query PrOverview\(/g)).toHaveLength(1);
+		expect(log().match(/reviewThreads\(first: 100, after/g)).toHaveLength(2);
 		expect(log().match(/reviewThreads\(last: 100\)/g)).toHaveLength(1);
 		// A summary: no comment's text or hunk (threadContents), the opener's
 		// author, time and commit; the latest one's author and time; authors
@@ -430,56 +452,131 @@ describe("runGh with a fake gh", () => {
 	});
 
 	it("reads up to 199 threads in one round trip: the first and last pages together, overlapping", async () => {
-		const page = (paths: string[], next: boolean) =>
-			JSON.stringify({
-				data: {
-					repository: {
-						pullRequest: {
-							reviewThreads: {
-								totalCount: 3,
-								pageInfo: { hasNextPage: next, endCursor: "c1" },
-								nodes: paths.map((path) => ({
-									id: path,
-									path,
-									line: 1,
-									first: { nodes: [{ author: { login: "a" }, createdAt: "" }] },
-									comments: { totalCount: 1, nodes: [] },
-								})),
-							},
-							comments: { pageInfo: { hasNextPage: false }, nodes: [] },
-							reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
-						},
-					},
-				},
-			});
+		const page = (paths: string[], next: boolean) => ({
+			totalCount: 3,
+			pageInfo: { hasNextPage: next, endCursor: "c1" },
+			nodes: paths.map((path) => ({
+				id: path,
+				path,
+				line: 1,
+				first: { nodes: [{ author: { login: "a" }, createdAt: "" }] },
+				comments: { totalCount: 1, nodes: [] },
+			})),
+		});
 		const gql = join(dir, "gql");
 		const { mkdirSync } = await import("node:fs");
 		mkdirSync(gql);
-		writeFileSync(join(gql, "reviewThreads-1.json"), page(["a", "b"], true));
+		const answer = (conn: unknown) =>
+			JSON.stringify({
+				data: { repository: { pullRequest: { reviewThreads: conn } } },
+			});
+		writeFileSync(
+			join(gql, "reviewThreads-1.json"),
+			answer(page(["a", "b"], true)),
+		);
 		// The last page overlaps the first by one thread.
 		writeFileSync(
 			join(gql, "reviewThreadsLast-1.json"),
-			page(["b", "c"], false),
+			answer(page(["b", "c"], false)),
 		);
-		writeFileSync(join(gql, "comments-1.json"), page([], false));
-		writeFileSync(join(gql, "reviews-1.json"), page([], false));
-		writeFileSync(
-			join(gql, "body-1.json"),
-			JSON.stringify({
-				data: { repository: { pullRequest: { bodyHTML: "" } } },
-			}),
-		);
-		setEnv({
-			FAKE_GQL_DIR: gql,
-			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
-		});
+		setEnv({ FAKE_GQL_DIR: gql });
 		const nodes = await fetchThreadSummaries(ref);
 		expect(nodes.map((t) => (t as { path: string }).path)).toEqual([
 			"a",
 			"b",
 			"c",
 		]);
+		expect(log().match(/^api graphql/gm)).toHaveLength(2);
 		expect(log()).not.toContain("endCursor=");
+	});
+
+	it("reads the overview in one call: up to 199 comments and reviews, the rest paged on", async () => {
+		const review = (i: number) => ({
+			id: `R${i}`,
+			author: { login: `rev${i}`, __typename: "User" },
+			state: "COMMENTED",
+			submittedAt: `2026-01-03T10:${String(i % 60).padStart(2, "0")}:00Z`,
+		});
+		const comment = (i: number) => ({
+			id: `C${i}`,
+			author: { login: `c${i}`, __typename: "User" },
+			createdAt: "2026-01-03T10:00:00Z",
+		});
+		const ends = (all: unknown[]) => ({
+			first: {
+				totalCount: all.length,
+				pageInfo: { hasNextPage: all.length > 100, endCursor: "c100" },
+				nodes: all.slice(0, 100),
+			},
+			last: {
+				totalCount: all.length,
+				pageInfo: { hasNextPage: false, endCursor: null },
+				nodes: all.slice(Math.max(0, all.length - 100)),
+			},
+		});
+		const reviews = ends(Array.from({ length: 150 }, (_, i) => review(i)));
+		// 250 comments: the two ends don't meet, so the pages after the
+		// first are read in turn.
+		const all = Array.from({ length: 250 }, (_, i) => comment(i));
+		const comments = ends(all);
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({
+				comments: comments.first,
+				commentsLast: comments.last,
+				reviews: reviews.first,
+				reviewsLast: reviews.last,
+			}),
+		);
+		writeFileSync(
+			join(gql, "comments-2.json"),
+			JSON.stringify({
+				data: {
+					repository: {
+						pullRequest: {
+							comments: {
+								totalCount: 250,
+								pageInfo: { hasNextPage: false, endCursor: null },
+								nodes: all.slice(100),
+							},
+						},
+					},
+				},
+			}),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const o = await fetchOverview(ref, "me");
+		expect(o.reviews).toHaveLength(150);
+		expect(o.commenters).toHaveLength(250);
+		// What it asks for: every field the overview maps, and the comments'
+		// and reviews' ids (without them the ends never join).
+		expect(log()).toContain(
+			"number title url author { login __typename } body bodyHTML state isDraft createdAt updatedAt baseRefName headRefName mergeable",
+		);
+		expect(log()).toContain(
+			"reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name slug } } } }",
+		);
+		for (const alias of ["comments", "commentsLast"]) {
+			expect(log()).toMatch(
+				new RegExp(
+					`${alias}: comments\\((first|last): 100\\) \\{ totalCount pageInfo \\{ hasNextPage endCursor \\} nodes \\{ id author \\{ login __typename \\} createdAt \\}`,
+				),
+			);
+		}
+		for (const alias of ["reviews", "reviewsLast"]) {
+			expect(log()).toMatch(
+				new RegExp(
+					`${alias}: reviews\\((first|last): 100\\) \\{ totalCount pageInfo \\{ hasNextPage endCursor \\} nodes \\{ id author \\{ login __typename \\} state submittedAt url commit \\{ oid \\} \\}`,
+				),
+			);
+		}
+		// The overview's own query, then the comments from their cursor.
+		expect(log().match(/^api graphql/gm)).toHaveLength(2);
+		expect(log()).toContain("endCursor=c100");
+		expect(log()).not.toContain("reviews(first: 100, after");
 	});
 
 	it("reads threads' content by id, fifty a query, all at once, and only well-formed ids", async () => {
@@ -669,31 +766,88 @@ describe("runGh with a fake gh", () => {
 		expect(log()).toBe(before);
 	});
 
+	it("maps any author but a user to gh's app/<name>, and fails rather than show fewer checks", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		const head = "a".repeat(40);
+		const checks = (pageInfo: unknown) => ({
+			headCommit: {
+				nodes: [
+					{
+						commit: {
+							oid: head,
+							statusCheckRollup: {
+								contexts: {
+									pageInfo,
+									nodes: [
+										{
+											__typename: "StatusContext",
+											context: "ci",
+											state: "SUCCESS",
+										},
+									],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({
+				author: { login: "dependabot", __typename: "Bot" },
+				...checks({ hasNextPage: false, endCursor: null }),
+			}),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const o = await fetchOverview(ref, "me");
+		expect(o.author).toBe("app/dependabot");
+		expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+		// Any author but a user, as gh: a mannequin, an organization.
+		for (const __typename of ["Mannequin", "Organization"]) {
+			writeFileSync(
+				join(gql, "overview-1.json"),
+				overviewAnswer({ author: { login: "old-acct", __typename } }),
+			);
+			expect((await fetchOverview(ref, "me")).author).toBe("app/old-acct");
+		}
+		// A user stays as is.
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({ author: { login: "octo", __typename: "User" } }),
+		);
+		expect((await fetchOverview(ref, "me")).author).toBe("octo");
+		// More checks, but no cursor to read on from.
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer(checks({ hasNextPage: true, endCursor: null })),
+		);
+		await expect(fetchOverview(ref, "me")).rejects.toThrow(
+			"Too many checks to read for this commit",
+		);
+		// No rollup field at all: not "no checks".
+		writeFileSync(
+			join(gql, "overview-1.json"),
+			overviewAnswer({
+				headCommit: { nodes: [{ commit: { oid: head } }] },
+			}),
+		);
+		await expect(fetchOverview(ref, "me")).rejects.toThrow(
+			"unexpected response for the checks",
+		);
+	});
+
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {
 		const gql = join(dir, "gql");
 		const { mkdirSync } = await import("node:fs");
 		mkdirSync(gql);
-		const empty = (c: string) =>
-			JSON.stringify({
-				data: {
-					repository: {
-						pullRequest: {
-							[c]: { pageInfo: { hasNextPage: false }, nodes: [] },
-						},
-					},
-				},
-			});
-		for (const c of ["reviewThreads", "comments", "reviews"]) {
-			writeFileSync(join(gql, `${c}-1.json`), empty(c));
-		}
 		writeFileSync(
-			join(gql, "body-1.json"),
-			JSON.stringify({ data: { repository: { pullRequest: {} } } }),
+			join(gql, "overview-1.json"),
+			overviewAnswer({ bodyHTML: undefined }),
 		);
-		setEnv({
-			FAKE_GQL_DIR: gql,
-			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
-		});
+		setEnv({ FAKE_GQL_DIR: gql });
 		await expect(fetchOverview(ref, "me")).rejects.toThrow(
 			"unexpected response for the PR body",
 		);

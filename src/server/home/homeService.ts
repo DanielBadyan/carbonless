@@ -8,6 +8,7 @@ import type {
 } from "../../shared/home.js";
 import { GhError } from "../errors.js";
 import { slugify } from "../slug.js";
+import { ViewerCache } from "../viewerCache.js";
 import {
 	type PrFacts,
 	prSlug,
@@ -23,7 +24,6 @@ import {
 } from "./inbox.js";
 import {
 	fetchRepoPrs,
-	fetchViewer,
 	fetchViewerTeams,
 	type Known,
 	newCost,
@@ -155,6 +155,8 @@ export interface HomeServiceOptions {
 	started?: StartedSource;
 	inbox?: InboxStore;
 	now?: () => number;
+	/** The server's gh login; none: one of its own. */
+	viewers?: ViewerCache;
 }
 
 export class HomeService {
@@ -162,7 +164,10 @@ export class HomeService {
 	readonly #started: StartedSource;
 	readonly #inbox: InboxStore;
 	readonly #now: () => number;
+	/** The gh login (the server's, shared with every review's open). */
+	readonly #viewers: ViewerCache;
 
+	/** The viewer as last read (for answers that don't wait for a read). */
 	#viewer: Person | null = null;
 	#teams: string[] | null = null;
 	#teamsAt = Number.NEGATIVE_INFINITY;
@@ -183,16 +188,16 @@ export class HomeService {
 
 	constructor(options: HomeServiceOptions) {
 		this.#config = options.config;
+		this.#viewers = options.viewers ?? new ViewerCache();
 		this.#started = options.started ?? new StartedReviews();
 		this.#now = options.now ?? Date.now;
 		this.#inbox = options.inbox ?? new InboxStore(this.#now);
 	}
 
 	async #ensureViewer(): Promise<Person> {
-		if (this.#viewer) return this.#viewer;
 		const generation = this.#generation;
-		const viewer = await fetchViewer();
-		if (generation === this.#generation) this.#viewer ??= viewer;
+		const viewer = await this.#viewers.get();
+		if (generation === this.#generation) this.#viewer = viewer;
 		return viewer;
 	}
 
@@ -226,6 +231,7 @@ export class HomeService {
 	reset(): void {
 		this.#generation++;
 		this.#viewer = null;
+		this.#viewers.forget();
 		this.#teams = null;
 		this.#teamsAt = Number.NEGATIVE_INFINITY;
 		this.#teamsReading = null;
