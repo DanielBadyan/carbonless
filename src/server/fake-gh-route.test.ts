@@ -166,6 +166,14 @@ const FORMS: [string, string[], string[] | "none"][] = [
 		}),
 		[REPO],
 	],
+	[
+		"GraphQL overview (its one query)",
+		graphql(
+			`query PrOverview($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { title bodyHTML } } }`,
+			{ ...R, number: "7" },
+		),
+		[REPO],
+	],
 	["GraphQL viewer", graphql("query { viewer { login avatarUrl } }"), "none"],
 	[
 		"GraphQL viewer's orgs",
