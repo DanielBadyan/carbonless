@@ -20,6 +20,7 @@ const thread = (extra: Partial<Thread> = {}): Thread => ({
 	bot: false,
 	avatarUrl: "",
 	participants: [],
+	lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 	commentCount: 1,
 	hasReply: false,
 	outdated: false,
@@ -56,6 +57,15 @@ describe("parseFilesSearch", () => {
 			parseFilesSearch({ path: "", line: -1, side: "UP", moved: "no" }),
 		).toEqual({});
 		expect(parseFilesSearch({ line: 1.5 })).toEqual({});
+	});
+
+	it("keeps a thread id to open, if it's a short string", () => {
+		expect(
+			parseFilesSearch({ path: "a.ts", line: 3, thread: "PRRT_x" }),
+		).toEqual({ path: "a.ts", line: 3, thread: "PRRT_x" });
+		expect(parseFilesSearch({ thread: "" })).toEqual({});
+		expect(parseFilesSearch({ thread: 5 })).toEqual({});
+		expect(parseFilesSearch({ thread: "x".repeat(201) })).toEqual({});
 	});
 
 	it("reads the comparison: a patch set, a head commit id, a from patch set or the branch", () => {
