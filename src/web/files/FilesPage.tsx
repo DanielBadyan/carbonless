@@ -1315,7 +1315,10 @@ export function FilesPage() {
 	// state, or its failure.
 	const progressInstead =
 		since === null
-			? undefined
+			? // Ignore whitespace on, and nothing but whitespace-only clusters.
+				counted && counted.progress.clusters.total === 0 && counted.leftOut > 0
+				? ("empty" as const)
+				: undefined
 			: sinceAnswer && units.length === 0
 				? ("empty" as const)
 				: sinceView.error

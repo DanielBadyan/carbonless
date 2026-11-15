@@ -64,6 +64,24 @@ describe("ProgressBar", () => {
 				name: "1 whitespace-only cluster not counted",
 			}),
 		).toBeInTheDocument();
+		// Nothing else to count: "Nothing to read", the `~` beside it.
+		rerender(
+			<ProgressBar
+				progress={sample}
+				unit="lines"
+				onUnitChange={() => {}}
+				instead="empty"
+				whitespaceLeftOut={2}
+			/>,
+		);
+		expect(
+			screen.getByRole("progressbar", { name: "Review progress" }),
+		).toHaveTextContent("Nothing to read");
+		expect(
+			screen.getByRole("img", {
+				name: "2 whitespace-only clusters not counted",
+			}),
+		).toBeInTheDocument();
 		for (const none of [0, undefined]) {
 			rerender(
 				<ProgressBar

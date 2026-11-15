@@ -23,6 +23,7 @@ import {
 	useState,
 } from "react";
 import type { AgentThread } from "../../shared/agent";
+import { inGitOrder } from "../../shared/diffHunk";
 import {
 	contains,
 	covers,
@@ -3779,7 +3780,11 @@ function HunkRows(props: {
 	const { view } = shape;
 	// Each line's index in the hunk: GitHub's order (codeSpan.ts spanOfRange, linePicks.ts pickRange).
 	const orderOf = useMemo(() => {
-		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
+		// The view keeps each cluster's lines together; GitHub lists a run's
+		// removed lines first (inGitOrder).
+		const order = new Map(
+			inGitOrder(hunk.lines).map((l, i) => [l, i] as const),
+		);
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
 	// The hunk's runs and their rows (hunkView, cached per hunk: the

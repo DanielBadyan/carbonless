@@ -239,6 +239,9 @@ export function ProgressBar(props: {
 						>
 							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
 						</span>
+						{(props.whitespaceLeftOut ?? 0) > 0 && (
+							<WhitespaceLeftOut count={props.whitespaceLeftOut ?? 0} />
+						)}
 					</div>
 				) : (
 					<div
