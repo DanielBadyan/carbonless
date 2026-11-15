@@ -125,6 +125,8 @@ describe("Updater", () => {
 			channel: "latest",
 			install: "npm",
 			byHand: false,
+			byHandReason: null,
+			byHandManager: null,
 			lastChecked: expect.any(String),
 			checkError: null,
 			checksOff: null,
@@ -338,6 +340,60 @@ describe("Updater", () => {
 		});
 		await expect(u.update("0.3.0")).rejects.toThrow(/by hand/);
 		u.stop();
+	});
+
+	it("by hand: says why (no install, a folder it can't write, a service that won't restart it), with the manager", async () => {
+		const cases: [Partial<UpdaterOptions>, string | null, string | null][] = [
+			[{}, null, null],
+			[{ install: null }, "no-install", null],
+			[{ install: { ...NPM, writable: false } }, "not-writable", null],
+			[
+				{
+					service: async () => ({
+						manager: "systemd (crb.service)",
+						exitCode: null,
+					}),
+				},
+				"service",
+				"systemd (crb.service)",
+			],
+			[
+				{ service: async () => ({ manager: "PID 1", exitCode: null }) },
+				"service",
+				"PID 1",
+			],
+			[{ service: async () => ({ manager: "pm2", exitCode: 75 }) }, null, null],
+			// The first reason that stands: the install before the service.
+			[
+				{
+					install: { ...NPM, writable: false },
+					service: async () => ({ manager: "PID 1", exitCode: null }),
+				},
+				"not-writable",
+				null,
+			],
+		];
+		for (const [over, reason, manager] of cases) {
+			const { u } = updater(over);
+			// Before any check too: the Global settings page tells it.
+			expect(u.info().byHandReason).toBe(reason === "service" ? null : reason);
+			await u.start();
+			await settle(u);
+			expect(u.info()).toMatchObject({
+				byHand: reason !== null,
+				oneClick: reason === null,
+				byHandReason: reason,
+				byHandManager: manager,
+			});
+			u.stop();
+		}
+		// Checks off: nothing to update by any means.
+		const off = updater({ enabled: false, install: null });
+		expect(off.u.info()).toMatchObject({
+			byHand: false,
+			byHandReason: null,
+			byHandManager: null,
+		});
 	});
 
 	it("installs only the version on offer", async () => {

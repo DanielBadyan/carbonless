@@ -317,8 +317,9 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   the Global settings page.
 - **Global settings** (`/settings`, the gear's "Global settings" row on
   Home and on a review): the running version and commit (linked to it on
-  GitHub), the channel, how crb was installed (npm global, pnpm global, or
-  update by hand), when it last checked, and **Check for updates**
+  GitHub), the channel, how crb was installed (npm global, pnpm global)
+  and, when it can't update itself, why (the toast's words and FAQ link),
+  when it last checked, and **Check for updates**
   (`POST /api/update/check`: checks now, sharing a check already under
   way, and answers the fresh `/api/update`; the hourly timer keeps its
   times). A newer version shows there with the toast's own Update (or the
@@ -353,13 +354,27 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   `/api/update` every 10 minutes, every 5 seconds while an update is on
   offer, so every open tab sees an update another one started. Toasts share
   one stack, which sits above the save notices on a phone.
+- **By hand.** When crb can't update itself, `/api/update` says why
+  (`byHandReason`: `no-install`, `not-writable`, or `service` with
+  `byHandManager`, e.g. `systemd (crb.service)` or `PID 1`), and the toast
+  shows "No auto-update: <why>" with a help link to the matching section
+  of the FAQ on GitHub ([Why does crb show an update command instead of
+  an Update button?](faq.md#why-does-crb-show-an-update-command-instead-of-an-update-button))
+  above the command to copy. The words and anchors live in one place
+  (`src/web/UpdateByHand.tsx`), shared with Global settings; a unit test
+  checks every anchor is a heading of `docs/faq.md`.
 - **Who installs it**, told from where crb runs (its real path):
   - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
     in `<prefix>/bin` (Windows: `<prefix>\node_modules\...` and
     `<prefix>\crb.cmd`). The install is `npm install -g --prefix <prefix>`,
     run by the prefix's own npm, else the one beside the running node, else
     PATH's: whichever npm, it goes where crb is.
-  - pnpm: `<PNPM_HOME>/global/<vN>/.../.pnpm/.../carbonless-review`. The
+  - pnpm: `<PNPM_HOME>/global/<vN>/.../.pnpm/.../carbonless-review`, or,
+    with pnpm's global virtual store (as pnpm 12 installs globally on
+    Windows; any OS with that store on), `<PNPM_HOME>/store/<vN>/links/.../carbonless-review` when an
+    entry of `<PNPM_HOME>/global/<vN>` links to it (a project's dependency
+    can lie in the same store: only one the global dir links to counts;
+    the new version is found again through the global dir's links). The
     install is `pnpm add -g` (with the release-age exemption above) by
     PNPM_HOME's pnpm (else PATH's), with `PNPM_HOME` set and its bin dir
     first on PATH (pnpm refuses `add -g` otherwise).

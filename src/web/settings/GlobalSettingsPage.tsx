@@ -21,6 +21,7 @@ import { Logo } from "../brand/Brand";
 import { RelativeTime } from "../RelativeTime";
 import { SkeletonBar, Spinner, SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
+import { ByHandWhy } from "../UpdateByHand";
 import {
 	Command,
 	fetchUpdate,
@@ -241,10 +242,7 @@ function VersionSection() {
 	const commit = commitUrl(data.commit);
 	const short = data.commit.replace(/-dirty$/, "").slice(0, 7);
 	const dirty = data.commit.endsWith("-dirty") ? "-dirty" : "";
-	const how = [
-		data.install ? `${data.install} global` : null,
-		data.byHand ? "update by hand" : null,
-	].filter((t) => t !== null);
+	const how = data.install ? `${data.install} global` : null;
 	return (
 		<Section title="Version" busy={check.isPending}>
 			<Row icon={<GitCommitIcon />} label="Running" testId="version-current">
@@ -288,9 +286,17 @@ function VersionSection() {
 						updates off: {OFF_REASON[data.checksOff]}
 					</span>
 				) : (
-					how.length > 0 && (
-						<span className="text-muted">· {how.join(" · ")}</span>
-					)
+					<>
+						{how && <span className="text-muted">· {how}</span>}
+						{/* Its own line, under the text (past the icon's w-4 and gap-2). */}
+						{data.byHand && (
+							<ByHandWhy
+								info={data}
+								prefix="No auto-update"
+								className="basis-full pl-6 text-muted"
+							/>
+						)}
+					</>
 				)}
 			</Row>
 			{!data.checksOff && (

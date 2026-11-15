@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type ByHandReason,
 	type ChecksOff,
 	releaseUrl,
 	type UpdateFailure,
@@ -274,10 +275,16 @@ export class Updater {
 		}
 	}
 
+	/** Why an update is the reviewer's to run; null: one click does it. */
+	#byHandReason(): ByHandReason | null {
+		if (!this.#o.install) return "no-install";
+		if (!this.#o.install.writable) return "not-writable";
+		if (this.#service && this.#service.exitCode === null) return "service";
+		return null;
+	}
+
 	#oneClick(): boolean {
-		if (!this.#o.install) return false;
-		if (!this.#o.install.writable) return false;
-		return !this.#service || this.#service.exitCode !== null;
+		return this.#byHandReason() === null;
 	}
 
 	#command(version: string): string {
@@ -288,6 +295,7 @@ export class Updater {
 
 	info(): UpdateInfo {
 		const v = this.#available;
+		const reason = this.#o.enabled ? this.#byHandReason() : null;
 		return {
 			current: this.#o.build.version,
 			available: v,
@@ -299,7 +307,10 @@ export class Updater {
 			commit: this.#o.build.commit,
 			channel: this.#channel,
 			install: this.#o.enabled ? (this.#o.install?.pm ?? null) : null,
-			byHand: this.#o.enabled && !this.#oneClick(),
+			byHand: reason !== null,
+			byHandReason: reason,
+			byHandManager:
+				reason === "service" ? (this.#service?.manager ?? null) : null,
 			lastChecked: this.#lastChecked?.toISOString() ?? null,
 			checkError: this.#checkError,
 			checksOff: this.#o.enabled ? null : (this.#o.off ?? "local-build"),

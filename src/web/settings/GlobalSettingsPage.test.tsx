@@ -40,6 +40,8 @@ const INFO: UpdateInfo = {
 	channel: "rc",
 	install: "pnpm",
 	byHand: false,
+	byHandReason: null,
+	byHandManager: null,
 	lastChecked: new Date(Date.now() - 3 * 60_000).toISOString(),
 	checkError: null,
 	checksOff: null,
@@ -255,6 +257,7 @@ describe("GlobalSettingsPage", () => {
 				oneClick: false,
 				install: null,
 				byHand: true,
+				byHandReason: "no-install",
 			}),
 		});
 		show();
@@ -263,8 +266,39 @@ describe("GlobalSettingsPage", () => {
 			"pnpm add -g carbonless-review@0.3.0-rc.7",
 		);
 		expect(within(r).queryByRole("button", { name: "Update" })).toBeNull();
-		expect(screen.getByTestId("version-install")).toHaveTextContent(
-			"update by hand",
+		const install = screen.getByTestId("version-install");
+		expect(install).toHaveTextContent(
+			"No auto-update: not an npm/pnpm global install",
+		);
+		expect(
+			within(install).getByRole("link", { name: "How to set up updates" }),
+		).toHaveAttribute(
+			"href",
+			"https://github.com/Gilthans/carbonless/blob/master/docs/faq.md#not-an-npm-or-pnpm-global-install",
+		);
+	});
+
+	it("by hand with nothing on offer: the install row still says why, as the toast would", async () => {
+		serve({
+			get: () => ({
+				...INFO,
+				byHand: true,
+				byHandReason: "service",
+				byHandManager: "systemd (crb.service)",
+			}),
+		});
+		show();
+		const install = await screen.findByTestId("version-install");
+		await waitFor(() =>
+			expect(install).toHaveTextContent(
+				/pnpm global\s*No auto-update: systemd \(crb\.service\) won't restart crb/,
+			),
+		);
+		expect(
+			within(install).getByRole("link", { name: "How to set up updates" }),
+		).toHaveAttribute(
+			"href",
+			"https://github.com/Gilthans/carbonless/blob/master/docs/faq.md#systemd-wont-restart-crb",
 		);
 	});
 
