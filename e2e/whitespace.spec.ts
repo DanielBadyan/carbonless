@@ -436,10 +436,16 @@ test("with Ignore whitespace on, a selection from a ~ row through the deleted ro
 		'[data-testid="diff-line"][data-kind="del"][data-old-no="4"]',
 	);
 	await expect(deleted).toBeVisible();
+	// The next diff row down, in the next cluster's rows.
 	expect(
-		await pair.evaluate((row) =>
-			row.nextElementSibling?.getAttribute("data-kind"),
-		),
+		await pair.evaluate((row) => {
+			const all = [
+				...document.querySelectorAll(
+					'[data-path="src/mixed.ts"] tr[data-testid="diff-line"]',
+				),
+			];
+			return all[all.indexOf(row) + 1]?.getAttribute("data-kind");
+		}),
 	).toBe("del");
 	await page.evaluate(() => {
 		const code = (sel: string) =>
