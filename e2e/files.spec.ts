@@ -2145,7 +2145,7 @@ for (const c of labelCases) {
 			],
 		});
 		p.editScenario((s) => {
-			const graph = s.prs[7]?.graphql;
+			const graph = s.prs[p.number]?.graphql;
 			if (!graph) throw new Error("no PR in the scenario");
 			graph.reviewThreads = c.widest
 				? [
