@@ -106,8 +106,8 @@ import { useSince } from "./useSince";
 const NO_THREADS: ReviewThread[] = [];
 const NO_AGENT_THREADS: AgentThread[] = [];
 
-import { requestConversationOpen } from "../agent/conversationLinks";
 import { countedProgress } from "../../shared/progress";
+import { requestConversationOpen } from "../agent/conversationLinks";
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncStale } from "./useSetStates";
 import { useViewShortcuts } from "./viewShortcuts";
