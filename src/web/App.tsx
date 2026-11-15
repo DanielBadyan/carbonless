@@ -24,7 +24,7 @@ import {
 	verdictQuery,
 } from "./api";
 import "./agent";
-import { AgentChip, CHIP_BOX, useAgentChipPlace } from "./agent/AgentChip";
+import { AgentChip, CHIP_COLUMN, useAgentChipPlace } from "./agent/AgentChip";
 import { JoinBar } from "./agent/JoinBar";
 import { JoinToast } from "./agent/JoinToast";
 import { AgentSetupHost } from "./agent/setup/AgentSetup";
@@ -194,15 +194,16 @@ function useStickyHeader(
 }
 
 /**
- * Where the agent chip shows: beside the full logo at the top, and in the
- * sticky row beside the compact mark (`docked`) once its place by the logo
- * starts to leave the screen (under `above`, the find bar), so it never
- * scrolls out of sight. One chip, rendered once into `host` (`chip`) and
- * moved between the two places: it never remounts (no refetch, and what
- * holds on to it, like the agent setup giving focus back, still finds it).
- * The chip has one size (CHIP_BOX), kept for it in the other place, and
- * in both from the first paint while it may come (`place`, not as of a
- * cutoff): neither the title nor the tabs move when it loads or moves.
+ * Where the agent chip shows: in its own column pinned to the header's
+ * right (mirroring the logo on the left), and at the right end of the
+ * sticky row (`docked`) once that column starts to leave the screen
+ * (under `above`, the find bar), so it never scrolls out of sight. One
+ * chip, rendered once into `host` (`chip`) and moved between the two
+ * places: it never remounts (no refetch, and what holds on to it, like the
+ * agent setup giving focus back, still finds it). The column is always
+ * reserved (CHIP_COLUMN), so the title never moves when the chip loads or
+ * leaves; the sticky row's buttons make room for it only once it docks,
+ * so until then Settings ends at the content edge, right under the chip.
  */
 function useChipDock(hidden: boolean, above: number, asOf: boolean) {
 	const [title, setTitle] = useState<HTMLElement | null>(null);
@@ -268,16 +269,9 @@ function useChipDock(hidden: boolean, above: number, asOf: boolean) {
 	};
 }
 
-/** The chip's space where it isn't, so nothing beside it moves. */
-function ChipSpace({ shown }: { shown: boolean }) {
-	return shown ? (
-		<span aria-hidden data-chip-space className={CHIP_BOX} />
-	) : null;
-}
-
 /**
- * A chip place: out of the layout (and its gap) when it holds neither the
- * chip nor its kept space, as without an agent.
+ * The sticky row's chip place: out of the layout (and its gap) when it
+ * holds no chip (not docked, or no agent).
  */
 const chipSlotClass =
 	"flex shrink-0 items-center [&:not(:has(button,[data-chip-space]))]:hidden";
@@ -486,17 +480,9 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
-								{/* The agent chip by the logo, until it docks in the row below. */}
-								<span
-									ref={chip.setTitle}
-									data-testid="agent-chip-slot"
-									className={chipSlotClass}
-								>
-									{chip.docked && <ChipSpace shown={chip.place} />}
-								</span>
 								<div
 									data-testid="header-title"
-									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
+									className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2"
 								>
 									<h1
 										ref={h1}
@@ -521,6 +507,16 @@ export function App() {
 										)}
 									</span>
 								</div>
+								{/*
+								 * The agent chip's column, pinned right like the logo on
+								 * the left, until the chip docks in the row below; kept
+								 * (empty) without an agent too.
+								 */}
+								<span
+									ref={chip.setTitle}
+									data-testid="agent-chip-slot"
+									className={`${CHIP_COLUMN} self-center`}
+								/>
 							</div>
 						)}
 						{/* The one agent chip, placed by useChipDock; none without a PR. */}
@@ -552,8 +548,12 @@ export function App() {
 						 * overflows the slot (the tabs, positioned, stay on top).
 						 */}
 						<div className="flex shrink-0 items-center self-stretch">
+							{/*
+							 * 24px on a phone (the mark's own size): the 360px row
+							 * needs the room for the docked chip at its right end.
+							 */}
 							<span
-								className="flex w-7 shrink-0 justify-center"
+								className="flex w-6 shrink-0 justify-center sm:w-7"
 								style={{
 									opacity: "var(--compact, 0)",
 									transform: "scale(calc(0.6 + 0.4 * var(--compact, 0)))",
@@ -573,18 +573,6 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
-							</span>
-							{/*
-							 * The agent chip once its place by the logo has scrolled
-							 * away; until then its size, so the tabs never move.
-							 * Positioned, over the mark's overflowing tap target.
-							 */}
-							<span
-								ref={chip.setRow}
-								data-testid="agent-chip-row-slot"
-								className={`relative ${chipSlotClass}`}
-							>
-								{!chip.docked && <ChipSpace shown={chip.place} />}
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
@@ -713,6 +701,17 @@ export function App() {
 							)}
 						</Tooltip>
 						<Settings />
+						{/*
+						 * The agent chip, rightmost, once its column has scrolled
+						 * away. On a phone its tap target takes the row's right
+						 * padding: the 360px row has no 40px to spare beside the
+						 * buttons (its face keeps a gap to the edge).
+						 */}
+						<span
+							ref={chip.setRow}
+							data-testid="agent-chip-row-slot"
+							className={`-mr-2 sm:mr-0 ${chipSlotClass}`}
+						/>
 					</div>
 				</header>
 				{/* The diff gets the whole window; the overview stays readable. */}

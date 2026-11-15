@@ -10,6 +10,7 @@ import {
 	chip,
 	expect,
 	fixture,
+	openAgentModal,
 	openFile,
 	setupDialog,
 	statusDialog,
@@ -74,7 +75,14 @@ test("a new review opens on Setup Review Agent", async ({
 	await expect(chip(page)).toHaveAccessibleName(
 		"Your agent: No agent · spawn or invite",
 	);
+	// Configured: the chip toggles the review conversation's drawer, not
+	// the setup (the Overview's agent row opens it).
 	await chip(page).click();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
+	await expect(setupDialog(page)).toHaveCount(0);
+	await chip(page).click();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await openAgentModal(page);
 	const d = setupDialog(page);
 	await expect(d).toBeVisible();
 	await expect(d.getByRole("tab", { name: "Invite" })).toHaveAttribute(
@@ -279,7 +287,7 @@ test("a config saved in one review doesn't start the agent in another", async ({
 	);
 	await statusPoll(page);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	await chip(page).click();
+	await openAgentModal(page);
 	await expect(setupDialog(page)).toBeVisible();
 	expect(spawns(acpLogPath)).toBe(started);
 	// Review A still has its agent.

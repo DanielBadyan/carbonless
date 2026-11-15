@@ -12,6 +12,7 @@ import {
 	chip,
 	expect,
 	fixture,
+	openAgentModal,
 	openFile,
 	row,
 	selectText,
@@ -1083,6 +1084,10 @@ test("--viewer: no agent, Ask agent off with why", async ({
 		"Your agent is off when viewing as someone else",
 	);
 	await expect(chip(page)).toHaveCount(0);
+	// Its column stays reserved at the header's right, empty.
+	expect((await page.getByTestId("agent-chip-slot").boundingBox())?.width).toBe(
+		40,
+	);
 });
 
 test("--as-of: no agent, Ask agent off with why", async ({
@@ -1126,6 +1131,56 @@ test("--as-of: no agent, Ask agent off with why", async ({
 		"Your agent is off as of a cutoff",
 	);
 	await expect(chip(page)).toHaveCount(0);
+	// Its column stays reserved at the header's right, empty.
+	expect((await page.getByTestId("agent-chip-slot").boundingBox())?.width).toBe(
+		40,
+	);
+});
+
+test("the chip has its own column pinned right: right of the number, its right edge on Settings's, centred on the logo; 40px and no sideways scroll at 360px", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 760 });
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	const box = async (l: ReturnType<Page["locator"]>) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not rendered");
+		return b;
+	};
+	const c = await box(chip(page));
+	const number = await box(
+		page
+			.getByTestId("header-title")
+			.getByRole("link", { name: `#${p.number}`, exact: true }),
+	);
+	expect(c.x).toBeGreaterThanOrEqual(number.x + number.width);
+	// In its column, mirroring the logo: vertically centred like it.
+	await expect(
+		page.getByTestId("agent-chip-slot").locator(chip(page)),
+	).toBeVisible();
+	const logo = await box(page.getByTestId("home-link"));
+	expect(
+		Math.abs(c.y + c.height / 2 - (logo.y + logo.height / 2)),
+	).toBeLessThanOrEqual(1);
+	expect(c.width).toBeGreaterThanOrEqual(40);
+	expect(c.height).toBeGreaterThanOrEqual(40);
+	if (!isMobile) {
+		// Right-aligned with the content edge: the Settings button below.
+		const settings = await box(
+			page.getByRole("button", { name: "Settings", exact: true }),
+		);
+		expect(
+			Math.abs(c.x + c.width - (settings.x + settings.width)),
+		).toBeLessThanOrEqual(1);
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-chip-header", isMobile);
 });
 
 test("no sideways scroll at 360 px with a card, a composer and the setup open", async ({
@@ -1156,7 +1211,7 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-card", isMobile);
 	// The modal's both views: the agent's status, then (Detach) the setup.
-	await chip(page).click();
+	await openAgentModal(page);
 	const status = statusDialog(page);
 	await expect(status.getByTestId("agent-state")).toHaveText("Ready");
 	await expectNoPageOverflow(page);
