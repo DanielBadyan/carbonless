@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentThread } from "../../shared/agent";
+import type { AgentThread, SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import { placeThreads } from "../files/threadPlacement";
 import {
@@ -16,8 +16,8 @@ const H2 = "2".repeat(40);
 const asked = (
 	id: string,
 	line: number,
-	more: Partial<AgentThread["anchor"]> = {},
-): AgentThread => ({
+	more: Partial<SpanAgentThread["anchor"]> = {},
+): SpanAgentThread => ({
 	id,
 	anchor: {
 		subject: "line",
@@ -30,7 +30,7 @@ const asked = (
 		startCol: 2,
 		endCol: 5,
 		...more,
-	} as AgentThread["anchor"],
+	} as SpanAgentThread["anchor"],
 	openedBy: "human",
 	at: "2026-11-07T10:00:00Z",
 	messages: [],
@@ -116,7 +116,7 @@ describe("tracedAgentPlaceables", () => {
 	});
 
 	it("a file question follows its file", () => {
-		const t: AgentThread = {
+		const t: SpanAgentThread = {
 			...asked("F", 1),
 			anchor: { subject: "file", path: "old.ts", commit: H1 },
 		};

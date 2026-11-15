@@ -1,5 +1,6 @@
 import {
 	type AgentAnchor,
+	type AgentSpanAnchor,
 	type AgentView,
 	SUGGEST_RESOLVE,
 } from "../../shared/agent.js";
@@ -125,13 +126,24 @@ export function isSafePath(path: string): boolean {
  * on: the merge base (the diff's left side) for a LEFT anchor. A thread
  * anchor's commit is the one its comment was made on: on the LEFT, the
  * merge base of the patch set with that head, else the review's, as for
- * a line anchor.
+ * a line anchor. The review conversation's anchor has no commit: as is.
  */
+export function anchorFor(
+	anchor: AgentSpanAnchor,
+	review: PromptReview,
+	patchsets?: readonly { head: string; mergeBase: string }[],
+): AgentSpanAnchor;
+export function anchorFor(
+	anchor: AgentAnchor,
+	review: PromptReview,
+	patchsets?: readonly { head: string; mergeBase: string }[],
+): AgentAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: PromptReview,
 	patchsets: readonly { head: string; mergeBase: string }[] = [],
 ): AgentAnchor {
+	if (anchor.subject === "review") return { subject: "review" };
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor };
 	}
@@ -307,10 +319,10 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 		},
 		thread: {
 			...thread,
-			anchor: {
-				...thread.anchor,
-				path: s(thread.anchor.path),
-			},
+			anchor:
+				thread.anchor.subject === "review"
+					? { subject: "review" }
+					: { ...thread.anchor, path: s(thread.anchor.path) },
 		},
 		...(pr
 			? {

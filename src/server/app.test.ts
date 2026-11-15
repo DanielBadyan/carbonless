@@ -1363,6 +1363,49 @@ describe("API", () => {
 			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
 		});
 
+		it("POST agent/threads takes review: true", async () => {
+			const bad = await post("/api/agent/threads", {
+				clientId: "r0",
+				text: "Overall?",
+				review: true,
+				span: span(),
+			});
+			expect(bad.statusCode, bad.body).toBe(400);
+			for (const review of [false, "yes", 1]) {
+				const res = await post("/api/agent/threads", {
+					clientId: "r0",
+					text: "Overall?",
+					review,
+				});
+				expect(res.statusCode, JSON.stringify(review)).toBe(400);
+			}
+			expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+			const res = await post("/api/agent/threads", {
+				clientId: "r1",
+				text: "Overall?",
+				review: true,
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const t: AgentThread = res.json();
+			expect(t.anchor).toEqual({ subject: "review" });
+			expect(t).toMatchObject({ openedBy: "human", resolved: false });
+			const second = await post("/api/agent/threads", {
+				clientId: "r2",
+				text: "And?",
+				review: true,
+			});
+			expect(second.statusCode).toBe(409);
+			expect(second.json()).toMatchObject({
+				error: expect.any(String),
+				thread: t.id,
+			});
+			const resolve = await post(`/api/agent/threads/${t.id}/resolved`, {
+				resolved: true,
+			});
+			expect(resolve.statusCode).toBe(409);
+			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+		});
+
 		it("400 on a bad span, a blank or too long text, a bad clientId, an unsafe path", async () => {
 			for (const bad of [
 				{ span: { ...span(), side: undefined } },

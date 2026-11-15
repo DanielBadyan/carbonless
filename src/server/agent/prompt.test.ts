@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentAnchor,
+	type AgentSpanAnchor,
 	type AgentView,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
@@ -25,7 +26,7 @@ const review: PromptReview = {
 	head: { ref: "feature", commit: "h".repeat(40) },
 	mergeBase: "m".repeat(40),
 };
-const right: AgentAnchor = {
+const right: AgentSpanAnchor = {
 	subject: "line",
 	path: "src/x.ts",
 	commit: "h".repeat(40),
@@ -142,12 +143,12 @@ describe("sanitizeEnvelope", () => {
 		pr: { title: dirty, body: dirty, files: [dirty] },
 		notice: `The GitHub thread (${dirty}) is gone`,
 	};
-	env.thread.anchor = { ...env.thread.anchor, path: dirty };
+	env.thread.anchor = { ...right, path: dirty };
 	const clean = sanitizeEnvelope(env);
 	it("cleans the base ref", () => expect(clean.review.base.ref).toBe("xy"));
 	it("cleans the head ref", () => expect(clean.review.head.ref).toBe("xy"));
 	it("cleans the anchor's path", () => {
-		expect(clean.thread.anchor.path).toBe("xy");
+		expect(clean.thread.anchor).toMatchObject({ path: "xy" });
 	});
 	it("cleans the PR's title, body and files", () =>
 		expect(clean.pr).toEqual({ title: "xy", body: "xy", files: ["xy"] }));
@@ -284,8 +285,8 @@ describe("thread conversations", () => {
 			startSide: "LEFT" as const,
 		};
 		expect(
-			env({ thread: { id: "t", anchor: left } }).thread.anchor.commit,
-		).toBe(oid("a"));
+			env({ thread: { id: "t", anchor: left } }).thread.anchor,
+		).toMatchObject({ commit: oid("a") });
 		// On a commit no patch set has: the review's merge base, as for a line anchor.
 		const elsewhere = { ...left, commit: oid("9") };
 		expect(anchorFor(elsewhere, review).commit).toBe(review.mergeBase);

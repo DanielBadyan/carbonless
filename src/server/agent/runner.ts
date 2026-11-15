@@ -18,6 +18,7 @@ import {
 	type AgentStatus,
 	type AgentStop,
 	type AgentView,
+	isAgentQuestion,
 	JOINED_PREAMBLE,
 	type JoinIdentity,
 } from "../../shared/agent.js";
@@ -421,9 +422,7 @@ export class AgentRunner {
 		}
 		let waiting = 0;
 		try {
-			waiting = (await this.#deps.store.read()).filter(
-				(t) => t.waiting && !t.resolved,
-			).length;
+			waiting = (await this.#deps.store.read()).filter(isAgentQuestion).length;
 		} catch {
 			// The count is a hint; the ref may be unreadable a moment.
 		}
@@ -1143,23 +1142,14 @@ export class AgentRunner {
 	/** How many questions wait for the agent (as `next` would hand them). */
 	async #waitingCount(): Promise<number> {
 		const threads = await this.#deps.facts.join(await this.#deps.store.read());
-		return threads.filter(
-			(t) =>
-				t.waiting &&
-				(t.anchor.subject === "thread" || !t.resolved) &&
-				!this.#fenced.has(t.id),
-		).length;
+		return threads.filter((t) => isAgentQuestion(t) && !this.#fenced.has(t.id))
+			.length;
 	}
 
 	/** Whether a question waits for the agent (as `next` would hand it one). */
 	async #waiting(): Promise<boolean> {
 		const threads = await this.#deps.facts.join(await this.#deps.store.read());
-		return threads.some(
-			(t) =>
-				t.waiting &&
-				(t.anchor.subject === "thread" || !t.resolved) &&
-				!this.#fenced.has(t.id),
-		);
+		return threads.some((t) => isAgentQuestion(t) && !this.#fenced.has(t.id));
 	}
 
 	/** Prompts the agent while there is a reason to: kickoff, a held question, a waiting one. */

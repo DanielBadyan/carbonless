@@ -85,7 +85,12 @@ export type AgentAnchor =
 			line?: number;
 			startSide?: DiffSide;
 			startLine?: number;
-	  };
+	  }
+	/** The review conversation: the whole review, no path (one per review, never resolved, opened by a human). */
+	| { subject: "review" };
+
+/** An anchor on code: every subject but the path-less review conversation. */
+export type AgentSpanAnchor = Exclude<AgentAnchor, { subject: "review" }>;
 
 export type AgentViewTarget = { patchset: number } | { head: string };
 export type AgentViewFrom = { branch: true } | { patchset: number };
@@ -161,6 +166,13 @@ export interface AgentThread {
 	code?: CodeWindow;
 }
 
+/** A thread on code: any but the review conversation. */
+export type SpanAgentThread = AgentThread & { anchor: AgentSpanAnchor };
+
+/** Whether a thread is on code (has a path), not the review conversation. */
+export const isSpanThread = (t: AgentThread): t is SpanAgentThread =>
+	t.anchor.subject !== "review";
+
 /**
  * The agent threads placed into a target snapshot (GET /agent/placements),
  * by the review threads' tracer. A thread missing from `threads` couldn't
@@ -170,6 +182,29 @@ export interface AgentPlacementsAnswer {
 	/** The snapshot id placed into. */
 	revision: string;
 	threads: { id: string; placement: ThreadPlacement }[];
+}
+
+/**
+ * Whether a thread waits for the agent (what `next` hands out, the status
+ * count, the wake-up): a question on a GitHub thread conversation even once
+ * that thread is resolved (it was asked), on the review conversation always
+ * (it is never resolved), on a span thread only while it is open.
+ */
+export function isAgentQuestion(
+	t: Pick<AgentThread, "waiting" | "resolved" | "anchor">,
+): boolean {
+	return t.waiting && isOpenToAgent(t);
+}
+
+/** Whether the agent may still answer in a thread: isAgentQuestion without the waiting. */
+export function isOpenToAgent(
+	t: Pick<AgentThread, "resolved" | "anchor">,
+): boolean {
+	return (
+		t.anchor.subject === "thread" ||
+		t.anchor.subject === "review" ||
+		!t.resolved
+	);
 }
 
 export interface AgentStatus {
@@ -204,12 +239,14 @@ export interface AgentStatus {
 	seen?: string;
 }
 
-/** Exactly one of `span` and `thread`. */
+/** Exactly one of `span`, `thread` and `review`. */
 export interface OpenAgentThreadRequest {
 	clientId: string;
 	text: string;
-	span?: AgentAnchor;
+	span?: AgentSpanAnchor;
 	thread?: string;
+	/** The review conversation (at most one per review: 409 names the one there). */
+	review?: true;
 	view?: Omit<AgentView, "left" | "right">;
 }
 

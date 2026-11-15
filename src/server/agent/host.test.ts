@@ -19,6 +19,7 @@ import type { ReviewThread, Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
+	AgentConflictError,
 	type AgentHost,
 	anchoredFile,
 	anchorHunk,
@@ -362,6 +363,98 @@ describe("AgentHost with a session joined through MCP", () => {
 		ghThreads = [{ id: "PRRT_1", resolved } as ReviewThread];
 		ghThread = ghFacts(resolved);
 	};
+
+	describe("the review conversation", () => {
+		const review: AgentAnchor = { subject: "review" };
+
+		it("opens the review conversation once", async () => {
+			const first = await host.open({
+				clientId: "c1",
+				text: "q",
+				review: true,
+			});
+			expect(first).toMatchObject({ anchor: review, openedBy: "human" });
+			const second = host.open({ clientId: "c2", text: "q2", review: true });
+			await expect(second).rejects.toBeInstanceOf(AgentConflictError);
+			await expect(second).rejects.toMatchObject({ thread: first.id });
+			// A resend of the opening returns it.
+			expect(
+				(await host.open({ clientId: "c1", text: "q", review: true })).id,
+			).toBe(first.id);
+			expect(await host.threads()).toHaveLength(1);
+		});
+
+		it("a request with none, or more than one, of span, thread and review is refused", async () => {
+			await expect(host.open({ clientId: "c1", text: "q" })).rejects.toThrow(
+				"A span, a thread or the review, one of them",
+			);
+		});
+
+		it("refuses resolving the review conversation", async () => {
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			await expect(host.setResolved(t.id, true)).rejects.toBeInstanceOf(
+				AgentConflictError,
+			);
+			expect((await host.threads())[0]?.resolved).toBe(false);
+		});
+
+		it("asked() leaves the review conversation out", async () => {
+			await host.open({ clientId: "c1", text: "q", review: true });
+			const x = await host.open({ clientId: "c2", text: "Why?", span });
+			expect((await host.asked()).map((a) => a.id)).toEqual([x.id]);
+		});
+
+		it("an ai review opening is refused", async () => {
+			await expect(
+				store.open({
+					anchor: review,
+					text: "hi",
+					by: "ai",
+					agent: { name: "fake-acp", version: "1.0.0" },
+				}),
+			).rejects.toThrow();
+			expect(await store.read()).toEqual([]);
+		});
+
+		it("a waiting review thread counts as waiting, also after a forced resolved event", async () => {
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			expect(await host.sessionWaiting()).toBe(1);
+			// Written around the host's refusal, as a hand-edited ref could.
+			await store.setResolved(t.id, true);
+			expect(await host.sessionWaiting()).toBe(1);
+			expect((await host.threads())[0]).toMatchObject({
+				resolved: false,
+				waiting: true,
+			});
+		});
+
+		it("the review conversation reads without a code window or a GitHub read", async () => {
+			const threads = vi.fn(async () => ghThreads);
+			await host.close();
+			host = buildAgentHost({
+				dir,
+				store,
+				code: async () => {
+					throw new Error("no code for a review anchor");
+				},
+				github: {
+					threads,
+					thread: async () => null,
+					patchsets: () => [],
+					base: () => "c".repeat(40),
+				},
+				session: { facts, viewer: "dan" },
+				runner: (off) => {
+					acpOff = off;
+					return runner;
+				},
+			});
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			expect(t).not.toHaveProperty("code");
+			expect((await host.threads())[0]).not.toHaveProperty("githubUnknown");
+			expect(threads).not.toHaveBeenCalled();
+		});
+	});
 
 	it("a GitHub thread conversation: next gives its envelope (no checkout), and a final [suggest-resolve] line is a suggestion", async () => {
 		listGh(false);

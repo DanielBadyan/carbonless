@@ -6,9 +6,12 @@ import {
 	type AgentMessage,
 	type AgentMessageRequest,
 	type AgentOrigin,
+	type AgentSpanAnchor,
 	type AgentStatus,
 	type AgentThread,
 	type AgentView,
+	isAgentQuestion,
+	isOpenToAgent,
 	JOIN,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
@@ -58,6 +61,7 @@ import {
 import {
 	type AgentThreadFold,
 	AgentThreadStore,
+	ReviewConversationError,
 	UnknownAgentThreadError,
 } from "./store.js";
 
@@ -491,19 +495,28 @@ export class AgentHost {
 	/**
 	 * Each span thread's id, anchor and when it was asked (what placement
 	 * reads): a live thread conversation goes where its GitHub thread goes,
-	 * so it is left out; an orphan comes with its span anchor.
+	 * so it is left out; an orphan comes with its span anchor. The review
+	 * conversation has no code to place on: left out.
 	 */
-	async asked(): Promise<{ id: string; anchor: AgentAnchor; at: string }[]> {
-		return (await this.#joined(await this.store.read()))
-			.filter((t) => t.anchor.subject !== "thread")
-			.map(({ id, anchor, at }) => ({ id, anchor, at }));
+	async asked(): Promise<
+		{ id: string; anchor: AgentSpanAnchor; at: string }[]
+	> {
+		const out: { id: string; anchor: AgentSpanAnchor; at: string }[] = [];
+		for (const { id, anchor, at } of await this.#joined(
+			await this.store.read(),
+		)) {
+			if (anchor.subject === "thread" || anchor.subject === "review") continue;
+			out.push({ id, anchor, at });
+		}
+		return out;
 	}
 
 	/**
-	 * Opens a thread on a span, or on a GitHub thread (`req.thread`): one
+	 * Opens a thread on a span, on a GitHub thread (`req.thread`): one
 	 * listed, with an id and not deleted (else AgentRequestError), and with
-	 * no conversation yet (else AgentConflictError naming it). A resend of
-	 * an opening already written returns its thread.
+	 * no conversation yet (else AgentConflictError naming it), or the review
+	 * conversation (`req.review`: one per review, else AgentConflictError
+	 * naming it). A resend of an opening already written returns its thread.
 	 */
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
 		// A resend of an opening already stored: its thread, whatever GitHub says now.
@@ -512,18 +525,33 @@ export class AgentHost {
 			return this.#view(await this.#joinedOne(await this.store.find(known)));
 		}
 		const view = req.view ? this.#resolveView(req.view) : undefined;
+		const given = [req.span, req.thread, req.review].filter(
+			(x) => x !== undefined,
+		).length;
+		if (given !== 1) {
+			throw new AgentRequestError(
+				"A span, a thread or the review, one of them",
+			);
+		}
 		let anchor: AgentAnchor;
 		if (req.span) anchor = req.span;
 		else if (req.thread !== undefined) {
 			anchor = await this.#threadAnchor(req.thread);
-		} else throw new AgentRequestError("A span or a thread, one of them");
-		const t = await this.store.open({
-			anchor,
-			text: req.text,
-			by: "human",
-			clientId: req.clientId,
-			...(view ? { view } : {}),
-		});
+		} else anchor = { subject: "review" };
+		const t = await this.store
+			.open({
+				anchor,
+				text: req.text,
+				by: "human",
+				clientId: req.clientId,
+				...(view ? { view } : {}),
+			})
+			.catch((error: unknown) => {
+				if (error instanceof ReviewConversationError) {
+					throw new AgentConflictError(error.message, error.thread);
+				}
+				throw error;
+			});
 		await this.#asked();
 		return this.#view(await this.#joinedOne(t));
 	}
@@ -567,10 +595,14 @@ export class AgentHost {
 	/**
 	 * Resolves a span thread or an orphan; a live thread conversation has
 	 * no resolved state of its own (AgentConflictError: resolve the GitHub
-	 * thread, a human action on its card).
+	 * thread, a human action on its card), and the review conversation is
+	 * never resolved (AgentConflictError).
 	 */
 	async setResolved(thread: string, resolved: boolean): Promise<AgentThread> {
 		const current = await this.store.find(thread);
+		if (current.anchor.subject === "review") {
+			throw new AgentConflictError("The review conversation is never resolved");
+		}
 		if (current.anchor.subject === "thread") {
 			// Unknown GitHub threads fail the write (502), never resolve it here.
 			const live = liveGithubThreads(await this.github.threads());
@@ -681,7 +713,7 @@ export class AgentHost {
 		const skipped = this.#skipped();
 		// Joined with GitHub: an orphan is a span thread (its resolve counts).
 		return (await this.#joined(await this.store.read())).filter(
-			(t) => isQuestion(t) && !skipped.has(t.id),
+			(t) => isAgentQuestion(t) && !skipped.has(t.id),
 		).length;
 	}
 
@@ -766,12 +798,8 @@ export class AgentHost {
 		const skipped = this.#skipped();
 		const thread =
 			(handed &&
-				threads.find(
-					(t) =>
-						t.id === handed.thread &&
-						(t.anchor.subject === "thread" || !t.resolved),
-				)) ||
-			threads.find((t) => isQuestion(t) && !skipped.has(t.id));
+				threads.find((t) => t.id === handed.thread && isOpenToAgent(t))) ||
+			threads.find((t) => isAgentQuestion(t) && !skipped.has(t.id));
 		if (!thread) return null;
 		// The read took a while: the session may have left meanwhile.
 		if (!this.join.check(secret)) throw new SessionTokenError();
@@ -841,13 +869,14 @@ export class AgentHost {
 			thread: thread.id,
 			replyTo: asked,
 			envelope,
-			anchoredFile: turn.anchored
-				? {
-						path: envelope.thread.anchor.path,
-						commit: envelope.thread.anchor.commit,
-						text: turn.anchored.text,
-					}
-				: null,
+			anchoredFile:
+				turn.anchored && envelope.thread.anchor.subject !== "review"
+					? {
+							path: envelope.thread.anchor.path,
+							commit: envelope.thread.anchor.commit,
+							text: turn.anchored.text,
+						}
+					: null,
 			hunk: turn.hunk,
 		};
 	}
@@ -1293,15 +1322,6 @@ export class AgentHost {
 	}
 }
 
-/**
- * Whether a thread waits for an answer, by the runner's rule: a question
- * on a GitHub thread conversation even once that thread is resolved (it
- * was asked), on a span thread only while it is open.
- */
-function isQuestion(t: AgentThreadFold): boolean {
-	return t.waiting && (t.anchor.subject === "thread" || !t.resolved);
-}
-
 /** A joined session's turn: the envelope, the anchored file and the code block. */
 interface SessionTurn {
 	envelope: PromptEnvelope;
@@ -1322,9 +1342,10 @@ async function sessionSpanTurn(
 	pr: PromptEnvelope["pr"],
 ): Promise<SessionTurn> {
 	const review = facts.review();
+	const a = thread.anchor;
 	const notice = joinNotices([
-		thread.orphaned
-			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
+		thread.orphaned && a.subject !== "review"
+			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
 			: undefined,
 		moved,
 	]);
@@ -1339,9 +1360,11 @@ async function sessionSpanTurn(
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
+	// The review conversation has no file and no hunk.
+	if (a.subject === "review") return { envelope, anchored: null, hunk: null };
 	const [anchored, hunk] = await Promise.all([
-		facts.anchored(thread.anchor).catch(() => null),
-		facts.hunk(thread.anchor).catch(() => null),
+		facts.anchored(a).catch(() => null),
+		facts.hunk(a).catch(() => null),
 	]);
 	return { envelope, anchored, hunk };
 }
@@ -1461,7 +1484,7 @@ export function buildAgentHost(o: {
 		const folds = await joinRead(await o.store.read(), () =>
 			o.github.threads(),
 		);
-		return folds.some((t) => isQuestion(t) && !skipped.has(t.id));
+		return folds.some((t) => isAgentQuestion(t) && !skipped.has(t.id));
 	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
@@ -1756,14 +1779,16 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 /**
  * The anchored file's text at the anchor's commit (the merge base for a
  * LEFT anchor), read from the clone with a checked OID and a relative
- * path; null when it can't be read, is binary or large.
+ * path; null when it can't be read, is binary or large, and for the
+ * review conversation (no path).
  */
 export async function anchoredFile(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
 		Partial<Pick<ReviewAgentSource, "patchsets">>,
 	anchor: AgentAnchor,
 ): Promise<{ text: string } | null> {
-	if (!isSafePath(anchor.path)) return null;
+	// The review conversation has no file.
+	if (anchor.subject === "review" || !isSafePath(anchor.path)) return null;
 	let commit = anchor.commit;
 	if (anchor.subject !== "file" && anchor.side === "LEFT") {
 		// A thread's LEFT side: its patch set's merge base, as the prompt says.

@@ -6,7 +6,7 @@ import {
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useContext } from "react";
-import type { AgentThread } from "../../shared/agent";
+import type { SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
 import { AgentThreadCard } from "../agent/AgentThreadCard";
@@ -230,7 +230,7 @@ export function ThreadRow(props: {
  * line's comment threads. The status comes from the chip's poll.
  */
 export function AgentThreadRow(props: {
-	threads: AgentThread[];
+	threads: SpanAgentThread[];
 	id?: string;
 	place: CardPlace;
 	rail?: string;
@@ -239,7 +239,7 @@ export function AgentThreadRow(props: {
 	/** Asked on an earlier head (the file's header): each card says on which. */
 	outdated?: boolean;
 	/** Traced and not placed in this file: each with its fate. */
-	fates?: ReadonlyMap<AgentThread, UnplacedPlacement>;
+	fates?: ReadonlyMap<SpanAgentThread, UnplacedPlacement>;
 }) {
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
 	const { placements } = useAgentPlacing();
@@ -301,7 +301,7 @@ export function AgentThreadRow(props: {
 type UnplacedPlacement = Extract<ThreadPlacement, { kind: "unplaced" }>;
 
 /** An agent thread as the placement pieces read it (a review thread's fields). */
-const asThread = (t: AgentThread) => ({
+const asThread = (t: SpanAgentThread) => ({
 	createdAt: t.at,
 	path: t.anchor.path,
 	code: t.code ?? null,
@@ -314,7 +314,7 @@ const asThread = (t: AgentThread) => ({
  * was asked on and the fate line; then its own card.
  */
 function AgentChanged(props: {
-	thread: AgentThread;
+	thread: SpanAgentThread;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
 	children: ReactNode;
 }) {

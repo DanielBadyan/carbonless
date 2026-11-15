@@ -8,7 +8,12 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import type { AgentStatus, AgentThread } from "../../../shared/agent";
+import {
+	type AgentStatus,
+	type AgentThread,
+	isSpanThread,
+	type SpanAgentThread,
+} from "../../../shared/agent";
 import { RelativeTime } from "../../RelativeTime";
 import { useReviewId } from "../../reviewId";
 import { SkeletonBar, SpinnerIcon } from "../../Spinner";
@@ -345,7 +350,7 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 							<SpinnerIcon size={16} className="mt-0.5 text-agent-ink" />
 							<span className="min-w-0 break-words">
 								Responding to{" "}
-								{thread ? (
+								{thread && isSpanThread(thread) ? (
 									<ThreadLink thread={thread} onClose={onClose} />
 								) : threads.isError ? (
 									<span className="text-bad">{threads.error.message}</span>
@@ -425,7 +430,7 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 }
 
 /** The thread answered, as `file:line`, going to it in Files changed (the modal closes). */
-function ThreadLink(props: { thread: AgentThread; onClose(): void }) {
+function ThreadLink(props: { thread: SpanAgentThread; onClose(): void }) {
 	const id = useReviewId();
 	const a = props.thread.anchor;
 	const line = "line" in a && a.line !== undefined ? `:${a.line}` : "";
