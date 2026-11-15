@@ -226,6 +226,91 @@ base).
 `docs/product-rules.md`, "A thread with nothing to trace from sits on
 GitHub's line".
 
+## Why does crb show an update command instead of an Update button?
+
+crb updates itself on one click only when it knows how it was installed,
+can write where it was installed, and something starts it again after it
+exits. When one of these is missing, the update toast says which ("No
+auto-update: …", with a link here) and shows the command to run yourself;
+Global settings says the same. Fix the setup below once, and the next
+update is one click. The full mechanics: [Updating an installed
+crb](releasing.md#updating-an-installed-crb).
+
+### Not an npm or pnpm global install
+
+crb recognises a global install by npm (`npm install -g`, npm 9 to 12) or
+pnpm (`pnpm add -g`, pnpm 8 to 12, with or without its global virtual
+store) from where its files lie. Anything else gets the command: yarn,
+bun, Volta (update it with `volta install carbonless-review@<version>`,
+the version the toast shows, or `@rc` to stay on RCs), npx's or
+pnpm dlx's cache, or crb as a dependency of a project. Reinstall it with
+npm or pnpm, as your own user:
+
+```sh
+npm install -g carbonless-review        # or: pnpm add -g carbonless-review
+```
+
+Then start crb from that install (its `crb`), not the old one.
+
+### Installed in a folder crb can't write
+
+The install's folder belongs to someone else, usually root after a `sudo
+npm install -g` into a system node (`/usr/lib/node_modules`). crb never
+asks for sudo. Install it as the user who runs crb, into a folder that
+user owns, without sudo:
+
+- npm with a prefix of your own: `npm config set prefix ~/.local`, put
+  `~/.local/bin` on `PATH`, then `npm install -g carbonless-review`. Or
+  use nvm, whose prefix is already yours.
+- or pnpm: `pnpm setup` once, then `pnpm add -g carbonless-review`.
+
+Remove the root-owned copy afterwards (`sudo npm uninstall -g
+carbonless-review`), so `crb` finds the new one.
+
+### systemd won't restart crb
+
+Under systemd, crb installs the update while it runs, then exits for
+systemd to start the new version. That needs both:
+
+- `Restart=on-failure` (or `always`; `on-success` works too). With
+  `Restart=no` (the default) or another value, nothing would start crb
+  again.
+- crb itself as the unit's main process: `ExecStart` runs the `crb` shim
+  directly, not a wrapper script or a shell that runs it (or the script
+  ends with `exec crb serve`). Otherwise systemd would stop crb's helper
+  along with the unit.
+
+A user unit (`~/.config/systemd/user/crb.service`):
+
+```ini
+[Service]
+Environment="PATH=/path/to/node/bin:%h/.local/bin:/usr/bin:/bin"
+ExecStart=%h/.local/bin/crb serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Then `systemctl --user daemon-reload && systemctl --user restart crb`. The
+unit's `PATH` must reach node and the package manager; the [full
+example](releasing.md#updating-an-installed-crb) uses pnpm.
+
+Other service managers: pm2 works as is. launchd, a Windows service
+wrapper (NSSM, WinSW) or a container's restart policy: make it start crb
+again whenever it exits (launchd: `KeepAlive`; NSSM, WinSW: restart on
+exit), then set `CRB_SERVICE=1` in crb's environment, which tells crb
+that it will be started again.
+
+### crb is a container's PID 1
+
+The container ends when crb exits, so crb can't restart itself. Give the
+container a restart policy (`docker run --restart unless-stopped`, or
+`restart: unless-stopped` in Compose) and set `CRB_SERVICE=1`: crb then
+installs the update and exits, and the container starts again. The
+update lives in the container's filesystem, so it lasts only as long as
+that container: rebuild the image to keep it.
+
 ## Setting up an agent
 
 Ask agent sends your question about a span of the diff to your own coding

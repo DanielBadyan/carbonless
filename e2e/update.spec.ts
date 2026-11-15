@@ -13,8 +13,8 @@ import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
-import type { Page } from "@playwright/test";
-import { expectNoPageOverflow } from "./files-ui";
+import type { Locator, Page } from "@playwright/test";
+import { expectNoPageOverflow, tapHeight } from "./files-ui";
 import {
 	expect,
 	OWNER_REPO,
@@ -565,6 +565,178 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 	await expect(
 		toast(page).getByRole("link", { name: "v0.4.0-rc.1" }),
 	).toBeVisible();
+});
+
+const FAQ = "https://github.com/Gilthans/carbonless/blob/master/docs/faq.md";
+
+/** All of an element's text shows: nothing cut off or scrolled away. */
+async function expectWhole(el: Locator) {
+	const { scroll, client } = await el.evaluate((node) => ({
+		scroll: node.scrollWidth,
+		client: node.clientWidth,
+	}));
+	expect(scroll).toBeLessThanOrEqual(client);
+	expect(
+		await el.evaluate((node) => getComputedStyle(node).textOverflow),
+	).not.toBe("ellipsis");
+}
+
+it("by hand (a folder crb can't write): the toast says why with the FAQ's section, the command stays; Global settings says the same", async ({
+	page,
+	pr,
+	installed,
+	isMobile,
+}) => {
+	test.skip(process.getuid?.() === 0, "root writes anywhere");
+	await pr();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
+	// GitHub's pages, served here: a link's popup never leaves the machine.
+	await page
+		.context()
+		.route("https://github.com/**", (r) =>
+			r.fulfill({ contentType: "text/html", body: "<p>GitHub</p>" }),
+		);
+	// The prefix's node_modules, root-owned after a sudo install.
+	const modules = join(installed.pkg, "..");
+	chmodSync(modules, 0o555);
+	try {
+		const { url } = await installed.start();
+		await page.goto(`${url}/`);
+		await expect(toast(page)).toHaveAttribute("data-state", "available");
+		const why = toast(page).getByTestId("update-by-hand");
+		await expect(why).toContainText(
+			"No auto-update: installed in a folder crb can't write",
+		);
+		const help = why.getByRole("link", { name: "How to set up updates" });
+		await expect(help).toHaveAttribute(
+			"href",
+			`${FAQ}#installed-in-a-folder-crb-cant-write`,
+		);
+		await expect(toast(page).getByTestId("update-command")).toHaveText(
+			`npm install -g carbonless-review@${NEWER}`,
+		);
+		await expect(
+			toast(page).getByRole("button", { name: "Update" }),
+		).toHaveCount(0);
+		await expectNoPageOverflow(page);
+		for (const target of [
+			help,
+			toast(page).getByRole("button", { name: "Copy command" }),
+			toast(page).getByRole("button", { name: "Dismiss" }),
+		]) {
+			const box = await target.boundingBox();
+			expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+			expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+		}
+		// The whole reason shows: wrapped where narrow, never cut off.
+		await expectWhole(why.getByTestId("update-by-hand-text"));
+		await shot(page, "update-by-hand-not-writable", isMobile);
+
+		if (isMobile) {
+			// A tap on What's new opens the release; its tip doesn't stay
+			// behind over the command row.
+			const popup = page.context().waitForEvent("page");
+			await toast(page)
+				.getByRole("link", { name: `v${NEWER}` })
+				.tap();
+			await (await popup).close();
+			await expect(
+				page.locator('[role="tooltip"]', { hasText: "What's new" }),
+			).toBeHidden();
+			await expect(toast(page).getByTestId("update-command")).toBeVisible();
+			// So does the help link's.
+			const faq = page.context().waitForEvent("page");
+			await help.tap();
+			expect((await faq).url()).toBe(
+				`${FAQ}#installed-in-a-folder-crb-cant-write`,
+			);
+			await expect(
+				page.locator('[role="tooltip"]', { hasText: "How to set up updates" }),
+			).toBeHidden();
+		}
+
+		// The other reasons, as crb would answer them (a service manager
+		// can't be faked here): the toast's words and links.
+		for (const [reason, manager, text, anchor] of [
+			[
+				"no-install",
+				null,
+				"not an npm/pnpm global install",
+				"not-an-npm-or-pnpm-global-install",
+			],
+			[
+				"service",
+				"systemd (crb.service)",
+				"systemd won't restart crb",
+				"systemd-wont-restart-crb",
+			],
+			[
+				"service",
+				"PID 1",
+				"crb is PID 1, nothing restarts it",
+				"crb-is-a-containers-pid-1",
+			],
+		] as const) {
+			await page.route("**/api/update", async (r) => {
+				try {
+					const res = await r.fetch();
+					await r.fulfill({
+						response: res,
+						json: {
+							...(await res.json()),
+							byHandReason: reason,
+							byHandManager: manager,
+						},
+					});
+				} catch {
+					// A poll cut off by the reload: nothing to answer.
+				}
+			});
+			await page.reload();
+			await expect(why).toContainText(`No auto-update: ${text}`);
+			await expect(help).toHaveAttribute("href", `${FAQ}#${anchor}`);
+			await expectWhole(why.getByTestId("update-by-hand-text"));
+			await expectNoPageOverflow(page);
+			if (manager?.startsWith("systemd")) {
+				// The unit's name: in the tip a tap or a key opens, from a
+				// target of 40px.
+				const reasonText = why.getByTestId("update-by-hand-text");
+				expect(await tapHeight(reasonText)).toBeGreaterThanOrEqual(40);
+				if (isMobile) await reasonText.tap();
+				else await reasonText.focus();
+				await expect(
+					page.locator('[role="tooltip"]', { hasText: "crb.service" }),
+				).toBeVisible();
+				await expect(
+					page.locator('[role="tooltip"]', { hasText: "crb.service" }),
+				).toHaveText("No auto-update: systemd (crb.service) won't restart crb");
+				await reasonText.blur();
+			}
+			await shot(page, `update-by-hand-${anchor}`, isMobile);
+			await page.unrouteAll({ behavior: "ignoreErrors" });
+		}
+
+		// Global settings: the same words and link.
+		const version = await openGlobalSettings(page, url);
+		const install = version.getByTestId("version-install");
+		await expect(install).toContainText(
+			"No auto-update: installed in a folder crb can't write",
+		);
+		await expectWhole(install.getByTestId("update-by-hand-text"));
+		const settingsHelp = install.getByRole("link", {
+			name: "How to set up updates",
+		});
+		await expect(settingsHelp).toHaveAttribute(
+			"href",
+			`${FAQ}#installed-in-a-folder-crb-cant-write`,
+		);
+		const box = await settingsHelp.boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		await expectNoPageOverflow(page);
+		await shot(page, "global-settings-by-hand", isMobile);
+	} finally {
+		chmodSync(modules, 0o755);
+	}
 });
 
 /** Home's gear → Global settings: the page, at `url`'s crb. */

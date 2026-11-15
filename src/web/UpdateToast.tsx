@@ -21,6 +21,7 @@ import { useUnsaved } from "./files/useSetStates";
 import { SpinnerIcon } from "./Spinner";
 import { ToastSlot } from "./Toasts";
 import { Tooltip } from "./Tooltip";
+import { ByHandWhy } from "./UpdateByHand";
 
 /** How often the page asks whether an update is on offer, when none is. */
 export const UPDATE_POLL_MS = 10 * 60_000;
@@ -481,6 +482,11 @@ function Toast(props: {
 				</div>
 				{!data.oneClick && data.command && (
 					<div className="pb-1">
+						<ByHandWhy
+							info={data}
+							prefix="No auto-update"
+							className="text-muted"
+						/>
 						<Command command={data.command} />
 					</div>
 				)}

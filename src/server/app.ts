@@ -138,6 +138,8 @@ const noUpdate = (): UpdateInfo => ({
 	channel: channelOf(BUILD.version),
 	install: null,
 	byHand: false,
+	byHandReason: null,
+	byHandManager: null,
 	lastChecked: null,
 	checkError: null,
 	checksOff: "unavailable",
