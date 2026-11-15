@@ -254,8 +254,11 @@ crb's MCP tools (`attach`, `next`, `reply`, `threads`, `review`,
 when the agent supports it, else through `crb mcp-bridge` over stdio) and
 a join that pressing Spawn already approved: there is no Approve bar, and
 that join works only for the process Spawn started (a secret only it was
-given), in this review only. Its first prompt tells it to `attach`, then
-to call `next` and `reply` until no question waits. Only `reply` stores
+given), in this review only. Its first prompt, an intro, says where it
+is: the review's status (repo, PR, title, base and head, how many
+questions wait), its checkout (a `tree` folder in its working directory,
+the PR's head as of Spawn, with the base commit in its objects), and to
+`attach`, then call `next` and `reply` until no question waits. Only `reply` stores
 an answer; what it says in the prompt itself is never stored. It gets
 exactly what `next` gives a joined session; crb makes its checkout of the
 PR's head once, at Spawn, and never moves it.

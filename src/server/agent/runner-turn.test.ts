@@ -120,7 +120,15 @@ function start(agent: { prompt: unknown }) {
 		head: "a".repeat(40),
 		port: 4800,
 		facts: {
-			review: () => ({ head: { commit: "a".repeat(40) } }),
+			review: () => ({
+				repo: "acme/widget",
+				pr: 12,
+				url: "https://github.com/acme/widget/pull/12",
+				base: { ref: "main", commit: "b".repeat(40) },
+				head: { ref: "feature", commit: "a".repeat(40) },
+				mergeBase: "b".repeat(40),
+			}),
+			prFacts: async () => ({ title: "t", body: "", files: [] }),
 			join: async (f: unknown) => f,
 		} as unknown as RunnerFacts,
 		turnMs: TURN_MS,

@@ -75,6 +75,17 @@ a better wakeup, but otherwise they stay the same."
    a joined session, the spawned agent gets exactly what `next` gives and
    finds the code itself. Owner, 2026-11-13: "should be like a joined
    session in that regard".
+   Owner, 2026-11-15: the intro prompt says where the checkout is and
+   what it contains ("there should be an 'intro' prompt when spawning an
+   agent explaining the situation and giving the status, including where
+   the checkout is and what it contains"). The intro, the first prompt,
+   tells the agent once: the situation (crb's buddy, answering through
+   crb's tools, woken by crb, no `watch`), the review's status (repo, PR,
+   title, base and head, how many questions wait), the checkout (its
+   path, relative and absolute, the head OID it was made at, the base and
+   merge base it holds; crb never moves it), and the attach call. Every
+   value is a JSON string. Per question, nothing changes: `next` gives
+   what it gives a joined session.
 
 ## How it works
 
