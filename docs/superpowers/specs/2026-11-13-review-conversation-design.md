@@ -4,8 +4,7 @@ Status: draft, 2026-11-13, builder-checked; owner answers folded in. Calls the c
 overrule) are marked **(call)**.
 
 Mockups (desktop and phone, drawn over screenshots of the live UI): the
-"Review conversation mockups" canvas linked from the report. Artboard "Not chosen · card on Overview" is the
-rejected alternative, kept for the record.
+"Review conversation mockups" canvas linked from the report.
 
 ## Why
 
