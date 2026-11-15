@@ -945,4 +945,23 @@ describe("the review conversation", () => {
 		).rejects.toBeInstanceOf(Error);
 		expect(await store.read()).toHaveLength(1);
 	});
+
+	it("two review openings at once: one written, the other refused naming it", async () => {
+		const [a, b] = await Promise.allSettled([
+			store.open({ anchor: review, text: "q1", by: "human", clientId: "c1" }),
+			store.open({ anchor: review, text: "q2", by: "human", clientId: "c2" }),
+		]);
+		const won = [a, b].filter((x) => x.status === "fulfilled");
+		const lost = [a, b].filter((x) => x.status === "rejected");
+		expect(won).toHaveLength(1);
+		expect(lost).toHaveLength(1);
+		const id = (won[0] as PromiseFulfilledResult<{ id: string }>).value.id;
+		expect((lost[0] as PromiseRejectedResult).reason).toMatchObject({
+			thread: id,
+		});
+		const all = await store.read();
+		expect(all).toHaveLength(1);
+		expect(all[0]?.id).toBe(id);
+		expect(all[0]?.messages).toHaveLength(1);
+	});
 });

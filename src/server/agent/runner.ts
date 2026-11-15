@@ -422,7 +422,11 @@ export class AgentRunner {
 		}
 		let waiting = 0;
 		try {
-			waiting = (await this.#deps.store.read()).filter(isAgentQuestion).length;
+			// The raw fold, not GitHub-joined: an orphan still has subject "thread"
+			// here, so its own resolve counts (isAgentQuestion would ignore it).
+			waiting = (await this.#deps.store.read()).filter(
+				(t) => t.waiting && (t.anchor.subject === "review" || !t.resolved),
+			).length;
 		} catch {
 			// The count is a hint; the ref may be unreadable a moment.
 		}

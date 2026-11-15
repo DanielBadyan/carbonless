@@ -388,6 +388,36 @@ describe("AgentHost with a session joined through MCP", () => {
 			await expect(host.open({ clientId: "c1", text: "q" })).rejects.toThrow(
 				"A span, a thread or the review, one of them",
 			);
+			await expect(
+				host.open({ clientId: "c2", text: "q", review: true, span }),
+			).rejects.toThrow("A span, a thread or the review, one of them");
+			await expect(
+				host.open({
+					clientId: "c3",
+					text: "q",
+					review: true,
+					thread: "PRRT_1",
+				}),
+			).rejects.toThrow("A span, a thread or the review, one of them");
+			expect(await store.read()).toEqual([]);
+		});
+
+		it("two review opens at once: one conversation, the other a conflict naming it", async () => {
+			const [a, b] = await Promise.allSettled([
+				host.open({ clientId: "c1", text: "q1", review: true }),
+				host.open({ clientId: "c2", text: "q2", review: true }),
+			]);
+			const won = [a, b].filter((x) => x.status === "fulfilled");
+			const lost = [a, b].filter((x) => x.status === "rejected");
+			expect(won).toHaveLength(1);
+			expect(lost).toHaveLength(1);
+			const id = (won[0] as PromiseFulfilledResult<{ id: string }>).value.id;
+			const reason = (lost[0] as PromiseRejectedResult).reason;
+			expect(reason).toBeInstanceOf(AgentConflictError);
+			expect(reason).toMatchObject({ thread: id });
+			const all = await store.read();
+			expect(all).toHaveLength(1);
+			expect(all[0]?.id).toBe(id);
 		});
 
 		it("refuses resolving the review conversation", async () => {

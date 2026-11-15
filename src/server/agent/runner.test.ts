@@ -19,7 +19,6 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import {
-	type AgentAnchor,
 	type AgentConfig,
 	type AgentSpanAnchor,
 	type AgentStatus,
@@ -1711,5 +1710,25 @@ describe("AgentRunner: the waiting count", () => {
 		expect((await r.status()).waiting).toBe(2);
 		await store.setResolved(span.id, true);
 		expect((await r.status()).waiting).toBe(1);
+	});
+
+	it("a resolved orphaned thread conversation with a waiting question counts for no one", async () => {
+		// GitHub lists no thread: the conversation is an orphan, a span thread
+		// whose own resolve counts (next and the wake-up skip it once resolved).
+		const r = makeRunner({ acpOff: () => true });
+		const t = await store.open({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_gone",
+				path: "a.txt",
+				commit: origin.shas[1] as string,
+			},
+			text: "Still there?",
+			by: "human",
+			clientId: "o1",
+		});
+		expect((await r.status()).waiting).toBe(1);
+		await store.setResolved(t.id, true);
+		expect((await r.status()).waiting).toBe(0);
 	});
 });
