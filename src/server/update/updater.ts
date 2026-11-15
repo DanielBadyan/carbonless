@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import {
 	copyFile,
@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type ByHandReason,
 	type ChecksOff,
 	releaseUrl,
 	type UpdateFailure,
@@ -274,10 +275,16 @@ export class Updater {
 		}
 	}
 
+	/** Why an update is the reviewer's to run; null: one click does it. */
+	#byHandReason(): ByHandReason | null {
+		if (!this.#o.install) return "no-install";
+		if (!this.#o.install.writable) return "not-writable";
+		if (this.#service && this.#service.exitCode === null) return "service";
+		return null;
+	}
+
 	#oneClick(): boolean {
-		if (!this.#o.install) return false;
-		if (!this.#o.install.writable) return false;
-		return !this.#service || this.#service.exitCode !== null;
+		return this.#byHandReason() === null;
 	}
 
 	#command(version: string): string {
@@ -288,6 +295,7 @@ export class Updater {
 
 	info(): UpdateInfo {
 		const v = this.#available;
+		const reason = this.#o.enabled ? this.#byHandReason() : null;
 		return {
 			current: this.#o.build.version,
 			available: v,
@@ -299,7 +307,10 @@ export class Updater {
 			commit: this.#o.build.commit,
 			channel: this.#channel,
 			install: this.#o.enabled ? (this.#o.install?.pm ?? null) : null,
-			byHand: this.#o.enabled && !this.#oneClick(),
+			byHand: reason !== null,
+			byHandReason: reason,
+			byHandManager:
+				reason === "service" ? (this.#service?.manager ?? null) : null,
 			lastChecked: this.#lastChecked?.toISOString() ?? null,
 			checkError: this.#checkError,
 			checksOff: this.#o.enabled ? null : (this.#o.off ?? "local-build"),
@@ -421,12 +432,14 @@ const helperSource = (): string => {
 /**
  * Copies the helper to a temp dir of its own (never run from the package
  * being replaced), writes its config there (it holds crb's environment:
- * 0600, removed once read) and starts it with node, detached.
+ * 0600, removed once read) and starts it with node, detached. Resolves
+ * with the helper's process (unref'd: crb never waits for it; a test
+ * does, before removing the dirs it runs in).
  */
 export async function startHelper(
 	config: HelperConfig,
 	opts: { source?: string; tmp?: string } = {},
-): Promise<void> {
+): Promise<ChildProcess> {
 	const tmp = opts.tmp ?? tmpdir();
 	const dir = await mkdtemp(join(tmp, HELPER_DIR_PREFIX));
 	try {
@@ -438,7 +451,7 @@ export async function startHelper(
 		await copyFile(source, script);
 		const configFile = join(dir, "config.json");
 		await writeFile(configFile, JSON.stringify(config), { mode: 0o600 });
-		await new Promise<void>((done, fail) => {
+		return await new Promise<ChildProcess>((done, fail) => {
 			const child = spawn(process.execPath, [script, "--run", configFile], {
 				detached: true,
 				stdio: "ignore",
@@ -449,7 +462,7 @@ export async function startHelper(
 			});
 			child.once("spawn", () => {
 				child.unref();
-				done();
+				done(child);
 			});
 			child.once("error", fail);
 		});

@@ -157,6 +157,11 @@ const E2E_MAP = [
 		/^src\/web\/files\/(wordDiff|wordBlocks|wordWork|wordWorker|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
 		["inlineDiff"],
 	],
+	// Inline diff step 2: similarity pairs read together (CAR-30).
+	[
+		/^src\/web\/files\/(linePairing|pairOrder|wordBlocks|whitespace|sideBySide|hiddenLines|DiffBody)\.tsx?$/,
+		["linePairing"],
+	],
 	[
 		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
 		["home-api", "home"],
@@ -170,7 +175,7 @@ const E2E_MAP = [
 	],
 	// crb's self-update: the toast, Global settings, the gear's row to it.
 	[
-		/^src\/(server|shared)\/update|^src\/web\/(UpdateToast|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
+		/^src\/(server|shared)\/update|^src\/web\/(UpdateToast|UpdateByHand|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
 		["update"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],

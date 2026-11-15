@@ -111,8 +111,8 @@ export function placeNear(
 
 /**
  * A text tooltip that opens on hover and on keyboard focus (or a tap, which
- * focuses), closes on Escape, blur, mouse leave and a scroll that moves its
- * trigger, and is the
+ * focuses), closes on Escape, blur, mouse leave, a scroll that moves its
+ * trigger, a tap elsewhere and a tap that follows its link, and is the
  * trigger's accessible description (unless `describe` is false). It is `position: fixed` and kept inside
  * the viewport, so it never widens the page on a phone.
  */
@@ -203,9 +203,35 @@ export function Tooltip(props: {
 		const onKey = (e: globalThis.KeyboardEvent) => {
 			if (e.key === "Escape") close();
 		};
+		// A tap elsewhere closes it (a tap's focus would hold it open, and a
+		// tap on something that takes no focus never blurs it); not a forced
+		// one, which waits on its answer.
+		const onPointerDown = (e: PointerEvent) => {
+			const el = trigger.current;
+			if (forced || (el && e.target instanceof Node && el.contains(e.target)))
+				return;
+			setOpen(false);
+		};
+		// A tapped link opened its page (often another tab): its tip has
+		// nothing left to say, and the focus a tap left would bring it back
+		// over the page when the reviewer returns. A key's click keeps both.
+		const onClick = (e: MouseEvent) => {
+			const el = trigger.current;
+			if (forced || !el || !(e.target instanceof Element)) return;
+			if (!el.contains(e.target)) return;
+			const link = e.target.closest("a[href]");
+			if (!(link instanceof HTMLElement)) return;
+			const pointer =
+				(e as Partial<PointerEvent>).pointerType || lastPointerType;
+			if (!isTap(pointer)) return;
+			setOpen(false);
+			link.blur();
+		};
 		window.addEventListener("scroll", onScroll, true);
 		window.addEventListener("resize", close);
 		window.addEventListener("keydown", onKey);
+		window.addEventListener("pointerdown", onPointerDown, true);
+		window.addEventListener("click", onClick, true);
 		// A focused button that becomes disabled gets no blur in Chrome.
 		const el = trigger.current;
 		const observer = new MutationObserver(close);
@@ -220,6 +246,8 @@ export function Tooltip(props: {
 			window.removeEventListener("scroll", onScroll, true);
 			window.removeEventListener("resize", close);
 			window.removeEventListener("keydown", onKey);
+			window.removeEventListener("pointerdown", onPointerDown, true);
+			window.removeEventListener("click", onClick, true);
 			observer.disconnect();
 		};
 	}, [shown, forced]);

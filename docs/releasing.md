@@ -317,8 +317,9 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   the Global settings page.
 - **Global settings** (`/settings`, the gear's "Global settings" row on
   Home and on a review): the running version and commit (linked to it on
-  GitHub), the channel, how crb was installed (npm global, pnpm global, or
-  update by hand), when it last checked, and **Check for updates**
+  GitHub), the channel, how crb was installed (npm global, pnpm global)
+  and, when it can't update itself, why (the toast's words and FAQ link),
+  when it last checked, and **Check for updates**
   (`POST /api/update/check`: checks now, sharing a check already under
   way, and answers the fresh `/api/update`; the hourly timer keeps its
   times). A newer version shows there with the toast's own Update (or the
@@ -353,19 +354,67 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   `/api/update` every 10 minutes, every 5 seconds while an update is on
   offer, so every open tab sees an update another one started. Toasts share
   one stack, which sits above the save notices on a phone.
+- **By hand.** When crb can't update itself, `/api/update` says why
+  (`byHandReason`: `no-install`, `not-writable`, or `service` with
+  `byHandManager`, e.g. `systemd (crb.service)` or `PID 1`), and the toast
+  shows "No auto-update: <why>" with a help link to the matching section
+  of the FAQ on GitHub ([Why does crb show an update command instead of
+  an Update button?](faq.md#why-does-crb-show-an-update-command-instead-of-an-update-button))
+  above the command to copy. The words and anchors live in one place
+  (`src/web/UpdateByHand.tsx`), shared with Global settings; a unit test
+  checks every anchor is a heading of `docs/faq.md`.
 - **Who installs it**, told from where crb runs (its real path):
+  The layouts below cover npm 9-12 and pnpm 8-12 on Linux, macOS and
+  Windows (`detectInstall` in `src/server/update/install.ts`, with a test
+  per layout).
   - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
     in `<prefix>/bin` (Windows: `<prefix>\node_modules\...` and
-    `<prefix>\crb.cmd`). The install is `npm install -g --prefix <prefix>`,
-    run by the prefix's own npm, else the one beside the running node, else
-    PATH's: whichever npm, it goes where crb is.
-  - pnpm: `<PNPM_HOME>/global/<vN>/.../.pnpm/.../carbonless-review`. The
-    install is `pnpm add -g` (with the release-age exemption above) by
-    PNPM_HOME's pnpm (else PATH's), with `PNPM_HOME` set and its bin dir
-    first on PATH (pnpm refuses `add -g` otherwise).
-  - Anything else (yarn, bun, volta, a project's dependency, npx), or a
-    global dir crb can't write (a system node's `/usr/lib/node_modules`):
-    the toast shows the command to copy instead of the button.
+    `<prefix>\crb.cmd`), whatever set the prefix (nvm, fnm, asdf, mise,
+    Homebrew, the Windows installer's `%APPDATA%\npm`, nvm-windows, a
+    prefix of one's own). The install is `npm install -g --prefix
+    <prefix>`, run by the prefix's own npm, else the one beside the running
+    node, else PATH's: whichever npm, it goes where crb is.
+  - pnpm 8-10: `<PNPM_HOME>/global/5/.pnpm/.../carbonless-review` (10 with
+    `enableGlobalVirtualStore`: `.pnpm/@/carbonless-review/<v>/<hash>/...`);
+    pnpm 11+ with the global virtual store off:
+    `<PNPM_HOME>/global/v11/<dir>/node_modules/.pnpm/...` (`<dir>` in
+    pnpm's hex, `88719-18e7`). `.pnpm` must sit exactly there, and the
+    global dir must hold this very package (its
+    `node_modules/carbonless-review`, or an entry's, resolves to it): a
+    project under some `global/2/` isn't a global install. One click needs
+    the global dir, the shim's dir (8-10: PNPM_HOME; 11+: its `bin`) and
+    `<PNPM_HOME>/store`, when there, writable.
+  - pnpm 11 and 12 by default, on every OS (global installs use the global
+    virtual store): `<storeDir>/v11/links/@/carbonless-review/<v>/<hash>/node_modules/carbonless-review`,
+    which an entry of `<PNPM_HOME>/global/v11` links to. A project's
+    dependency installed with the global virtual store on lies at the very
+    same path, so it counts only when some
+    `<PNPM_HOME>/global/v11/*/node_modules/carbonless-review` resolves to
+    it. PNPM_HOME is read from how crb was started (pnpm's shim runs
+    `<PNPM_HOME>/global/v11/<dir>/node_modules/carbonless-review/...`),
+    else `$PNPM_HOME`, else the dir above the store's (`storeDir` defaults
+    to `<PNPM_HOME>/store`, and may be moved, to another drive say). One
+    click needs `global/v11`, `<storeDir>/v11` and `<PNPM_HOME>/bin`
+    writable. The new version is found again through the global dir's
+    links.
+  - The pnpm install is `pnpm add -g` (with the release-age exemption
+    above) by PNPM_HOME's pnpm (`bin/pnpm`, else `pnpm`, else PATH's), with
+    `PNPM_HOME` set and its bin dir first on PATH (pnpm refuses `add -g`
+    otherwise), run in PNPM_HOME: not crb's cwd, where corepack would
+    follow a project's `packageManager` to another pnpm major (another
+    global dir). A corepack or Homebrew pnpm is PATH's, so a service's
+    `PATH` must reach it. Open: corepack still reads a `packageManager` in
+    a `package.json` above PNPM_HOME (`~/package.json`), nothing checks
+    that the pnpm found matches the store's major, and npm's install runs
+    in crb's cwd (a project's `.npmrc` there applies).
+  - Anything else (yarn, bun, Volta, a project's dependency, npx's cache,
+    pnpm dlx), or a global dir crb can't write (a system node's
+    `/usr/lib/node_modules`): the toast shows the command to copy instead
+    of the button. Volta's packages
+    (`<VOLTA_HOME>/tools/image/packages/carbonless-review`) look like an npm
+    prefix, but are Volta's to update (`volta install`): an npm there would
+    go behind its back. An npm global install with a Node that pnpm
+    installed (inside pnpm's store) isn't recognised either (rare).
   - Only a checked version (semver, at most 64 characters) reaches a
     command line; a registry answer over 64 KB is ignored.
 - **Update** asks first when the page has unsaved work (what leaving the

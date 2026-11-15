@@ -25,6 +25,13 @@ export interface UpdateInfo {
 	install: "npm" | "pnpm" | null;
 	/** Checks on, but an update is the reviewer's to run (`command`). */
 	byHand: boolean;
+	/** Why, when `byHand` (null otherwise). */
+	byHandReason: ByHandReason | null;
+	/**
+	 * For "service": the manager that won't start crb again (e.g.
+	 * `systemd (crb.service)`, `PID 1`); null otherwise.
+	 */
+	byHandManager: string | null;
 	/** When the registry last answered or failed (ISO); null: never asked. */
 	lastChecked: string | null;
 	/** Why the last check failed; null when it succeeded (or none ran). */
@@ -32,6 +39,15 @@ export interface UpdateInfo {
 	/** Why crb never checks; null: it does. */
 	checksOff: ChecksOff | null;
 }
+
+/**
+ * Why crb can't update itself: not a global npm/pnpm install it knows
+ * ("no-install": yarn, bun, a project's dependency...), a global folder it
+ * can't write ("not-writable": a root-owned prefix), or a service manager
+ * that won't start it again once it exits ("service": systemd without
+ * `Restart=on-failure`/`always`, crb not the unit's main process, PID 1).
+ */
+export type ByHandReason = "no-install" | "not-writable" | "service";
 
 /**
  * Why crb never checks for updates: a build npm didn't serve (a checkout,
