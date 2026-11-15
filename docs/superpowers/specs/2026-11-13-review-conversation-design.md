@@ -215,8 +215,9 @@ subject:
   and note the size in the storage doc as usual.
 - **At most one per review.** The server enforces it: opening a second
   `review` thread when one exists is refused on write (409, the client
-  then uses the existing one), and on read only the first (lowest ULID) is
-  kept, the rest dropped, so a race or a hand-edited ref can never show two.
+  then uses the existing one), and on read later openings fold into the
+  first (their messages join it), so a race or a hand-edited ref can never
+  show two and a racing tab's text is never lost **(call)**.
 - **Never resolved.** A resolve on a `review` thread is refused in
   `host.setResolved` (the store's `setResolved` always writes `by:
   "human"`, so the refusal belongs in the host) and ignored in the fold on
