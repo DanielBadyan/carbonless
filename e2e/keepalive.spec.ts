@@ -407,6 +407,9 @@ test("a diff scrolled sideways is still scrolled there after visiting the overvi
 	const section = fileSection(page, WIDE_PATH);
 	await section.getByRole("button", { name: "Expand file" }).click();
 	const scroller = diffScroller(section);
+	// The table is there before its lines: scrolled while still empty (its
+	// lines on their way), the offset clamps to 0 and stays there.
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await scroller.evaluate((el) => {
 		el.scrollLeft = 120;
 	});
@@ -436,9 +439,15 @@ test("a new snapshot loaded from the overview shows the files from the top", asy
 	await page.addStyleTag({ content: "main { padding-bottom: 300vh; }" });
 	const section = fileSection(page, WIDE_PATH);
 	await section.getByRole("button", { name: "Expand file" }).click();
+	// Its lines first (an empty table clamps the offset to 0), so the old
+	// offset is really there for the new snapshot to drop.
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await diffScroller(section).evaluate((el) => {
 		el.scrollLeft = 120;
 	});
+	await expect
+		.poll(() => diffScroller(section).evaluate((el) => el.scrollLeft))
+		.toBe(120);
 	const long = fileSection(page, "b/long.ts");
 	await long.getByRole("button", { name: "Expand file" }).click();
 	await long
