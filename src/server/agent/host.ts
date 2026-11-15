@@ -5,13 +5,16 @@ import {
 	type AgentConfig,
 	type AgentMessage,
 	type AgentMessageRequest,
+	type AgentOrigin,
 	type AgentStatus,
 	type AgentThread,
 	type AgentView,
 	JOIN,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
+	MAX_OPENED_PER_REQUEST,
 	type OpenAgentThreadRequest,
+	startedBy,
 } from "../../shared/agent.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
@@ -91,6 +94,7 @@ export type HostRunner = Pick<
 	| "takeNotice"
 	| "fenced"
 	| "holdsAgent"
+	| "pastLimit"
 >;
 
 /** A joined session's token isn't (or is no longer) this review's (code unknown-token). */
@@ -113,6 +117,65 @@ export class NotHandedError extends Error {
 
 /** A joined session's reply that can't be stored as asked (code invalid). */
 export class BadReplyError extends Error {}
+
+/** `open` called with no question held, or one past its time limit (code not_answering). */
+export class NotHoldingError extends Error {
+	constructor(why?: string) {
+		super(
+			why ??
+				"open works only while you answer a question: call next, open from that question, then reply",
+		);
+	}
+}
+
+/** `open` on code that isn't in the PR, or lines or columns out of range (code bad_anchor). */
+export class BadAnchorError extends Error {}
+
+/** `open` on a GitHub thread the reviewer couldn't ask on (code thread_unavailable). */
+export class ThreadUnavailableError extends Error {}
+
+/** `open` on the thread the request was asked on (code own_thread). */
+export class OwnThreadError extends Error {
+	constructor() {
+		super(
+			"That is the conversation the request was asked in: answer it with reply instead",
+		);
+	}
+}
+
+/** `open` past MAX_OPENED_PER_REQUEST conversations from one request (code too_many). */
+export class TooManyOpenedError extends Error {
+	constructor() {
+		super(
+			`This request already started ${MAX_OPENED_PER_REQUEST} conversations: say the rest in your reply`,
+		);
+	}
+}
+
+/** Where `open` puts a conversation: code (a file, or lines in it) or a GitHub thread. */
+export type OpenTarget =
+	| {
+			code: {
+				path: string;
+				side?: "LEFT" | "RIGHT";
+				line?: number;
+				startLine?: number;
+				startCol?: number;
+				endCol?: number;
+			};
+			thread?: undefined;
+	  }
+	| { thread: string; code?: undefined };
+
+/** What `open` answers: the conversation, whether it is new, and how to cite it in a reply. */
+export interface OpenResult {
+	thread: string;
+	created: boolean;
+	cite: string;
+}
+
+/** The citation token for an agent thread in a reply (the web links it). */
+export const citeOf = (thread: string): string => `crb:c/${thread}`;
 
 /** What `next` hands a joined session. */
 export interface SessionQuestion {
@@ -284,7 +347,7 @@ export class AgentHost {
 	}
 
 	/** The joined session (by `since`) and the head its last `next` saw. */
-	#seen: { since: string; head: string } | null = null;
+	#seen: { since: string; head: string; mergeBase: string } | null = null;
 
 	/** The runner's status, with a joined session (or a request to join) laid over it. */
 	async status(): Promise<AgentStatus> {
@@ -680,7 +743,11 @@ export class AgentHost {
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
 		const { envelope } = turn;
 		// The head this question showed.
-		this.#seen = { since: joined.since, head: envelope.review.head.commit };
+		this.#seen = {
+			since: joined.since,
+			head: envelope.review.head.commit,
+			mergeBase: envelope.review.mergeBase,
+		};
 		return {
 			preamble:
 				envelope.kind === "github_thread_conversation"
@@ -779,6 +846,242 @@ export class AgentHost {
 		else this.join.endGrace();
 		if (spawned) this.runner.replied(r.thread);
 		return this.#view(await this.#joinedOne(stored));
+	}
+
+	/**
+	 * The agent's `open`, while it answers the question `next` handed it:
+	 * a conversation on code (at the head that question showed, its merge
+	 * base for LEFT) or on a GitHub thread (continued, when it already has
+	 * one), whose message records that question as its origin. It writes
+	 * only that agent-thread event: no answer, no wake-up, nothing on
+	 * GitHub. A `key` seen before for the same request returns what it wrote.
+	 */
+	async sessionOpen(
+		secret: string,
+		r: OpenTarget & { text: string; key?: string },
+	): Promise<OpenResult> {
+		await this.#token(secret);
+		const handed = this.join.handedOut();
+		if (!handed?.asked) throw new NotHoldingError();
+		if (this.join.isSpawned() && this.runner.pastLimit(handed.thread)) {
+			throw new NotHoldingError(
+				"The question you hold is past its time limit: open nothing more for it",
+			);
+		}
+		const origin: AgentOrigin = {
+			thread: handed.thread,
+			message: handed.asked,
+		};
+		if (r.key !== undefined) {
+			const known = await this.store.keyed(origin, r.key);
+			if (known) {
+				return {
+					thread: known.thread,
+					created: known.opened,
+					cite: citeOf(known.thread),
+				};
+			}
+		}
+		if (!r.text.trim()) throw new BadReplyError("The text is empty");
+		const threads = await this.store.read();
+		const request = threads.find((t) => t.id === origin.thread);
+		if (
+			!request?.messages.some(
+				(m) => m.by === "human" && m.id === origin.message,
+			)
+		) {
+			throw new NotHoldingError();
+		}
+		const started = startedBy(threads).get(origin.message) ?? [];
+		const atLimit = started.length >= MAX_OPENED_PER_REQUEST;
+		let existing: AgentThreadFold | undefined;
+		let anchor: AgentAnchor | undefined;
+		if (r.thread !== undefined) {
+			existing = await this.#openThreadTarget(r.thread, threads);
+			if (existing?.id === origin.thread) throw new OwnThreadError();
+			if (!existing) anchor = await this.#threadAnchor(r.thread);
+		} else if (r.code) {
+			anchor = await this.#codeAnchor(r.code);
+		} else throw new BadAnchorError("Give code or thread, one of them");
+		if (atLimit && !(existing && started.includes(existing.id))) {
+			throw new TooManyOpenedError();
+		}
+		// Checked again after the reads: a leave or a new hand-out meanwhile stores nothing.
+		const agent = this.#liveAgent(secret);
+		const now = this.join.handedOut();
+		if (now?.thread !== origin.thread || now.asked !== origin.message) {
+			throw new NotHoldingError();
+		}
+		const key = r.key !== undefined ? { key: r.key } : {};
+		const t = existing
+			? await this.store.message(existing.id, {
+					by: "ai",
+					text: r.text,
+					agent,
+					origin,
+					...key,
+				})
+			: await this.store.open({
+					anchor: anchor as AgentAnchor,
+					text: r.text,
+					by: "ai",
+					agent,
+					origin,
+					...key,
+				});
+		return { thread: t.id, created: !existing, cite: citeOf(t.id) };
+	}
+
+	/** The joined (or spawned) session's identity, as its messages carry it. */
+	#liveAgent(secret: string): NonNullable<AgentMessage["agent"]> {
+		const joined = this.join.view().joined;
+		if (!joined || !this.join.check(secret)) throw new SessionTokenError();
+		return this.join.isSpawned()
+			? { name: joined.name, version: joined.harness ?? "", via: "acp" }
+			: {
+					name: joined.name,
+					version: joined.harness ?? "",
+					via: "mcp",
+					machine: joined.machine,
+				};
+	}
+
+	/**
+	 * GitHub thread `id` for `open`: listed, not deleted, open, and GitHub
+	 * readable (else ThreadUnavailableError, as the reviewer's ask fails
+	 * closed); its conversation when it has one.
+	 */
+	async #openThreadTarget(
+		id: string,
+		threads: readonly AgentThreadFold[],
+	): Promise<AgentThreadFold | undefined> {
+		let listed: ReviewThread[];
+		try {
+			listed = await this.github.threads();
+		} catch (error) {
+			throw new ThreadUnavailableError(
+				`GitHub's threads can't be read now (${oneError(error)}): don't open on a thread; mention it in your reply`,
+			);
+		}
+		const rt = liveGithubThreads(listed).get(id);
+		if (!rt) {
+			throw new ThreadUnavailableError(
+				`No GitHub thread ${id} on this PR (unknown or deleted): use an id from review's threads`,
+			);
+		}
+		if (rt.resolved) {
+			throw new ThreadUnavailableError(
+				`GitHub thread ${id} is resolved: the reviewer can't ask there, so neither can you`,
+			);
+		}
+		return threads.find(
+			(t) => t.anchor.subject === "thread" && t.anchor.thread === id,
+		);
+	}
+
+	/**
+	 * A code anchor for `open`, pinned to the head the held question showed
+	 * (its merge base for LEFT lines): the path must be one of the PR's
+	 * files, the lines must exist in that version and the columns within
+	 * their lines.
+	 */
+	async #codeAnchor(c: Extract<OpenTarget, { code: object }>["code"]) {
+		const { facts } = this.#facts();
+		const joined = this.join.view().joined;
+		const seen =
+			joined && this.#seen?.since === joined.since ? this.#seen : null;
+		const review = facts.review();
+		const head = seen?.head ?? review.head.commit;
+		const mergeBase = seen?.mergeBase ?? review.mergeBase;
+		const files = await facts.prFacts().then(
+			(p) => p.files,
+			() => null,
+		);
+		if (!files) {
+			throw new BadAnchorError(
+				"The PR's files can't be read now: mention the code in your reply",
+			);
+		}
+		if (!files.includes(c.path)) {
+			throw new BadAnchorError(
+				`${c.path} isn't one of the PR's changed files: open only on those (review's files)`,
+			);
+		}
+		if (c.line === undefined) {
+			if (
+				c.startLine !== undefined ||
+				c.startCol !== undefined ||
+				c.endCol !== undefined
+			) {
+				throw new BadAnchorError("startLine and columns need line");
+			}
+			return { subject: "file", path: c.path, commit: head } as AgentAnchor;
+		}
+		const side = c.side ?? "RIGHT";
+		const startLine = c.startLine ?? c.line;
+		const bad = (why: string): never => {
+			throw new BadAnchorError(
+				`${why} (${c.path} ${side === "LEFT" ? `at the merge base ${mergeBase}` : `at ${head}`})`,
+			);
+		};
+		if (!Number.isInteger(c.line) || !Number.isInteger(startLine)) {
+			bad("Lines are whole numbers");
+		}
+		if (startLine < 1 || startLine > c.line) {
+			bad(`startLine ${startLine} must be from 1 to line ${c.line}`);
+		}
+		const hasCols = c.startCol !== undefined || c.endCol !== undefined;
+		if (hasCols && (c.startCol === undefined || c.endCol === undefined)) {
+			bad("Give startCol and endCol together");
+		}
+		const file = await facts
+			.anchored({
+				subject: "file",
+				path: c.path,
+				commit: side === "LEFT" ? mergeBase : head,
+			})
+			.catch(() => null);
+		if (!file) {
+			bad(
+				side === "LEFT"
+					? "The file isn't readable on the LEFT side (new, binary or too large)"
+					: "The file isn't readable on the RIGHT side (deleted, binary or too large)",
+			);
+		}
+		const lines = (file as { text: string }).text.split("\n");
+		if (lines.at(-1) === "") lines.pop();
+		if (c.line > lines.length) {
+			bad(`line ${c.line} is past the file's ${lines.length} lines`);
+		}
+		if (hasCols) {
+			const startCol = c.startCol as number;
+			const endCol = c.endCol as number;
+			const first = lines[startLine - 1] ?? "";
+			const last = lines[c.line - 1] ?? "";
+			if (
+				!Number.isInteger(startCol) ||
+				!Number.isInteger(endCol) ||
+				startCol < 0 ||
+				startCol > first.length ||
+				endCol < 0 ||
+				endCol > last.length ||
+				(startLine === c.line && endCol <= startCol)
+			) {
+				bad(
+					`Columns ${startCol}–${endCol} aren't within the lines (UTF-16 offsets; endCol exclusive)`,
+				);
+			}
+		}
+		return {
+			subject: "line",
+			path: c.path,
+			commit: head,
+			side,
+			line: c.line,
+			startSide: side,
+			startLine,
+			...(hasCols ? { startCol: c.startCol, endCol: c.endCol } : {}),
+		} as AgentAnchor;
 	}
 
 	/** Every thread, for a joined session. */

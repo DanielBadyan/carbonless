@@ -310,10 +310,12 @@ export class AgentThreadStore {
 	readonly #opened = new Map<string, string>();
 	/** `<thread> <clientId>` of every human message; seeded from the ref on read. */
 	readonly #messaged = new Set<string>();
-	/** The agent's opening keys → their thread; seeded from the ref on read. */
-	readonly #aiOpened = new Map<string, string>();
-	/** `<thread> <key>` of every keyed ai origin message; seeded from the ref on read. */
-	readonly #aiMessaged = new Set<string>();
+	/**
+	 * `<request message> <key>` of the agent's keyed writes (an opening, or
+	 * an origin message on a thread) → the thread written and whether it was
+	 * opened then; seeded from the ref on read.
+	 */
+	readonly #aiKeys = new Map<string, { thread: string; opened: boolean }>();
 	#writes: Promise<unknown> = Promise.resolve();
 
 	constructor(
@@ -356,8 +358,8 @@ export class AgentThreadStore {
 			const known =
 				input.by === "human"
 					? this.#opened.get(input.clientId)
-					: input.key !== undefined
-						? this.#aiOpened.get(input.key)
+					: input.key !== undefined && input.origin
+						? this.#aiKeys.get(aiKey(input.origin, input.key))?.thread
 						: undefined;
 			if (known !== undefined) return this.#find(events, known);
 			const { text, truncated } = capText(input.text);
@@ -401,14 +403,12 @@ export class AgentThreadStore {
 			) {
 				return current;
 			}
-			if (
-				input.by === "ai" &&
-				input.origin &&
-				input.key !== undefined &&
-				this.#aiMessaged.has(`${thread} ${input.key}`)
-			) {
-				return current;
-			}
+			// A keyed write already made returns what it wrote, wherever that was.
+			const keyed =
+				input.by === "ai" && input.origin && input.key !== undefined
+					? this.#aiKeys.get(aiKey(input.origin, input.key))
+					: undefined;
+			if (keyed) return this.#find(events, keyed.thread);
 			const { text, truncated } = capText(input.text);
 			const event = newEvent(
 				"agent-message",
@@ -513,18 +513,32 @@ export class AgentThreadStore {
 		}
 	}
 
-	/**
-	 * The agent's idempotency keys (`details.key`): an opening's key names its
-	 * thread; a message's is kept per thread id it was written under.
-	 */
+	/** The agent's idempotency keys (`details.key`), scoped by the origin's request message. */
 	#rememberKey(e: CrbEvent): void {
 		const key = e.details?.key;
 		if (typeof key !== "string") return;
-		if (e.type === "agent-thread-opened") {
-			if (!this.#aiOpened.has(key)) this.#aiOpened.set(key, e.thread);
-		} else if (e.type === "agent-message") {
-			this.#aiMessaged.add(`${e.thread} ${key}`);
-		}
+		if (e.type !== "agent-thread-opened" && e.type !== "agent-message") return;
+		if (!e.origin) return;
+		const k = aiKey(e.origin, key);
+		if (this.#aiKeys.has(k)) return;
+		this.#aiKeys.set(k, {
+			thread: e.thread,
+			opened: e.type === "agent-thread-opened",
+		});
+	}
+
+	/**
+	 * The agent's keyed write from request `origin`, if stored: its thread
+	 * (a later opening's id finds the first's) and whether it opened it.
+	 */
+	async keyed(
+		origin: AgentOrigin,
+		key: string,
+	): Promise<{ thread: string; opened: boolean } | undefined> {
+		const events = await this.#events();
+		const k = this.#aiKeys.get(aiKey(origin, key));
+		if (!k) return undefined;
+		return { thread: this.#find(events, k.thread).id, opened: k.opened };
 	}
 
 	#find(events: readonly CrbEvent[], thread: string): AgentThreadFold {
@@ -552,6 +566,8 @@ export class AgentThreadStore {
 		return next;
 	}
 }
+
+const aiKey = (origin: AgentOrigin, key: string) => `${origin.message} ${key}`;
 
 /** Now, or just after the newest stored event when the clock is behind it. */
 function stampAfter(events: readonly CrbEvent[]): number {

@@ -692,6 +692,12 @@ export class AgentRunner {
 		this.#arm(ms);
 	}
 
+	/** Whether the question `thread` handed out is past its time limit (its failure is on its way). */
+	pastLimit(thread: string): boolean {
+		const due = this.#handDue;
+		return due?.thread === thread && this.#now() >= due.at;
+	}
+
 	/** Whether this runner holds the review's agent (its claim): it runs, or is starting, the agent. */
 	holdsAgent(): boolean {
 		return this.#release !== null;

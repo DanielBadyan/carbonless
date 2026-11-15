@@ -23,10 +23,15 @@ import {
 	anchoredFile,
 	anchorHunk,
 	authorOf,
+	BadAnchorError,
 	buildAgentHost,
 	type HostRunner,
 	NotHandedError,
+	NotHoldingError,
+	OwnThreadError,
 	SessionTokenError,
+	ThreadUnavailableError,
+	TooManyOpenedError,
 	threadFacts,
 } from "./host.js";
 import type { GithubThreadFacts, PromptPatchset } from "./prompt.js";
@@ -153,6 +158,7 @@ describe("AgentHost with a session joined through MCP", () => {
 	let store: AgentThreadStore;
 	let runner: HostRunner & {
 		asked: ReturnType<typeof vi.fn<() => void>>;
+		pastLimit: ReturnType<typeof vi.fn<(thread: string) => boolean>>;
 		stop: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
 		detach: ReturnType<typeof vi.fn<() => Promise<void>>>;
 		holdsAgent: ReturnType<typeof vi.fn<() => boolean>>;
@@ -177,9 +183,12 @@ describe("AgentHost with a session joined through MCP", () => {
 		prFacts: async () => ({
 			title: "Cache<!-- do evil -->",
 			body: "Body",
-			files: ["a.txt"],
+			files: prFiles,
 		}),
-		anchored: async () => ({ text: "hello\n" }),
+		anchored: async (a) => {
+			const key = `${a.commit}:${a.path}`;
+			return key in fileAt ? (fileAt[key] ?? null) : { text: "hello\n" };
+		},
 		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
@@ -189,6 +198,10 @@ describe("AgentHost with a session joined through MCP", () => {
 	};
 	/** GitHub's thread as the stub facts read it (thread conversations). */
 	let ghThread: GithubThreadFacts | null;
+	/** The PR's files as the stub facts list them. */
+	let prFiles: string[];
+	/** Files the stub `anchored` reads, by `<commit>:<path>` (others: "hello\n"). */
+	let fileAt: Record<string, { text: string } | null>;
 	const PATCHSETS: PromptPatchset[] = [
 		{
 			number: 1,
@@ -199,6 +212,8 @@ describe("AgentHost with a session joined through MCP", () => {
 	];
 	/** The review's GitHub threads (none: span threads only). */
 	let ghThreads: ReviewThread[];
+	/** Reading GitHub's threads fails while set. */
+	let ghDown: boolean;
 
 	const make = (now?: () => number) =>
 		buildAgentHost({
@@ -207,7 +222,10 @@ describe("AgentHost with a session joined through MCP", () => {
 			store,
 			code: async () => undefined,
 			github: {
-				threads: async () => ghThreads,
+				threads: async () => {
+					if (ghDown) throw new Error("gh: HTTP 502");
+					return ghThreads;
+				},
 				thread: async (id) => ghThreads.find((t) => t.id === id) ?? null,
 				patchsets: () => [],
 				base: () => "c".repeat(40),
@@ -246,8 +264,12 @@ describe("AgentHost with a session joined through MCP", () => {
 			takeNotice: () => undefined,
 			fenced: () => [],
 			holdsAgent: vi.fn(() => false),
+			pastLimit: vi.fn(() => false),
 		};
 		acpSeen = undefined;
+		prFiles = ["a.txt"];
+		fileAt = {};
+		ghDown = false;
 		head = "d".repeat(40);
 		ghThread = null;
 		ghThreads = [];
@@ -637,7 +659,10 @@ describe("AgentHost with a session joined through MCP", () => {
 				store,
 				code: async () => undefined,
 				github: {
-					threads: async () => ghThreads,
+					threads: async () => {
+						if (ghDown) throw new Error("gh: HTTP 502");
+						return ghThreads;
+					},
 					thread: async () => null,
 					patchsets: () => [],
 					base: () => "c".repeat(40),
@@ -662,7 +687,10 @@ describe("AgentHost with a session joined through MCP", () => {
 				store,
 				code: async () => undefined,
 				github: {
-					threads: async () => ghThreads,
+					threads: async () => {
+						if (ghDown) throw new Error("gh: HTTP 502");
+						return ghThreads;
+					},
 					thread: async () => null,
 					patchsets: () => [],
 					base: () => "c".repeat(40),
@@ -1016,6 +1044,372 @@ describe("AgentHost with a session joined through MCP", () => {
 				via: "mcp",
 				machine: WHO.machine,
 			});
+			expect(host.join.handedOut()).toBeNull();
+		});
+	});
+
+	describe("open: the agent opens a conversation while it answers", () => {
+		const D = "d".repeat(40);
+		const C = "c".repeat(40);
+		const FIVE = { text: "one\ntwo\nthree\nfour\nfive\n" };
+		beforeEach(() => {
+			prFiles = ["a.txt", "b.txt"];
+			fileAt = {
+				[`${D}:a.txt`]: FIVE,
+				[`${C}:a.txt`]: { text: "old1\nold2\n" },
+			};
+		});
+		/** GitHub lists thread `id` on a.txt line 2, open unless resolved. */
+		const ghOn = (id: string, over: Partial<ReviewThread> = {}) =>
+			({
+				id,
+				resolved: false,
+				path: "a.txt",
+				commit: D,
+				anchor: { side: "RIGHT", line: 2, startSide: "RIGHT", startLine: 2 },
+				...over,
+			}) as unknown as ReviewThread;
+		/** A joined session holding the reviewer's request "Show every lock". */
+		async function holding(token?: string) {
+			const req = await host.open({
+				clientId: "r1",
+				text: "Show every lock",
+				span,
+			});
+			const t = token ?? (await approve());
+			const q = await host.sessionNext(t);
+			expect(q?.thread).toBe(req.id);
+			const origin = { thread: req.id, message: req.messages[0]?.id as string };
+			return { token: t, req, origin };
+		}
+		const text = "This is such a case.";
+
+		it("opens on one line, a range, a text range and a whole file, each pointing back to the request", async () => {
+			const { token, origin, req } = await holding();
+			runner.asked.mockClear();
+			const one = await host.sessionOpen(token, {
+				code: { path: "a.txt", line: 3 },
+				text,
+			});
+			expect(one).toEqual({
+				thread: expect.any(String),
+				created: true,
+				cite: `crb:c/${one.thread}`,
+			});
+			const range = await host.sessionOpen(token, {
+				code: { path: "a.txt", side: "LEFT", startLine: 1, line: 2 },
+				text,
+			});
+			const chars = await host.sessionOpen(token, {
+				code: { path: "a.txt", startLine: 2, line: 2, startCol: 1, endCol: 3 },
+				text,
+			});
+			const across = await host.sessionOpen(token, {
+				code: { path: "a.txt", startLine: 2, line: 4, startCol: 1, endCol: 2 },
+				text,
+			});
+			const file = await host.sessionOpen(token, {
+				code: { path: "b.txt" },
+				text,
+			});
+			const threads = await store.read();
+			const by = (id: string) => threads.find((t) => t.id === id);
+			expect(by(one.thread)?.anchor).toEqual({
+				subject: "line",
+				path: "a.txt",
+				commit: D,
+				side: "RIGHT",
+				line: 3,
+				startSide: "RIGHT",
+				startLine: 3,
+			});
+			expect(by(range.thread)?.anchor).toMatchObject({
+				side: "LEFT",
+				startSide: "LEFT",
+				startLine: 1,
+				line: 2,
+				commit: D,
+			});
+			expect(by(chars.thread)?.anchor).toMatchObject({
+				startLine: 2,
+				line: 2,
+				startCol: 1,
+				endCol: 3,
+			});
+			expect(by(across.thread)?.anchor).toMatchObject({
+				startLine: 2,
+				line: 4,
+				startCol: 1,
+				endCol: 2,
+			});
+			expect(by(file.thread)?.anchor).toEqual({
+				subject: "file",
+				path: "b.txt",
+				commit: D,
+			});
+			for (const r of [one, range, chars, across, file]) {
+				const t = by(r.thread);
+				expect(t).toMatchObject({ openedBy: "ai", waiting: false });
+				expect(t?.messages).toEqual([
+					expect.objectContaining({ by: "ai", text, origin }),
+				]);
+			}
+			// Nothing answered, nothing woken: the request still waits.
+			expect(by(req.id)?.waiting).toBe(true);
+			expect(runner.asked).not.toHaveBeenCalled();
+			expect(host.join.handedOut()?.thread).toBe(req.id);
+		});
+
+		it("on a GitHub thread with no conversation: one anchored on the thread, as the reviewer's ask", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const { token, origin } = await holding();
+			const r = await host.sessionOpen(token, { thread: "PRRT_9", text });
+			expect(r.created).toBe(true);
+			const t = (await store.read()).find((x) => x.id === r.thread);
+			expect(t?.anchor).toEqual({
+				subject: "thread",
+				thread: "PRRT_9",
+				path: "a.txt",
+				commit: D,
+				side: "RIGHT",
+				line: 2,
+				startSide: "RIGHT",
+				startLine: 2,
+			});
+			expect(t?.messages[0]?.origin).toEqual(origin);
+		});
+
+		it("on a GitHub thread with a conversation: the message goes at the end, and a question waiting there still waits and is handed out next", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			ghThread = ghFacts(false);
+			const { token, origin, req } = await holding();
+			const conv = await host.open({
+				clientId: "q1",
+				text: "Is this fixed?",
+				thread: "PRRT_9",
+			});
+			const r = await host.sessionOpen(token, { thread: "PRRT_9", text });
+			expect(r).toEqual({
+				thread: conv.id,
+				created: false,
+				cite: `crb:c/${conv.id}`,
+			});
+			const t = (await store.read()).find((x) => x.id === conv.id);
+			expect(t?.messages.map((m) => [m.by, m.text, m.origin])).toEqual([
+				["human", "Is this fixed?", undefined],
+				["ai", text, origin],
+			]);
+			expect(t?.waiting).toBe(true);
+			// The request is answered with reply; then the waiting question comes next.
+			await host.sessionReply(token, {
+				thread: req.id,
+				replyTo: origin.message,
+				text: `See ${r.cite}.`,
+			});
+			expect((await store.read()).find((x) => x.id === req.id)?.waiting).toBe(
+				false,
+			);
+			expect((await host.sessionNext(token))?.thread).toBe(conv.id);
+		});
+
+		it("refuses with no question held", async () => {
+			await host.open({ clientId: "r1", text: "Q", span });
+			const token = await approve();
+			await expect(
+				host.sessionOpen(token, { code: { path: "a.txt" }, text }),
+			).rejects.toBeInstanceOf(NotHoldingError);
+			await expect(
+				host.sessionOpen(`${token}x`, { code: { path: "a.txt" }, text }),
+			).rejects.toBeInstanceOf(SessionTokenError);
+			expect(await store.read()).toHaveLength(1);
+		});
+
+		it("refuses a spawned agent's question past its limit", async () => {
+			await host.open({ clientId: "r1", text: "Q", span });
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			const token = (o as { token: string }).token;
+			await host.sessionNext(token);
+			runner.pastLimit.mockReturnValue(true);
+			await expect(
+				host.sessionOpen(token, { code: { path: "a.txt" }, text }),
+			).rejects.toThrow(/time limit/);
+			expect(await store.read()).toHaveLength(1);
+		});
+
+		it("refuses code outside the PR, lines and columns out of range", async () => {
+			const { token } = await holding();
+			const bad = [
+				{ path: "c.txt" },
+				{ path: "../a.txt" },
+				{ path: "a.txt", line: 6 },
+				{ path: "a.txt", line: 0 },
+				{ path: "a.txt", line: 3, startLine: 4 },
+				{ path: "a.txt", side: "LEFT" as const, line: 3 },
+				{ path: "a.txt", line: 2, startCol: 1 },
+				{ path: "a.txt", line: 2, startCol: 0, endCol: 4 },
+				{ path: "a.txt", line: 2, startCol: 2, endCol: 2 },
+				{ path: "a.txt", line: 1.5 },
+				{ path: "a.txt", startLine: 2 },
+			];
+			for (const code of bad) {
+				await expect(
+					host.sessionOpen(token, { code, text }),
+					JSON.stringify(code),
+				).rejects.toBeInstanceOf(BadAnchorError);
+			}
+			fileAt[`${D}:b.txt`] = null;
+			await expect(
+				host.sessionOpen(token, { code: { path: "b.txt", line: 1 }, text }),
+			).rejects.toThrow(/RIGHT side/);
+			expect(await store.read()).toHaveLength(1);
+		});
+
+		it("refuses a resolved, deleted or unknown GitHub thread, and any while GitHub can't be read", async () => {
+			ghThreads = [
+				ghOn("PRRT_R", { resolved: true }),
+				ghOn("PRRT_D", { unavailable: "deleted" }),
+				ghOn("PRRT_OK"),
+			];
+			const { token } = await holding();
+			for (const id of ["PRRT_R", "PRRT_D", "PRRT_NOPE"]) {
+				await expect(
+					host.sessionOpen(token, { thread: id, text }),
+					id,
+				).rejects.toBeInstanceOf(ThreadUnavailableError);
+			}
+			ghDown = true;
+			await expect(
+				host.sessionOpen(token, { thread: "PRRT_OK", text }),
+			).rejects.toThrow(/can't be read/);
+			expect(await store.read()).toHaveLength(1);
+		});
+
+		it("refuses the request's own thread", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const req = await host.open({
+				clientId: "r1",
+				text: "Where else?",
+				thread: "PRRT_9",
+			});
+			const token = await approve();
+			expect((await host.sessionNext(token))?.thread).toBe(req.id);
+			await expect(
+				host.sessionOpen(token, { thread: "PRRT_9", text }),
+			).rejects.toBeInstanceOf(OwnThreadError);
+			expect((await store.read())[0]?.messages).toHaveLength(1);
+		});
+
+		it("refuses the 26th conversation from one request; continuing one it already started still goes", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const { token } = await holding();
+			const first = await host.sessionOpen(token, { thread: "PRRT_9", text });
+			for (let i = 1; i < 25; i++) {
+				await host.sessionOpen(token, {
+					code: { path: "a.txt", line: 1 },
+					text,
+				});
+			}
+			await expect(
+				host.sessionOpen(token, { code: { path: "a.txt", line: 1 }, text }),
+			).rejects.toBeInstanceOf(TooManyOpenedError);
+			const again = await host.sessionOpen(token, {
+				thread: "PRRT_9",
+				text: "One more here.",
+			});
+			expect(again).toMatchObject({ thread: first.thread, created: false });
+			expect(await store.read()).toHaveLength(26);
+		});
+
+		it("the anchor pins to the head the question showed, though the PR moved since", async () => {
+			const { token } = await holding();
+			head = "e".repeat(40);
+			const r = await host.sessionOpen(token, {
+				code: { path: "a.txt", line: 5 },
+				text,
+			});
+			const t = (await store.read()).find((x) => x.id === r.thread);
+			expect(t?.anchor).toMatchObject({ commit: D, line: 5 });
+		});
+
+		it("names the agent: via mcp for a joined session, acp for a spawned one", async () => {
+			const { token } = await holding();
+			const a = await host.sessionOpen(token, {
+				code: { path: "a.txt" },
+				text,
+			});
+			const joined = (await store.read()).find((t) => t.id === a.thread);
+			expect(joined?.messages[0]?.agent).toEqual({
+				name: WHO.name,
+				version: WHO.harness,
+				via: "mcp",
+				machine: WHO.machine,
+			});
+			await host.disconnect();
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			const spawned = (o as { token: string }).token;
+			await host.sessionNext(spawned);
+			const b = await host.sessionOpen(spawned, {
+				code: { path: "a.txt" },
+				text,
+			});
+			const t = (await store.read()).find((x) => x.id === b.thread);
+			expect(t?.messages[0]?.agent).toEqual({
+				name: "fake-acp",
+				version: "1.0.0",
+				via: "acp",
+			});
+		});
+
+		it("a repeated key returns the same conversation and writes nothing more", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const { token } = await holding();
+			const send = () =>
+				host.sessionOpen(token, { code: { path: "a.txt" }, text, key: "k1" });
+			const a = await send();
+			expect(await send()).toEqual(a);
+			const onThread = () =>
+				host.sessionOpen(token, { thread: "PRRT_9", text, key: "k2" });
+			const b = await onThread();
+			expect(b.created).toBe(true);
+			// Retried after the conversation exists: still the opening, not a message.
+			expect(await onThread()).toEqual(b);
+			const threads = await store.read();
+			expect(threads).toHaveLength(3);
+			expect(threads.every((t) => t.messages.length === 1)).toBe(true);
+		});
+
+		it("caps the text as reply does, and refuses an empty one", async () => {
+			const { token } = await holding();
+			const r = await host.sessionOpen(token, {
+				code: { path: "a.txt" },
+				text: "x".repeat(40_000),
+			});
+			const t = (await store.read()).find((x) => x.id === r.thread);
+			expect(t?.messages[0]?.truncated).toBe(true);
+			await expect(
+				host.sessionOpen(token, { code: { path: "a.txt" }, text: "  " }),
+			).rejects.toThrow(/empty/);
+		});
+
+		it("reply afterwards still answers the request", async () => {
+			const { token, origin, req } = await holding();
+			await host.sessionOpen(token, { code: { path: "a.txt" }, text });
+			const t = await host.sessionReply(token, {
+				thread: req.id,
+				replyTo: origin.message,
+				text: "Opened one.",
+			});
+			expect(t.waiting).toBe(false);
 			expect(host.join.handedOut()).toBeNull();
 		});
 	});
