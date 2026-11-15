@@ -237,7 +237,6 @@ describe("AgentHost with a session joined through MCP", () => {
 				thread: async (id) => {
 					const hook = onThread;
 					onThread = undefined;
-					ghComments = undefined;
 					if (hook) return hook(id);
 					return ghThreads.find((t) => t.id === id) ?? null;
 				},
@@ -289,6 +288,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		fileAt = {};
 		ghDown = false;
 		onThread = undefined;
+		ghComments = undefined;
 		head = "d".repeat(40);
 		ghThread = null;
 		ghThreads = [];
@@ -1240,6 +1240,24 @@ describe("AgentHost with a session joined through MCP", () => {
 			await expect(
 				host.sessionOpen(`${token}x`, { code: { path: "a.txt" }, text }),
 			).rejects.toBeInstanceOf(SessionTokenError);
+			expect(await store.read()).toHaveLength(1);
+		});
+
+		it("refuses an open that waited behind others past the spawned agent's limit", async () => {
+			await host.open({ clientId: "r1", text: "Q", span });
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			const token = (o as { token: string }).token;
+			await host.sessionNext(token);
+			// In time when it is called, past the limit once its turn comes.
+			runner.pastLimit.mockReturnValueOnce(false).mockReturnValue(true);
+			await expect(
+				host.sessionOpen(token, { code: { path: "a.txt" }, text }),
+			).rejects.toThrow(/time limit/);
 			expect(await store.read()).toHaveLength(1);
 		});
 

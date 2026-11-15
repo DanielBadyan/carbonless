@@ -1026,6 +1026,12 @@ export class AgentHost {
 		if (now?.thread !== origin.thread || now.asked !== origin.message) {
 			throw new NotHoldingError();
 		}
+		// It may have waited behind other opens (#opens) past the limit.
+		if (this.join.isSpawned() && this.runner.pastLimit(origin.thread)) {
+			throw new NotHoldingError(
+				"The question you hold is past its time limit: open nothing more for it",
+			);
+		}
 		const key = r.key !== undefined ? { key: r.key } : {};
 		const t = existing
 			? await this.store.message(existing.id, {
