@@ -10,9 +10,10 @@ import {
 	type AgentThread,
 	startedBy,
 } from "../../shared/agent";
+import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import {
-	conversationSearch,
+	linkState,
 	useLinkFacts,
 	useOpenConversation,
 } from "./conversationLinks";
@@ -40,16 +41,17 @@ export function ReRow(props: {
 	const boxId = useId();
 	const listId = useId();
 	const open = useOpenConversation();
-	const { files, patchsets } = useLinkFacts();
+	const facts = useLinkFacts();
 	const request = threads.find((t) => t.id === origin.thread);
 	const message = request?.messages.find((m) => m.id === origin.message);
 	if (!request || !message) return null;
 	const started = (startedBy(threads).get(message.id) ?? [])
 		.map((id) => threads.find((t) => t.id === id))
 		.filter((t): t is AgentThread => t !== undefined);
-	const reachable =
-		conversationSearch(request, files, patchsets, message.id) !== null;
-	const goTip = reachable ? "Go to your request" : "Not in this review's files";
+	const go = linkState(request, facts, message.id).state;
+	const reachable = go === "ready";
+	const goTip =
+		go === "none" ? "Not in this review's files" : "Go to your request";
 	return (
 		<div data-testid="agent-re" className="min-w-0 space-y-1">
 			<div className="flex min-w-0 items-center gap-1">
@@ -93,12 +95,18 @@ export function ReRow(props: {
 							data-testid="agent-re-go"
 							aria-label={goTip}
 							aria-disabled={!reachable || undefined}
+							aria-busy={go === "loading" || undefined}
 							onClick={() => {
 								if (reachable) open(request, message.id);
 							}}
-							className={`${ICON_BUTTON} ${reachable ? "" : "cursor-not-allowed text-faint"}`}
+							className={`${ICON_BUTTON} ${go === "none" ? "cursor-not-allowed text-faint" : ""}`}
 						>
-							<ReplyIcon size={16} aria-hidden />
+							{/* Its place is still being read: the icon spins, never "not in the files". */}
+							{go === "loading" ? (
+								<SpinnerIcon size={16} />
+							) : (
+								<ReplyIcon size={16} aria-hidden />
+							)}
 						</button>
 					)}
 				</Tooltip>

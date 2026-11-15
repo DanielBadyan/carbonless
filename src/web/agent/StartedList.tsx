@@ -1,8 +1,9 @@
 import type { AgentThread } from "../../shared/agent";
+import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import {
 	conversationLabel,
-	conversationSearch,
+	linkState,
 	useGithubAuthors,
 	useLinkFacts,
 	useOpenConversation,
@@ -27,7 +28,7 @@ export function StartedList(props: {
 }) {
 	const open = useOpenConversation();
 	const authorOf = useGithubAuthors();
-	const { files, patchsets } = useLinkFacts();
+	const facts = useLinkFacts();
 	return (
 		<ul
 			id={props.id}
@@ -41,7 +42,8 @@ export function StartedList(props: {
 						(m) => m.by === "ai" && m.origin?.message === props.request,
 					)?.text ?? "";
 				const current = t.id === props.current;
-				const placeable = conversationSearch(t, files, patchsets) !== null;
+				const link = linkState(t, facts).state;
+				const placeable = link === "ready";
 				const label = conversationLabel(t, authorOf);
 				const row = (
 					<button
@@ -50,6 +52,7 @@ export function StartedList(props: {
 						data-thread={t.id}
 						aria-current={current || undefined}
 						disabled={!placeable}
+						aria-busy={link === "loading" || undefined}
 						onClick={() => open(t)}
 						className={`flex min-h-10 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint ${
 							current ? "bg-overlay font-semibold" : ""
@@ -65,7 +68,9 @@ export function StartedList(props: {
 								/>
 							)}
 						</span>
-						<span className="max-w-[45%] shrink-0 truncate font-mono text-xs text-link">
+						<span className="flex max-w-[45%] shrink-0 items-center gap-1 truncate font-mono text-xs text-link">
+							{/* Its place is still being read: a spinner, never "not in the files". */}
+							{link === "loading" && <SpinnerIcon size={12} />}
 							{label}
 						</span>
 						<span className="min-w-0 flex-1 truncate text-ink-soft">
@@ -75,7 +80,7 @@ export function StartedList(props: {
 				);
 				return (
 					<li key={t.id} className="min-w-0">
-						{placeable ? (
+						{link !== "none" ? (
 							row
 						) : (
 							<Tooltip content="Not in this review's files" describe={false}>

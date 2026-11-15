@@ -24,8 +24,8 @@ import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
 import {
 	type ConversationTarget,
 	conversationLabel,
-	conversationSearch,
 	linkCitations,
+	linkState,
 	useGithubAuthors,
 } from "./conversationLinks";
 
@@ -181,36 +181,57 @@ function useCitationLinks(
 			.map((m) => (m.params as { id?: string }).id)
 			.find((x) => x);
 		if (!id) return;
-		const files = new Set(review?.files.map((f) => f.path) ?? []);
-		const patchsets = session?.patchsets ?? [];
+		const facts = {
+			files: new Set(review?.files.map((f) => f.path) ?? []),
+			patchsets: session?.patchsets ?? [],
+			ready: review !== undefined,
+		};
 		const byId = new Map(threads.map((t) => [t.id, t]));
 		const doc = el.ownerDocument;
 		for (const prose of el.querySelectorAll<HTMLElement>(".markdown-body")) {
+			// What an earlier run made goes back to its token, so this run
+			// labels and links it with what the page knows now (the review's
+			// files, the threads' authors may have come in since).
+			for (const made of prose.querySelectorAll<HTMLElement>("[data-cite]")) {
+				made.replaceWith(doc.createTextNode(`crb:c/${made.dataset.cite}`));
+			}
+			prose.normalize();
 			linkCitations(prose, (threadId) => {
 				const thread = byId.get(threadId);
 				if (!thread) return null;
 				const label = conversationLabel(thread, authorOf);
-				const target = conversationSearch(thread, files, patchsets);
-				if (!target) {
+				const link = linkState(thread, facts);
+				if (link.state !== "ready") {
 					const span = doc.createElement("span");
 					span.dataset.testid = "agent-conversation-link";
+					span.dataset.cite = threadId;
+					span.dataset.state = link.state;
 					span.setAttribute("aria-disabled", "true");
-					span.title = "Not in this review's files";
-					span.className = "text-faint";
+					if (link.state === "loading") {
+						// Its place is still being read: never "not in the files".
+						span.setAttribute("aria-busy", "true");
+						span.className =
+							"animate-pulse text-muted motion-reduce:animate-none";
+					} else {
+						span.title = "Not in this review's files";
+						span.className = "text-faint";
+					}
 					span.textContent = label;
 					return span;
 				}
-				const link = doc.createElement("a");
-				link.dataset.testid = "agent-conversation-link";
-				link.className = LINK_CLASS;
-				link.textContent = label;
-				link.href = router.buildLocation({
+				const { target } = link;
+				const a = doc.createElement("a");
+				a.dataset.testid = "agent-conversation-link";
+				a.dataset.cite = threadId;
+				a.className = LINK_CLASS;
+				a.textContent = label;
+				a.href = router.buildLocation({
 					to: target.to,
 					params: { id },
 					search: target.search,
 				} as never).href;
-				link.dataset.target = JSON.stringify(target);
-				return link;
+				a.dataset.target = JSON.stringify(target);
+				return a;
 			});
 		}
 		const onClick = (e: MouseEvent) => {

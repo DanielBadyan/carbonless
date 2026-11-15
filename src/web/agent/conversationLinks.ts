@@ -175,16 +175,46 @@ export function resetConversationLanding(): void {
 // --- In the page ---------------------------------------------------------------
 
 /** The review's files and patch sets, as a link to a conversation needs them. */
-export function useLinkFacts(): {
+export interface LinkFacts {
 	files: ReadonlySet<string>;
 	patchsets: readonly { number: number; head: string }[];
-} {
+	/** The review's files are in: until then a code conversation's place is unknown, not "none". */
+	ready: boolean;
+}
+
+export function useLinkFacts(): LinkFacts {
 	const review = useQuery({ ...reviewQuery(), enabled: false }).data;
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
 	return {
 		files: new Set(review?.files.map((f) => f.path) ?? []),
 		patchsets: session?.patchsets ?? [],
+		ready: review !== undefined,
 	};
+}
+
+/**
+ * A link's target as the page knows it now: `loading` while a code
+ * conversation waits for the review's files (never "not in this review's
+ * files" before they are in), `none` once they are in and it isn't there.
+ */
+export type LinkState =
+	| { state: "ready"; target: ConversationTarget }
+	| { state: "loading" }
+	| { state: "none" };
+
+export function linkState(
+	thread: AgentThread,
+	facts: LinkFacts,
+	message?: string,
+): LinkState {
+	const target = conversationSearch(
+		thread,
+		facts.files,
+		facts.patchsets,
+		message,
+	);
+	if (target) return { state: "ready", target };
+	return facts.ready ? { state: "none" } : { state: "loading" };
 }
 
 /** The GitHub threads' first authors, from the threads the page has read. */

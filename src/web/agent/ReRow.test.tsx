@@ -129,15 +129,19 @@ const status: AgentStatus = {
 	waiting: 0,
 };
 
+/** The review's files, as `/review` gives them. */
+const setReview = (client: QueryClient) =>
+	client.setQueryData(reviewQuery().queryKey, {
+		files: [{ path: "a.txt" }],
+	} as unknown as ReviewView);
+
 /** `ui` in a router on /r/RV1 (Overview and Files changed routes), with the review's queries filled. */
-function show(ui: ReactNode, list = threads()) {
+function show(ui: ReactNode, list = threads(), opts = { review: true }) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, enabled: false } },
 	});
 	client.setQueryData(agentThreadsQuery.queryKey, { threads: list });
-	client.setQueryData(reviewQuery().queryKey, {
-		files: [{ path: "a.txt" }],
-	} as unknown as ReviewView);
+	if (opts.review) setReview(client);
 	client.setQueryData(sessionQuery.queryKey, {
 		viewer: "dan",
 		patchsets: [{ number: 3, head: H3 }],
@@ -173,7 +177,7 @@ function show(ui: ReactNode, list = threads()) {
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
-	return router;
+	return Object.assign(router, { client });
 }
 
 beforeEach(() => {
@@ -418,6 +422,71 @@ describe("citations in an agent's answer", () => {
 				path: "a.txt",
 				conversation: A,
 			}),
+		);
+	});
+});
+
+describe("while the review's files load (CAR-80 fix 2)", () => {
+	it("a citation is busy, never 'not in this review's files', and becomes a link once they are in", async () => {
+		const router = show(
+			<AgentMarkdown text={`See crb:c/${A} and crb:c/${B}.`} />,
+			threads(),
+			{ review: false },
+		);
+		const links = await screen.findAllByTestId("agent-conversation-link");
+		// The GitHub thread's needs no files: linked at once.
+		expect(links.map((l) => l.tagName)).toEqual(["SPAN", "A"]);
+		expect(links[0]?.getAttribute("aria-busy")).toBe("true");
+		expect(links[0]?.dataset.state).toBe("loading");
+		expect(document.body.innerHTML).not.toContain("Not in this review");
+		act(() => setReview(router.client));
+		await waitFor(() =>
+			expect(
+				screen
+					.getAllByTestId("agent-conversation-link")
+					.map((l) => [l.tagName, l.textContent]),
+			).toEqual([
+				["A", "a.txt:10–12"],
+				["A", "Thread · a.txt"],
+			]),
+		);
+		expect(
+			screen.getAllByTestId("agent-conversation-link")[0]?.getAttribute("href"),
+		).toContain("/r/RV1/files?");
+	});
+
+	it("Go to your request and the list spin, never 'not in this review's files', then work", async () => {
+		const user = userEvent.setup();
+		const router = show(
+			<ReRow origin={origin} current={A} threads={threads()} />,
+			threads(),
+			{ review: false },
+		);
+		const go = await screen.findByTestId("agent-re-go");
+		expect(go.getAttribute("aria-busy")).toBe("true");
+		expect(go.getAttribute("aria-label")).toBe("Go to your request");
+		await user.click(screen.getByTestId("agent-re-list"));
+		const rows = screen.getAllByTestId("agent-started-item");
+		expect(rows.map((r) => r.getAttribute("aria-busy"))).toEqual([
+			"true",
+			null,
+			"true",
+		]);
+		expect(document.body.innerHTML).not.toContain("Not in this review");
+		act(() => setReview(router.client));
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("agent-re-go").getAttribute("aria-busy"),
+			).toBeNull(),
+		);
+		// Now known: gone.txt isn't in the files.
+		expect(
+			(screen.getAllByTestId("agent-started-item")[2] as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+		await user.click(screen.getByTestId("agent-re-go"));
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe("/r/RV1/files"),
 		);
 	});
 });
