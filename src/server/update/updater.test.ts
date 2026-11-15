@@ -479,6 +479,7 @@ describe("Updater", () => {
 				"--config.minimumReleaseAgeExclude=carbonless-review",
 			],
 			env: { PNPM_HOME: home, Path: `${home};C:\\node;C:\\bin` },
+			cwd: home,
 		});
 		expect(helpers[0]?.relaunch).toMatchObject({
 			execPath: "C:\\node\\node.exe",

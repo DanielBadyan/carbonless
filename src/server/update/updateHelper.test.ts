@@ -293,6 +293,19 @@ describe("update helper", () => {
 		}
 	});
 
+	it("runs in the command's cwd (pnpm's home: no project's packageManager picks another pnpm)", async () => {
+		const { code, output } = await runCommand(
+			{
+				command: process.execPath,
+				args: ["-e", "console.log('cwd: ' + process.cwd())"],
+				cwd: dir,
+			},
+			() => {},
+		);
+		expect(code).toBe(0);
+		expect(output).toContain(`cwd: ${realpathSync(dir)}`);
+	});
+
 	it("a service's install that hangs is killed after its timeout", async () => {
 		const { code, output } = await runCommand(
 			{

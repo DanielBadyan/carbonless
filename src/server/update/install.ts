@@ -76,6 +76,10 @@ export interface DetectOptions {
 	 * `<entry>/node_modules/carbonless-review`; default: read from disk).
 	 */
 	globalLinks?: (globalDir: string) => string[];
+	/** How crb was started: `process.argv[1]`, unresolved (pnpm's shim path). */
+	argv1?: string;
+	/** For `$PNPM_HOME`. */
+	env?: NodeJS.ProcessEnv;
 }
 
 /** The real paths of the crb packages `globalDir`'s entries link to. */
@@ -124,15 +128,25 @@ export function canWrite(dir: string): boolean {
 /**
  * The package manager that installed the package at `root` (a real path:
  * symlinks resolved) globally, read from where it lies; null when it is
- * neither a global npm nor a global pnpm install (yarn, bun, volta, a
- * project's node_modules, npx's cache...): the toast then shows the command.
- * - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
- *   in `<prefix>/bin` (Windows: `<prefix>\node_modules\carbonless-review`
+ * neither a global npm nor a global pnpm install (yarn, bun, Volta, a
+ * project's node_modules, npx's or pnpm dlx's cache...): the toast then
+ * shows the command. Layouts (docs/releasing.md, "Who installs it"):
+ * - npm 9-12: `<prefix>/lib/node_modules/carbonless-review` with the `crb`
+ *   shim in `<prefix>/bin` (Windows: `<prefix>\node_modules\carbonless-review`
  *   and `<prefix>\crb.cmd`).
- * - pnpm: `<PNPM_HOME>/global/<v>/.../node_modules/.pnpm/.../carbonless-review`,
- *   or, with pnpm's global virtual store (pnpm 12 on Windows, any OS with it on),
- *   `<PNPM_HOME>/store/<v>/links/.../node_modules/carbonless-review` when an
- *   entry of `<PNPM_HOME>/global/<v>` links to it.
+ * - pnpm 8-10: `<PNPM_HOME>/global/5/.pnpm/.../node_modules/carbonless-review`
+ *   (10 with the global virtual store: `.pnpm/@/carbonless-review/<v>/<h>/...`);
+ *   pnpm 11+ with the global virtual store off:
+ *   `<PNPM_HOME>/global/v11/<dir>/node_modules/.pnpm/...`.
+ * - pnpm 11+ by default (the global virtual store):
+ *   `<storeDir>/v11/links/@/carbonless-review/<v>/<h>/node_modules/carbonless-review`,
+ *   when an entry of `<PNPM_HOME>/global/v11` links to it: a project's
+ *   dependency can lie at the very same path. PNPM_HOME is read from how
+ *   crb was started (pnpm's shim runs `<PNPM_HOME>/global/v11/<dir>/
+ *   node_modules/carbonless-review/...`), else `$PNPM_HOME`, else the dir
+ *   above the store's (its default place).
+ * Volta's packages (`<VOLTA_HOME>/tools/image/packages/carbonless-review`)
+ * are Volta's to update: an npm there would go behind its back.
  */
 export function detectInstall(
 	root: string,
@@ -142,57 +156,115 @@ export function detectInstall(
 	const p = platform === "win32" ? path.win32 : path.posix;
 	const exists = opts.exists ?? existsSync;
 	const writable = opts.writable ?? canWrite;
-	const parts = root.split(/[\\/]+/);
-	if (parts.at(-1) !== PACKAGE || parts.at(-2) !== "node_modules") return null;
+	const split = (file: string) => file.split(/[\\/]+/);
+	const parts = split(root);
+	const n = parts.length;
+	if (parts[n - 1] !== PACKAGE || parts[n - 2] !== "node_modules") return null;
 	const join = (segments: string[]) => segments.join(p.sep) || p.sep;
-	// pnpm's global virtual store (pnpm 12, and earlier with it on): the
-	// package lies in `<PNPM_HOME>/store/<vN>/links/...`, linked from an
-	// entry of `<PNPM_HOME>/global/<vN>`. A project's dependency can lie in
-	// the same store: only a package the global dir links to counts.
-	const linksAt = parts.lastIndexOf("links");
+	const isVersionDir = (s: string | undefined) => !!s && /^v?\d+$/.test(s);
+	// Volta's own, npx's cache, pnpm dlx's cache.
+	for (let i = 0; i + 3 < n; i++) {
+		if (
+			parts[i] === "tools" &&
+			parts[i + 1] === "image" &&
+			parts[i + 2] === "packages" &&
+			parts[i + 3] === PACKAGE
+		) {
+			return null;
+		}
+	}
+	if (parts.includes("_npx")) return null;
+	const dlxAt = parts.indexOf("dlx");
+	if (dlxAt > 0 && parts[dlxAt - 1] === "pnpm") return null;
+
+	const pnpm = (home: string, globalDir: string, dirs: string[]): Install => ({
+		pm: "pnpm",
+		root,
+		home,
+		writable: dirs.every(writable),
+		// pnpm 10-: one node_modules; 11+: a dir per install, each linking
+		// to the version it holds.
+		packages: [p.join(globalDir, "node_modules", PACKAGE)],
+		scan: [globalDir],
+	});
+
+	// pnpm 11+'s global virtual store.
 	if (
-		linksAt >= 2 &&
-		parts[linksAt - 2] === "store" &&
-		/^v?\d+$/.test(parts[linksAt - 1] ?? "")
+		parts[n - 7] === "links" &&
+		parts[n - 6]?.startsWith("@") &&
+		parts[n - 5] === PACKAGE &&
+		/^v\d+$/.test(parts[n - 8] ?? "")
 	) {
-		const home = join(parts.slice(0, linksAt - 2));
-		const globalDir = p.join(home, "global", parts[linksAt - 1] as string);
-		const links = (opts.globalLinks ?? readGlobalLinks)(globalDir);
+		const storeVersion = parts[n - 8] as string;
+		const storeDir = join(parts.slice(0, n - 7));
+		const homes: { home: string; version: string }[] = [];
+		const argv = split(opts.argv1 ?? process.argv[1] ?? "");
+		for (let i = argv.length - 5; i >= 1; i--) {
+			if (
+				argv[i] === "global" &&
+				isVersionDir(argv[i + 1]) &&
+				argv[i + 3] === "node_modules" &&
+				argv[i + 4] === PACKAGE
+			) {
+				homes.push({
+					home: join(argv.slice(0, i)),
+					version: argv[i + 1] as string,
+				});
+				break;
+			}
+		}
+		const env = opts.env ?? process.env;
+		if (env.PNPM_HOME) {
+			homes.push({ home: p.normalize(env.PNPM_HOME), version: storeVersion });
+		}
+		if (parts[n - 9] === "store") {
+			homes.push({ home: join(parts.slice(0, n - 9)), version: storeVersion });
+		}
 		const same = (a: string) =>
 			platform === "win32"
 				? a.toLowerCase() === root.toLowerCase()
 				: a === root;
-		if (!links.some(same)) return null;
-		return {
-			pm: "pnpm",
-			root,
-			home,
-			writable: writable(globalDir),
-			packages: [p.join(globalDir, "node_modules", PACKAGE)],
-			scan: [globalDir],
-		};
+		for (const { home, version } of homes) {
+			const globalDir = p.join(home, "global", version);
+			if (!(opts.globalLinks ?? readGlobalLinks)(globalDir).some(same)) {
+				continue;
+			}
+			// A new dir per install, the store's files and links, the shim.
+			return pnpm(home, globalDir, [globalDir, storeDir, p.join(home, "bin")]);
+		}
+		return null;
 	}
+
+	// pnpm's `.pnpm` layouts, `.pnpm` exactly where a global install puts
+	// it (a project under some `global/2` is not one).
 	const pnpmAt = parts.lastIndexOf(".pnpm");
 	if (pnpmAt >= 0) {
-		const globalAt = parts.lastIndexOf("global", pnpmAt);
-		const store = parts[globalAt + 1];
-		if (globalAt < 0 || !store || !/^v?\d+$/.test(store)) return null;
+		const tail = n - 1 - pnpmAt;
+		const shaped = tail === 3 || (tail === 6 && parts[pnpmAt + 1] === "@");
+		// pnpm 8-10 name their global dir `5`, pnpm 11+ `v11`.
+		const at = (i: number, version: RegExp) =>
+			i >= 1 && parts[i] === "global" && version.test(parts[i + 1] ?? "")
+				? i
+				: undefined;
+		const nm = parts[pnpmAt - 1] === "node_modules";
+		const globalAt =
+			// pnpm 8-10: global/5/.pnpm
+			at(pnpmAt - 2, /^\d+$/) ??
+			// global/5/node_modules/.pnpm
+			(nm ? at(pnpmAt - 3, /^\d+$/) : undefined) ??
+			// pnpm 11+, its global virtual store off:
+			// global/v11/<dir>/node_modules/.pnpm
+			(nm ? at(pnpmAt - 4, /^v\d+$/) : undefined);
+		if (!shaped || globalAt === undefined) return null;
 		const home = join(parts.slice(0, globalAt));
-		const globalDir = p.join(home, "global", store);
-		return {
-			pm: "pnpm",
-			root,
-			home,
-			writable: writable(globalDir),
-			// pnpm 10-: one node_modules; 11+: a dir per install.
-			packages: [p.join(globalDir, "node_modules", PACKAGE)],
-			scan: [globalDir],
-		};
+		const globalDir = p.join(home, "global", parts[globalAt + 1] as string);
+		return pnpm(home, globalDir, [globalDir]);
 	}
+
 	// One node_modules only: a dependency of a project isn't a global install.
-	if (parts.indexOf("node_modules") !== parts.length - 2) return null;
+	if (parts.indexOf("node_modules") !== n - 2) return null;
 	const prefixParts = parts.slice(0, platform === "win32" ? -2 : -3);
-	if (platform !== "win32" && parts.at(-3) !== "lib") return null;
+	if (platform !== "win32" && parts[n - 3] !== "lib") return null;
 	const prefix = join(prefixParts);
 	const shim =
 		platform === "win32"
@@ -217,6 +289,8 @@ export interface Command {
 	command: string;
 	args: string[];
 	env?: Record<string, string>;
+	/** Where it runs (default: crb's own cwd). */
+	cwd?: string;
 }
 
 /** `env`'s PATH key as it is spelled (Windows: often `Path`). */
@@ -291,6 +365,9 @@ export function installCommand(
 			// pnpm's shim runs `node` unless one sits beside it: this node.
 			[key]: [bin, p.dirname(node), env[key]].filter(Boolean).join(p.delimiter),
 		},
+		// Not crb's cwd: corepack's pnpm would follow a `packageManager` there
+		// (another major, another global dir).
+		cwd: install.home,
 	};
 }
 

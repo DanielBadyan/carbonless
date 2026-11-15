@@ -364,23 +364,49 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   (`src/web/UpdateByHand.tsx`), shared with Global settings; a unit test
   checks every anchor is a heading of `docs/faq.md`.
 - **Who installs it**, told from where crb runs (its real path):
+  The layouts below cover npm 9-12 and pnpm 8-12 on Linux, macOS and
+  Windows (`detectInstall` in `src/server/update/install.ts`, with a test
+  per layout).
   - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
     in `<prefix>/bin` (Windows: `<prefix>\node_modules\...` and
-    `<prefix>\crb.cmd`). The install is `npm install -g --prefix <prefix>`,
-    run by the prefix's own npm, else the one beside the running node, else
-    PATH's: whichever npm, it goes where crb is.
-  - pnpm: `<PNPM_HOME>/global/<vN>/.../.pnpm/.../carbonless-review`, or,
-    with pnpm's global virtual store (as pnpm 12 installs globally on
-    Windows; any OS with that store on), `<PNPM_HOME>/store/<vN>/links/.../carbonless-review` when an
-    entry of `<PNPM_HOME>/global/<vN>` links to it (a project's dependency
-    can lie in the same store: only one the global dir links to counts;
-    the new version is found again through the global dir's links). The
-    install is `pnpm add -g` (with the release-age exemption above) by
-    PNPM_HOME's pnpm (else PATH's), with `PNPM_HOME` set and its bin dir
-    first on PATH (pnpm refuses `add -g` otherwise).
-  - Anything else (yarn, bun, volta, a project's dependency, npx), or a
-    global dir crb can't write (a system node's `/usr/lib/node_modules`):
-    the toast shows the command to copy instead of the button.
+    `<prefix>\crb.cmd`), whatever set the prefix (nvm, fnm, asdf, mise,
+    Homebrew, the Windows installer's `%APPDATA%\npm`, nvm-windows, a
+    prefix of one's own). The install is `npm install -g --prefix
+    <prefix>`, run by the prefix's own npm, else the one beside the running
+    node, else PATH's: whichever npm, it goes where crb is.
+  - pnpm 8-10: `<PNPM_HOME>/global/5/.pnpm/.../carbonless-review` (10 with
+    `enableGlobalVirtualStore`: `.pnpm/@/carbonless-review/<v>/<hash>/...`);
+    pnpm 11+ with the global virtual store off:
+    `<PNPM_HOME>/global/v11/<dir>/node_modules/.pnpm/...`. `.pnpm` must sit
+    exactly there: a project under some `global/2/` isn't a global install.
+  - pnpm 11 and 12 by default, on every OS (global installs use the global
+    virtual store): `<storeDir>/v11/links/@/carbonless-review/<v>/<hash>/node_modules/carbonless-review`,
+    which an entry of `<PNPM_HOME>/global/v11` links to. A project's
+    dependency installed with the global virtual store on lies at the very
+    same path, so it counts only when some
+    `<PNPM_HOME>/global/v11/*/node_modules/carbonless-review` resolves to
+    it. PNPM_HOME is read from how crb was started (pnpm's shim runs
+    `<PNPM_HOME>/global/v11/<dir>/node_modules/carbonless-review/...`),
+    else `$PNPM_HOME`, else the dir above the store's (`storeDir` defaults
+    to `<PNPM_HOME>/store`, and may be moved, to another drive say). One
+    click needs `global/v11`, `<storeDir>/v11` and `<PNPM_HOME>/bin`
+    writable. The new version is found again through the global dir's
+    links.
+  - The pnpm install is `pnpm add -g` (with the release-age exemption
+    above) by PNPM_HOME's pnpm (`bin/pnpm`, else `pnpm`, else PATH's), with
+    `PNPM_HOME` set and its bin dir first on PATH (pnpm refuses `add -g`
+    otherwise), run in PNPM_HOME: not crb's cwd, where corepack would
+    follow a project's `packageManager` to another pnpm major (another
+    global dir). A corepack or Homebrew pnpm is PATH's, so a service's
+    `PATH` must reach it.
+  - Anything else (yarn, bun, Volta, a project's dependency, npx's cache,
+    pnpm dlx), or a global dir crb can't write (a system node's
+    `/usr/lib/node_modules`): the toast shows the command to copy instead
+    of the button. Volta's packages
+    (`<VOLTA_HOME>/tools/image/packages/carbonless-review`) look like an npm
+    prefix, but are Volta's to update (`volta install`): an npm there would
+    go behind its back. An npm global install with a Node that pnpm
+    installed (inside pnpm's store) isn't recognised either (rare).
   - Only a checked version (semver, at most 64 characters) reaches a
     command line; a registry answer over 64 KB is ignored.
 - **Update** asks first when the page has unsaved work (what leaving the

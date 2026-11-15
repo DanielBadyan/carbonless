@@ -238,11 +238,12 @@ crb](releasing.md#updating-an-installed-crb).
 
 ### Not an npm or pnpm global install
 
-crb recognises a global install by npm (`npm install -g`) or pnpm
-(`pnpm add -g`, including pnpm 12's global virtual store) from where its
-files lie. Anything else gets the command: yarn, bun, volta, npx's
-cache, or crb as a dependency of a project. Reinstall it with npm or pnpm,
-as your own user:
+crb recognises a global install by npm (`npm install -g`, npm 9 to 12) or
+pnpm (`pnpm add -g`, pnpm 8 to 12, with or without its global virtual
+store) from where its files lie. Anything else gets the command: yarn,
+bun, Volta (update it with `volta install carbonless-review`), npx's or
+pnpm dlx's cache, or crb as a dependency of a project. Reinstall it with
+npm or pnpm, as your own user:
 
 ```sh
 npm install -g carbonless-review        # or: pnpm add -g carbonless-review

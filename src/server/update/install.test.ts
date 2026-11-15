@@ -173,7 +173,10 @@ describe("detectInstall", () => {
 			detectInstall(root, {
 				platform: "win32",
 				exists: none,
-				writable: (d) => d === globalDir,
+				writable: (d) =>
+					[globalDir, `${home}\\store\\v11`, `${home}\\bin`].includes(d),
+				env: {},
+				argv1: "",
 				globalLinks: (d) => {
 					linked.push(d);
 					return [root];
@@ -198,6 +201,8 @@ describe("detectInstall", () => {
 				platform: "linux",
 				exists: none,
 				writable: all,
+				env: {},
+				argv1: "",
 				globalLinks: () => ["/elsewhere", root],
 			}),
 		).toMatchObject({
@@ -212,6 +217,7 @@ describe("detectInstall", () => {
 		if (process.platform === "win32") return;
 		const tmp = realpathSync(mkdtempSync(join(tmpdir(), "crb-pnpm-gvs-")));
 		try {
+			mkdirSync(join(tmp, "bin"));
 			const put = (version: string, hash: string) => {
 				const pkg = join(
 					tmp,
@@ -232,7 +238,11 @@ describe("detectInstall", () => {
 				return pkg;
 			};
 			const root = put("0.3.0-rc.9", "aaa");
-			const install = detectInstall(root, { platform: "linux" });
+			const install = detectInstall(root, {
+				platform: "linux",
+				env: {},
+				argv1: "",
+			});
 			expect(install).toMatchObject({ pm: "pnpm", home: tmp, writable: true });
 			put("0.3.0-rc.10", "bbb");
 			const cli = findInstalled(
@@ -253,7 +263,13 @@ describe("detectInstall", () => {
 	it("a store package no global install links to (a project's dependency through the global virtual store): unknown", () => {
 		const root =
 			"/home/me/.local/share/pnpm/store/v11/links/@/carbonless-review/0.3.0-rc.9/5f1c0e9a2b/node_modules/carbonless-review";
-		const opts = { platform: "linux" as const, exists: none, writable: all };
+		const opts = {
+			platform: "linux" as const,
+			exists: none,
+			writable: all,
+			env: {},
+			argv1: "",
+		};
 		expect(detectInstall(root, { ...opts, globalLinks: () => [] })).toBeNull();
 		expect(
 			detectInstall(root, {
@@ -279,10 +295,265 @@ describe("detectInstall", () => {
 			"/home/me/global/project/node_modules/.pnpm/carbonless-review@0.2.0/node_modules/carbonless-review",
 			"/home/me/carbonless",
 			"/home/me/.config/yarn/global/node_modules/carbonless-review",
-			"/home/me/.volta/tools/image/packages/carbonless-review/lib/node_modules/carbonless-review",
 			"/usr/lib/node_modules/other/node_modules/carbonless-review",
 		]) {
 			expect(detectInstall(root, opts), root).toBeNull();
+		}
+	});
+});
+
+/**
+ * Every layout of npm 9-12 and pnpm 8-12 on Linux, macOS and Windows, and
+ * what must never count (a research pass, 2026-11-15: Linux rows from real
+ * installs, the rest from npm's, pnpm's and the managers' sources).
+ */
+describe("detectInstall: the layouts of supported npm and pnpm", () => {
+	const P = "carbonless-review";
+	const H64 =
+		"74d1636bf1b3864c9cf492433004b6be542b65d4b77a496e2892f736132575da";
+	const base = {
+		exists: () => true,
+		writable: () => true,
+		env: {},
+		argv1: "",
+		globalLinks: () => [] as string[],
+	};
+
+	it("npm: <prefix>/lib/node_modules (POSIX) or <prefix>\\node_modules (Windows), any Node manager", () => {
+		const cases: [NodeJS.Platform, string][] = [
+			["linux", "/home/u/.nvm/versions/node/v24.11.0"],
+			["linux", "/home/u/.npm-global"],
+			["linux", "/home/u/.local/share/fnm/node-versions/v24.11.0/installation"],
+			["linux", "/home/u/.local/share/mise/installs/node/24.11.0"],
+			["linux", "/home/u/.asdf/installs/nodejs/24.11.0"],
+			["linux", "/usr"],
+			["darwin", "/opt/homebrew"],
+			["darwin", "/usr/local"],
+			[
+				"darwin",
+				"/Users/u/Library/Application Support/fnm/node-versions/v24.11.0/installation",
+			],
+			["win32", "C:\\Users\\u\\AppData\\Roaming\\npm"],
+			["win32", "C:\\Users\\u\\AppData\\Local\\nvm\\v24.11.0"],
+			[
+				"win32",
+				"C:\\Users\\u\\AppData\\Roaming\\fnm\\node-versions\\v24.11.0\\installation",
+			],
+		];
+		for (const [platform, home] of cases) {
+			const root =
+				platform === "win32"
+					? `${home}\\node_modules\\${P}`
+					: `${home}/lib/node_modules/${P}`;
+			expect(detectInstall(root, { ...base, platform }), root).toMatchObject({
+				pm: "npm",
+				home,
+				packages: [root],
+			});
+		}
+		// A system node's prefix, root's: found, but not writable.
+		expect(
+			detectInstall(`/usr/lib/node_modules/${P}`, {
+				...base,
+				platform: "linux",
+				writable: (d) => d !== "/usr/lib/node_modules",
+			})?.writable,
+		).toBe(false);
+	});
+
+	it("pnpm 8-10 (global/5/.pnpm, 10's global virtual store too) and 11+ with its global virtual store off", () => {
+		const cases: [NodeJS.Platform, string, string, string][] = [
+			[
+				"linux",
+				`/home/u/.local/share/pnpm/global/5/.pnpm/${P}@0.3.0/node_modules/${P}`,
+				"/home/u/.local/share/pnpm",
+				"/home/u/.local/share/pnpm/global/5",
+			],
+			[
+				"darwin",
+				`/Users/u/Library/pnpm/global/5/.pnpm/${P}@0.3.0/node_modules/${P}`,
+				"/Users/u/Library/pnpm",
+				"/Users/u/Library/pnpm/global/5",
+			],
+			[
+				"win32",
+				`C:\\Users\\u\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\${P}@0.3.0\\node_modules\\${P}`,
+				"C:\\Users\\u\\AppData\\Local\\pnpm",
+				"C:\\Users\\u\\AppData\\Local\\pnpm\\global\\5",
+			],
+			[
+				"linux",
+				`/home/u/.local/share/pnpm/global/5/.pnpm/@/${P}/0.3.0/${H64}/node_modules/${P}`,
+				"/home/u/.local/share/pnpm",
+				"/home/u/.local/share/pnpm/global/5",
+			],
+			[
+				"linux",
+				`/home/u/.local/share/pnpm/global/v11/3e6469-1a1e03b9b3b-ef532c3365c3282b/node_modules/.pnpm/${P}@0.3.0/node_modules/${P}`,
+				"/home/u/.local/share/pnpm",
+				"/home/u/.local/share/pnpm/global/v11",
+			],
+		];
+		for (const [platform, root, home, globalDir] of cases) {
+			const asked: string[] = [];
+			expect(
+				detectInstall(root, {
+					...base,
+					platform,
+					writable: (d) => {
+						asked.push(d);
+						return true;
+					},
+				}),
+				root,
+			).toMatchObject({ pm: "pnpm", home, writable: true, scan: [globalDir] });
+			expect(asked, root).toEqual([globalDir]);
+		}
+	});
+
+	it("pnpm 11 and 12 by default (the global virtual store), on every OS: home from crb's start, $PNPM_HOME or the store's place, confirmed by the global dir's link", () => {
+		const cases: [NodeJS.Platform, string, string, string][] = [
+			[
+				"linux",
+				"/home/u/.local/share/pnpm",
+				`/home/u/.local/share/pnpm/store/v11/links/@/${P}/0.3.0/${H64}/node_modules/${P}`,
+				`/home/u/.local/share/pnpm/global/v11/e331f1ad685c659897a96e813abefc4926c58634f051ba558e70944019321860/node_modules/${P}/dist/cli.js`,
+			],
+			[
+				"darwin",
+				"/Users/u/Library/pnpm",
+				`/Users/u/Library/pnpm/store/v11/links/@/${P}/0.3.0-rc.9/${H64}/node_modules/${P}`,
+				`/Users/u/Library/pnpm/global/v11/abc-def/node_modules/${P}/dist/cli.js`,
+			],
+			[
+				"win32",
+				"C:\\Users\\u\\AppData\\Local\\pnpm",
+				`C:\\Users\\u\\AppData\\Local\\pnpm\\store\\v11\\links\\@\\${P}\\0.3.0-rc.9\\${H64}\\node_modules\\${P}`,
+				`C:\\Users\\u\\AppData\\Local\\pnpm\\global\\v11\\7c88-1f2e\\node_modules\\${P}\\dist\\cli.js`,
+			],
+		];
+		for (const [platform, home, root, argv1] of cases) {
+			const p = platform === "win32" ? "\\" : "/";
+			const globalDir = `${home}${p}global${p}v11`;
+			const storeDir = root.slice(0, root.indexOf(`${p}links${p}`));
+			const asked: string[] = [];
+			const opts = {
+				...base,
+				platform,
+				globalLinks: (d: string) => (d === globalDir ? [root] : []),
+				writable: (d: string) => {
+					asked.push(d);
+					return true;
+				},
+			};
+			// From how crb was started, from $PNPM_HOME, or the store's place.
+			for (const how of [{ argv1 }, { env: { PNPM_HOME: home } }, {}]) {
+				asked.length = 0;
+				expect(detectInstall(root, { ...opts, ...how }), root).toEqual({
+					pm: "pnpm",
+					root,
+					home,
+					writable: true,
+					packages: [`${globalDir}${p}node_modules${p}${P}`],
+					scan: [globalDir],
+				});
+				// A new dir per install, the store's files, the shim.
+				expect(asked).toEqual([globalDir, storeDir, `${home}${p}bin`]);
+			}
+			// Any of the three not writable: the command.
+			for (const dir of [globalDir, storeDir, `${home}${p}bin`]) {
+				expect(
+					detectInstall(root, {
+						...opts,
+						argv1,
+						writable: (d: string) => d !== dir,
+					})?.writable,
+				).toBe(false);
+			}
+		}
+	});
+
+	it("pnpm's store moved (storeDir on another drive): found through $PNPM_HOME or crb's start, never guessed", () => {
+		const home = "C:\\Users\\u\\AppData\\Local\\pnpm";
+		const root = `D:\\pnpm-store\\v11\\links\\@\\${P}\\0.3.0\\${H64}\\node_modules\\${P}`;
+		const opts = {
+			...base,
+			platform: "win32" as const,
+			globalLinks: (d: string) => (d === `${home}\\global\\v11` ? [root] : []),
+		};
+		expect(
+			detectInstall(root, { ...opts, env: { PNPM_HOME: home } }),
+		).toMatchObject({ pm: "pnpm", home, scan: [`${home}\\global\\v11`] });
+		expect(
+			detectInstall(root, {
+				...opts,
+				argv1: `${home}\\global\\v11\\1a-2b\\node_modules\\${P}\\dist\\cli.js`,
+			}),
+		).toMatchObject({ pm: "pnpm", home });
+		// Nothing says where PNPM_HOME is, or no global entry links to it.
+		expect(detectInstall(root, opts)).toBeNull();
+		expect(
+			detectInstall(root, {
+				...opts,
+				env: { PNPM_HOME: home },
+				globalLinks: () => [],
+			}),
+		).toBeNull();
+	});
+
+	it("never a global install: a project's dependency through the global virtual store, a project under global/2, Volta, npx, pnpm dlx, a project, yarn, bun", () => {
+		// The same path as a global install, but no global entry links to it.
+		expect(
+			detectInstall(
+				`/home/u/.local/share/pnpm/store/v11/links/@/${P}/0.3.0/${H64}/node_modules/${P}`,
+				{
+					...base,
+					platform: "linux",
+					argv1: `/home/u/src/app/node_modules/${P}/dist/cli.js`,
+					env: { PNPM_HOME: "/home/u/.local/share/pnpm" },
+					globalLinks: () => [
+						`/home/u/.local/share/pnpm/store/v11/links/@/${P}/0.2.0/${H64}/node_modules/${P}`,
+					],
+				},
+			),
+		).toBeNull();
+		const cases: [NodeJS.Platform, string][] = [
+			[
+				"linux",
+				`/home/u/global/2/app/node_modules/.pnpm/${P}@0.3.0/node_modules/${P}`,
+			],
+			[
+				"darwin",
+				`/Users/u/.volta/tools/image/packages/${P}/lib/node_modules/${P}`,
+			],
+			[
+				"win32",
+				`C:\\Users\\u\\AppData\\Local\\Volta\\tools\\image\\packages\\${P}\\node_modules\\${P}`,
+			],
+			[
+				"darwin",
+				`/Users/u/.volta/tools/image/packages/${P}/5/.pnpm/${P}@0.3.0/node_modules/${P}`,
+			],
+			[
+				"linux",
+				`/home/u/.cache/pnpm/dlx/18a9bb3956611e262a82b7fa160fef98/mwi3s0bb-2fp46/node_modules/.pnpm/${P}@0.3.0/node_modules/${P}`,
+			],
+			["linux", `/home/u/.npm/_npx/efc2fc194987058d/node_modules/${P}`],
+			[
+				"win32",
+				`C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\efc2fc194987058d\\node_modules\\${P}`,
+			],
+			["linux", `/home/u/src/app/node_modules/${P}`],
+			[
+				"linux",
+				`/home/u/src/app/node_modules/.pnpm/${P}@0.3.0/node_modules/${P}`,
+			],
+			["linux", `/home/u/.config/yarn/global/node_modules/${P}`],
+			["linux", `/home/u/.bun/install/global/node_modules/${P}`],
+		];
+		for (const [platform, root] of cases) {
+			// Every shim "exists": only the path's shape decides.
+			expect(detectInstall(root, { ...base, platform }), root).toBeNull();
 		}
 	});
 });
@@ -372,6 +643,8 @@ describe("commands", () => {
 				PNPM_HOME: "/home/me/.local/share/pnpm",
 				PATH: "/home/me/.local/share/pnpm/bin:/opt/node/bin:/usr/bin",
 			},
+			// Not crb's cwd: corepack would read a project's packageManager there.
+			cwd: "/home/me/.local/share/pnpm",
 		});
 		// Windows spells it Path; no pnpm in PNPM_HOME: PATH's pnpm.cmd.
 		const win = installCommand({ pm: "pnpm", home: "C:\\pnpm" }, "0.3.0", {
