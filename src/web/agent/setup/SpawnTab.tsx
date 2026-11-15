@@ -10,6 +10,7 @@ import { Spinner, SpinnerIcon } from "../../Spinner";
 import { Tooltip } from "../../Tooltip";
 import {
 	agentConfigQuery,
+	agentSetupDoneQuery,
 	agentStatusQuery,
 	checkAgentConfig,
 	postAgentStart,
@@ -81,9 +82,14 @@ type SpawnResult = { started: true } | { started: false; check: AgentCheck };
  * install line, copyable; Other is typed), step 2 the leash (Open only),
  * step 3 the command, and Spawn: the config is checked, and only if it
  * runs is it saved and this review's agent started. The view moves to
- * Connected once the status says the flag is set.
+ * Connected once the status says the flag is set. Step 1 folds once a
+ * Spawn started on this machine; its pick still applies, named in its
+ * header.
  */
-export function SpawnTab() {
+export function SpawnTab(props: {
+	/** Step 1 done on this machine (a Spawn started): folded, its pick named. */
+	setupDone?: boolean;
+}) {
 	const client = useQueryClient();
 	const stored = useQuery(agentConfigQuery);
 	// A fresh read seeds the form; a later refetch keeps it.
@@ -138,6 +144,7 @@ export function SpawnTab() {
 			if (result && !result.started) return;
 			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
 			void client.invalidateQueries({ queryKey: agentConfigQuery.queryKey });
+			void client.invalidateQueries({ queryKey: agentSetupDoneQuery.queryKey });
 		},
 	});
 	const press = () => {
@@ -183,7 +190,12 @@ export function SpawnTab() {
 							))}
 						</ul>
 					)}
-					<Step n={1} title="One-time setup">
+					<Step
+						n={1}
+						title="One-time setup"
+						done={props.setupDone}
+						summary={chosen?.label}
+					>
 						<div
 							role="radiogroup"
 							aria-label="Harness"

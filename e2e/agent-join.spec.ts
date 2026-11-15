@@ -513,6 +513,56 @@ test("a join request shows in step 3 and in the bar; Approve in the modal connec
 	);
 });
 
+test("once a join is approved, Invite's one-time setup is folded (after a reload too) and opens on a click; Spawn's stays open", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	await page.goto(s.url);
+	await chip(page).click();
+	const setup = setupDialog(page);
+	const fold = setup.getByRole("button", { name: /^One-time setup/ });
+	// Never approved here: step 1 open, no fold.
+	await expect(setup.getByTestId("join-setup-line")).toBeVisible();
+	await expect(fold).toHaveCount(0);
+	const request = await attach(s.url);
+	await setup
+		.getByTestId("join-request-card")
+		.getByRole("button", { name: "Approve" })
+		.click();
+	const approved = await callTool(mcpUrl(s.url), "attach", {
+		review: reviewLink(s.url),
+		...SESSION,
+		request,
+	});
+	expect(approved.state).toBe("approved");
+	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
+	// Detach: back to the setup, now with step 1 folded.
+	await statusDialog(page).getByRole("button", { name: "Detach" }).click();
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(fold).toHaveAttribute("aria-expanded", "false");
+	await page.reload();
+	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	await chip(page).click();
+	await expect(fold).toHaveAttribute("aria-expanded", "false");
+	await expect(setup.getByTestId("join-setup-line")).toHaveCount(0);
+	await expect(setup.getByRole("button", { name: "Codex" })).toHaveCount(0);
+	const box = await fold.boundingBox();
+	expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	await fold.click();
+	await expect(fold).toHaveAttribute("aria-expanded", "true");
+	await expect(setup.getByTestId("join-setup-line")).toBeVisible();
+	await expect(setup.getByRole("button", { name: "Codex" })).toBeVisible();
+	// Spawn's step 1: its own state, still open.
+	await setup.getByRole("tab", { name: "Spawn" }).click();
+	await expect(
+		setup.getByRole("radiogroup", { name: "Harness" }),
+	).toBeVisible();
+	await expect(fold).toHaveCount(0);
+});
+
 test("Decline in step 3: the bar goes, and the session hears denied", async ({
 	page,
 	pr,

@@ -148,6 +148,37 @@ const card = (page: Page) => page.locator('[role="tooltip"]:not([hidden])');
  * answer still fails.
  */
 const GIT_WAIT = { timeout: 30_000 };
+
+/**
+ * A resolved unplaced thread's quiet line: the fate's sentence (truncating
+ * on a phone), who wrote it and its path, the last two never cut off, so
+ * two resolved rows still tell apart at 360px (CAR-158).
+ */
+async function expectQuietLine(
+	line: Locator,
+	q: { sentence: string; who: string; path?: string },
+) {
+	await expect(line.getByTestId("unplaced-collapsed-fate")).toHaveText(
+		q.sentence,
+	);
+	const parts = [line.getByTestId("unplaced-collapsed-who")];
+	await expect(parts[0] as Locator).toHaveText(` · ${q.who}`);
+	if (q.path) {
+		const path = line.getByTestId("unplaced-collapsed-path");
+		await expect(path).toHaveText(q.path);
+		parts.push(path);
+	}
+	const box = await line.boundingBox();
+	for (const part of parts) {
+		await expect(part).toBeVisible();
+		// Whole: not truncated, and inside the line's own box.
+		expect(await part.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+			true,
+		);
+		const at = await part.boundingBox();
+		expect(at && box && at.x + at.width <= box.x + box.width + 0.5).toBe(true);
+	}
+}
 /** The engine's answer, as a page bound to a review asks it (reviewApiPath). */
 const REREVIEW = "**/api/r/*/rereview?*";
 
@@ -1545,9 +1576,12 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	setResolved(true);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
 	await expect(group.getByTestId("unplaced-collapsed")).toBeVisible(GIT_WAIT);
-	await expect(group.getByTestId("unplaced-collapsed")).toHaveText(
-		"File deleted · src/legacy.ts · rev1",
-	);
+	await expectQuietLine(group.getByTestId("unplaced-collapsed"), {
+		sentence: "Commented file has been deleted since the review",
+		who: "rev1",
+		path: "src/legacy.ts",
+	});
+	await expectNoPageOverflow(page);
 	await expect(group).not.toContainText("1 thread");
 	await expect(group.getByTestId("original-code")).toHaveCount(0);
 	setResolved(false);
@@ -1669,7 +1703,9 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 		await expect(toggle).toBeVisible(GIT_WAIT);
 		if ((await toggle.getAttribute("aria-label")) === "Expand file")
 			await toggle.click();
-		const row = unplacedRows(coreS).filter({ hasText: /core 30|Line deleted/ });
+		const row = unplacedRows(coreS).filter({
+			hasText: /core 30|Commented line has been deleted/,
+		});
 		await expect(row).toHaveCount(1, GIT_WAIT);
 		return row;
 	};
@@ -1680,7 +1716,10 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 	// One quiet line: no code, no comment.
 	const quiet = row.getByTestId("unplaced-collapsed");
 	await expect(quiet).toBeVisible();
-	await expect(quiet).toHaveText("Line deleted · rev1");
+	await expectQuietLine(quiet, {
+		sentence: "Commented line has been deleted since the review",
+		who: "rev1",
+	});
 	await expect(row.getByTestId("original-code")).toHaveCount(0);
 	await expect(row.getByTestId("unplaced-opener")).toHaveCount(0);
 	await expectNoPageOverflow(page);
@@ -1798,7 +1837,11 @@ test("when the placements fail every thread stays listed with the error and a re
 	const quiet = rows.nth(1);
 	await expect(quiet).toHaveAttribute("data-resolved", "true");
 	const line = quiet.getByTestId("unplaced-collapsed");
-	await expect(line).toHaveText("Place unknown · src/core.ts · rev1");
+	await expectQuietLine(line, {
+		sentence: "Couldn't work out where this thread is now",
+		who: "rev1",
+		path: "src/core.ts",
+	});
 	await expect(line).toHaveClass(/text-muted/);
 	await expect(failed).toContainText("1 thread");
 	await expect(failed).not.toContainText("2 threads");
@@ -2600,6 +2643,8 @@ test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ m
 	await expect(fileActionButton(extra, "Undo cross-off")).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	// It finished the open file, which closes like any other (CAR-159).
+	await extra.getByRole("button", { name: "Expand file" }).click();
 	await expect(
 		extra.getByRole("checkbox", { name: "Undo cross-off" }),
 	).toBeVisible();
@@ -2607,5 +2652,208 @@ test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ m
 	await expect(
 		fileActionButton(fileSection(page, "src/extra.ts"), "Undo cross-off"),
 	).toBeVisible(GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+});
+
+/** Push 2'': A reworked, B reverted (gone, a removed piece), D new in util.ts. */
+const reworkRevert = {
+	message: "rework and revert",
+	files: {
+		"src/core.ts": edit(core, { 5: "core 5 reworked" }),
+		"src/util.ts": `${edit(util, { 3: "util 3 changed" })}util 11 new\n`,
+	},
+};
+
+test("in the since view, marking a file's last cluster keeps it open while a reverted piece is left; marking the piece moves on to the next file (CAR-159)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, s, p, reworkRevert);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	await expect(chips(coreS).filter({ hasText: "1 gone" })).toBeVisible();
+	await expand(page, "src/core.ts");
+	const gone = coreS.locator("tbody[data-gone]");
+	await expect(gone).toHaveCount(1);
+	const cluster = coreS
+		.locator("tbody:not([data-gone])")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(cluster).toHaveCount(1);
+
+	// The last cluster: the reverted piece is still left, core.ts stays open.
+	await cluster.click();
+	await expect(cluster).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(
+		coreS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+
+	// The piece, the last thing left: core.ts closes, util.ts opens.
+	await gone.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(
+		coreS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(
+		utilS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+});
+
+/**
+ * PS1: core.ts (A: line 5, line 30), util.ts (lines 3 and 8), extra.ts
+ * (new). PS2 reworks core 5, reverts util 3 (util.ts keeps line 8,
+ * carried: only its reverted piece is left) and deletes extra.ts (a gone
+ * file after the tree's).
+ */
+const moveOnFixture: PrOptions = {
+	base: fixture.base,
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+				"src/util.ts": edit(util, { 3: "util 3 changed", 8: "util 8 changed" }),
+				"src/extra.ts": text(["extra 1", "extra 2", "extra 3"]),
+			},
+		},
+	],
+};
+const moveOnPush: FixtureCommit = {
+	message: "rework core, revert util 3, drop extra",
+	files: {
+		"src/core.ts": edit(core, {
+			5: "core 5 reworked",
+			30: "core 30 changed",
+		}),
+		"src/util.ts": edit(util, { 8: "util 8 changed" }),
+	},
+	delete: ["src/extra.ts"],
+};
+
+/** PS1 reviewed from the closed headers, then the push, in the since view. */
+async function moveOnSince(page: Page, s: Crb, p: Pr) {
+	await openFiles(page, s.url);
+	for (const path of ["src/core.ts", "src/extra.ts", "src/util.ts"]) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead(moveOnPush);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(fileSection(page, "src/extra.ts")).toHaveAttribute(
+		"data-gone-file",
+		"src/extra.ts",
+	);
+	await expect(toRead(page)).toHaveText(/3 to read/);
+}
+
+/** A file a move-on opened: its lines in, it takes marks. */
+async function movedOnTo(page: Page, section: Locator) {
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await marksReady(page, section);
+}
+
+const expanded = (section: Locator) =>
+	section.getByRole("button", { name: "Collapse file" });
+
+test("in the since view, finishing a file opens the next with only a reverted piece left, then a gone file; finishing that one raises the verdict (CAR-159)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(moveOnFixture);
+	const s = await startCrb();
+	await moveOnSince(page, s, p);
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	const extraS = fileSection(page, "src/extra.ts");
+	await expand(page, "src/core.ts");
+	await expect(boxes(coreS)).toHaveCount(1);
+	// core.ts's last cluster: util.ts has only its reverted piece left.
+	await boxes(coreS).click();
+	await movedOnTo(page, utilS);
+	await expect(expanded(coreS)).toHaveCount(0);
+	const piece = utilS
+		.locator("tbody[data-gone]")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(piece).toHaveCount(1);
+	// Its piece: the gone file is all that is left, and it opens.
+	await piece.click();
+	await movedOnTo(page, extraS);
+	await expect(expanded(utilS)).toHaveCount(0);
+	await expect(boxes(extraS)).toHaveCount(1);
+	// The gone file's piece: nothing left, it closes; nothing else opens.
+	await boxes(extraS).click();
+	await expect(
+		extraS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+	// The verdict rises into view.
+	await expect(page.locator("#files-verdict")).toBeInViewport();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+});
+
+test("in the since view, finishing a gone file moves on; a file with only a reverted piece left, the last one, opens rather than the verdict (CAR-159)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(moveOnFixture);
+	const s = await startCrb();
+	await moveOnSince(page, s, p);
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	const extraS = fileSection(page, "src/extra.ts");
+	await expand(page, "src/extra.ts");
+	// The gone file's piece: it closes and the page wraps to core.ts.
+	await boxes(extraS).click();
+	await movedOnTo(page, coreS);
+	await expect(expanded(extraS)).toHaveCount(0);
+	// core.ts's last cluster: util.ts, the only file left, has only its
+	// reverted piece; it opens (no verdict yet).
+	await boxes(coreS).click();
+	await movedOnTo(page, utilS);
+	await expect(progress(page)).not.toHaveAttribute("aria-valuenow", "100");
+	await utilS
+		.locator("tbody[data-gone]")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.click();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });

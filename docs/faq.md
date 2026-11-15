@@ -246,6 +246,11 @@ setup modal, whose Spawn tab has three steps:
    | Copilot CLI | `copilot --acp` | |
    | Other | any command speaking ACP | |
 
+   Once a Spawn has started on this machine, this step shows folded and
+   grayed, with the harness in effect named in its header; tap it to open.
+   Where that's kept and how to reset it: "Joining a review from a
+   session", below.
+
 2. **Select leash:** Open (the only one so far).
 3. **Configure:** command and arguments, then **Spawn**. Spawn runs the
    command once through `initialize`; if that fails it shows why (not
@@ -364,7 +369,11 @@ claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<ke
 it, `claude mcp add` writes to the *local* scope, seen only by sessions
 started in the directory it ran in. A session that's already running
 picks it up with `/reload-plugins` (below); the info icon next to the line
-says so.
+says so. Once you've approved a join on this crb, this step shows folded
+and grayed (tap it to open); Spawn's folds on its own, after a Spawn.
+Both are kept by the crb server, not the browser, as marker files in
+`$XDG_STATE_HOME/carbonless/agent-setup/` (`~/.local/state/carbonless/…`
+by default): delete that folder to unfold both.
 
 **Then, in the session:** "join the carbonless review at
 `http://<host>:4747/r/<id>`" (step 2 of the tab shows that line too), or "join my
