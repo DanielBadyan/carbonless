@@ -516,27 +516,49 @@ export function UnplacedShell(props: {
 				data-resolved="true"
 				className="min-w-0"
 			>
-				<button
-					type="button"
-					aria-expanded={false}
-					aria-label={`Resolved thread by ${props.who}: ${sentence}${props.path ? ` · ${props.path}` : ""}. Expand`}
-					data-testid="unplaced-collapsed"
-					onClick={() => setExpanded(true)}
-					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
-					<span className="truncate">
-						{sentence}
-						{props.path && (
-							<>
-								{" · "}
-								<code className="font-mono">{props.path}</code>
-							</>
-						)}
-						{" · "}
-						{props.who}
-					</span>
-				</button>
+				{/* As the open row: the sentence truncates on its line, who wrote
+				    it never shrinks, and the path has a line of its own, so two
+				    resolved rows on a phone still tell apart (CAR-158). */}
+				<Tooltip content={sentence} describe={false}>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							aria-expanded={false}
+							aria-label={`Resolved thread by ${props.who}: ${sentence}${props.path ? ` · ${props.path}` : ""}. Expand`}
+							data-testid="unplaced-collapsed"
+							onClick={() => setExpanded(true)}
+							className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
+							<span className="flex min-w-0 flex-1 flex-col">
+								<span className="flex min-w-0">
+									<span
+										data-testid="unplaced-collapsed-fate"
+										className="min-w-0 truncate"
+									>
+										{sentence}
+									</span>
+									<span
+										data-testid="unplaced-collapsed-who"
+										className="shrink-0 whitespace-pre"
+									>
+										{" · "}
+										{props.who}
+									</span>
+								</span>
+								{props.path && (
+									<code
+										data-testid="unplaced-collapsed-path"
+										className="truncate font-mono"
+									>
+										{props.path}
+									</code>
+								)}
+							</span>
+						</button>
+					)}
+				</Tooltip>
 			</li>
 		);
 	}

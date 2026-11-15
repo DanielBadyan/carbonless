@@ -145,6 +145,37 @@ const card = (page: Page) => page.locator('[role="tooltip"]:not([hidden])');
  * answer still fails.
  */
 const GIT_WAIT = { timeout: 30_000 };
+
+/**
+ * A resolved unplaced thread's quiet line: the fate's sentence (truncating
+ * on a phone), who wrote it and its path, the last two never cut off, so
+ * two resolved rows still tell apart at 360px (CAR-158).
+ */
+async function expectQuietLine(
+	line: Locator,
+	q: { sentence: string; who: string; path?: string },
+) {
+	await expect(line.getByTestId("unplaced-collapsed-fate")).toHaveText(
+		q.sentence,
+	);
+	const parts = [line.getByTestId("unplaced-collapsed-who")];
+	await expect(parts[0] as Locator).toHaveText(` · ${q.who}`);
+	if (q.path) {
+		const path = line.getByTestId("unplaced-collapsed-path");
+		await expect(path).toHaveText(q.path);
+		parts.push(path);
+	}
+	const box = await line.boundingBox();
+	for (const part of parts) {
+		await expect(part).toBeVisible();
+		// Whole: not truncated, and inside the line's own box.
+		expect(await part.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+			true,
+		);
+		const at = await part.boundingBox();
+		expect(at && box && at.x + at.width <= box.x + box.width + 0.5).toBe(true);
+	}
+}
 /** The engine's answer, as a page bound to a review asks it (reviewApiPath). */
 const REREVIEW = "**/api/r/*/rereview?*";
 
@@ -1530,9 +1561,12 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	setResolved(true);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
 	await expect(group.getByTestId("unplaced-collapsed")).toBeVisible(GIT_WAIT);
-	await expect(group.getByTestId("unplaced-collapsed")).toHaveText(
-		"Commented file has been deleted since the review · src/legacy.ts · rev1",
-	);
+	await expectQuietLine(group.getByTestId("unplaced-collapsed"), {
+		sentence: "Commented file has been deleted since the review",
+		who: "rev1",
+		path: "src/legacy.ts",
+	});
+	await expectNoPageOverflow(page);
 	await expect(group).not.toContainText("1 thread");
 	await expect(group.getByTestId("original-code")).toHaveCount(0);
 	setResolved(false);
@@ -1667,9 +1701,10 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 	// One quiet line: no code, no comment.
 	const quiet = row.getByTestId("unplaced-collapsed");
 	await expect(quiet).toBeVisible();
-	await expect(quiet).toHaveText(
-		"Commented line has been deleted since the review · rev1",
-	);
+	await expectQuietLine(quiet, {
+		sentence: "Commented line has been deleted since the review",
+		who: "rev1",
+	});
 	await expect(row.getByTestId("original-code")).toHaveCount(0);
 	await expect(row.getByTestId("unplaced-opener")).toHaveCount(0);
 	await expectNoPageOverflow(page);
@@ -1787,9 +1822,11 @@ test("when the placements fail every thread stays listed with the error and a re
 	const quiet = rows.nth(1);
 	await expect(quiet).toHaveAttribute("data-resolved", "true");
 	const line = quiet.getByTestId("unplaced-collapsed");
-	await expect(line).toHaveText(
-		"Couldn't work out where this thread is now · src/core.ts · rev1",
-	);
+	await expectQuietLine(line, {
+		sentence: "Couldn't work out where this thread is now",
+		who: "rev1",
+		path: "src/core.ts",
+	});
 	await expect(line).toHaveClass(/text-muted/);
 	await expect(failed).toContainText("1 thread");
 	await expect(failed).not.toContainText("2 threads");
