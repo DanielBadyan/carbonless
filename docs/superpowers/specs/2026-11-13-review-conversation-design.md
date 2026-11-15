@@ -1,6 +1,6 @@
 # Review conversation: one agent conversation about the whole review
 
-Status: draft, 2026-11-13, builder-checked; owner answers folded in. Calls the coordinator made (the owner may
+Status: approved by the owner 2026-11-15 ("spec looks good - let's move forward to implementation"), builder-checked; owner answers folded in. Calls the coordinator made (the owner may
 overrule) are marked **(call)**.
 
 Mockups (desktop and phone, drawn over screenshots of the live UI): the
@@ -49,6 +49,9 @@ session's work; nothing here may block it.
   modal". The chip opens the drawer; a button in the drawer opens the Your
   agent modal (status, activity, detach).
 - It is only for a set-up agent ("assuming it is setup").
+- **No review data in the prompt** (2026-11-15): generic instructions
+  that point the agent at crb's MCP tools, which give it the review's
+  facts, GitHub threads and progress ("What the agent is given").
 
 ## Goals
 
@@ -218,10 +221,9 @@ subject:
   `host.setResolved` (the store's `setResolved` always writes `by:
   "human"`, so the refusal belongs in the host) and ignored in the fold on
   read; the UI has no resolve control. Every "waiting" rule must treat a
-  `review` thread as always open: the runner's pick (`t.waiting &&
-  (thread subject || !resolved)`), its status count (`t.waiting &&
-  !t.resolved`), and the joined path's two copies in `host.ts`. Prefer one
-  shared predicate over four edits.
+  `review` thread as always open (`next`'s hand-out, the status count, the
+  wake-up; `host.ts`'s `t.waiting && (thread subject || !resolved)` and
+  its copies). Prefer one shared predicate over several edits.
 - **Human-opened only (call).** An `agent-thread-opened` by ai with
   `subject: "review"` is rejected: the agent answers in the conversation,
   it doesn't create it. (If the MCP work later wants the agent to start
@@ -242,61 +244,58 @@ true`) through all three. The web finds the conversation in
 **Filtered out server-side too**: `host.asked()` feeds placements every
 non-`thread` subject; it must skip `review` (it has no path).
 
-### The agent's prompt
+### What the agent is given
 
-A new envelope kind `review_conversation` in `src/server/agent/prompt.ts`
-(beside `agent_thread` and `github_thread_conversation`), built by the
-runner for a `review` thread. It carries:
+Owner, 2026-11-15: "I don't want us to have data about the specific review
+passed through the prompt. Ideally, the prompt should be generic
+instructions to the agent, pointing at the MCP which allows for getting
+more information (like which exact commits have been reviewed and etc)".
 
-- the review facts every envelope carries (repo, PR number, base/head
-  refs and commits, merge base, the agent checkout's absolute path), and
-  the PR's title, body and changed file paths **on every turn of this
-  kind** (today `pr` goes only on an ACP process's first prompt and through
-  `sessionReview(withPr)` for joined sessions; a review-wide question
-  needs it each time) **(call)**. File status and +/− counts are not
-  added **(call)**;
-- the code it answers against: see "Which code it answers against" below;
-- **every GitHub review thread on the PR, compactly**: node id, url, path,
-  line span, opened-on commit, resolved/outdated state, author, and each
-  comment's author, date and body, all through `sanitizeThirdParty` /
-  `sanitizeEnvelope` like other third-party text, capped (builder sets the
-  cap; a truncation is stated in the envelope's `notice`, never silent)
-  **(call)**. **Read fresh on every turn** (resolved state and every
-  thread's comments, batched in one GitHub read like the thread
-  conversation's single-thread read in `session.ts`), not the session's
-  last read: "truly resolved" is wrong if `resolved` is stale **(call)**.
-  The reviewer's pending (unsubmitted) comments and their other agent
-  conversations are not included **(call)**. The owner's first example ("were the comments truly
-  resolved") needs these; the ACP agent's checkout has no `refs/crb` and
-  no crb MCP tools, so the prompt is the only reliable source. When GitHub
-  couldn't be read, `notice` says so and the list is absent (never an
-  empty list that reads as "no comments");
-- a preamble for this kind: the question concerns the whole review; answer
-  in this conversation; cite code as `path:line` so links work; the usual
-  expectations (no pushing, no GitHub writes, no review changes) as for
-  every conversation.
+Since CAR-149 (#105) a spawned agent works through crb's MCP exactly like
+a joined session: it is woken, calls `next`, answers with `reply`. The
+review conversation uses that path and nothing else:
 
-A joined MCP session (CAR-81) answers it like any other waiting
-conversation, through the same envelope, in this change **(call)**. The
-joined path assumes an anchored file today (`sessionNext` builds
-`anchoredFile` from `thread.anchor.path`; `JOINED_PREAMBLE` speaks of "the
-anchored code"): a review thread sends no anchored file, and the preamble
-gains a line for this kind. The other session is extending the same area
-of `host.ts` (MCP writes into threads): whichever branch lands second
-rebases onto the first; keep the touch in `host.ts` small.
+- **`next` hands out a review-conversation question** like any other
+  waiting question: the thread id and `replyTo`, `subject: "review"`, and
+  the conversation's own messages (the question and the answers before
+  it). It carries **no review data**: no PR title, body or files, no
+  GitHub threads, no commits, no diff hunk, no anchored file (today
+  `sessionNext` assumes one from `thread.anchor.path`; a review thread
+  sends none).
+- **Its preamble is generic instructions**: the question is about the
+  whole review; find what you need through crb's tools (named, e.g.
+  `review`, `threads` and the read tools below) and the checkout; answer
+  with `reply`; cite code as `path:line` so the links work; the usual
+  expectations (no pushing, no GitHub writes, no review changes). Wording
+  is the builder's, kept short like the existing tool texts.
+- **Everything about the review comes from MCP tools**, read when the
+  agent wants it. The owner's examples need, beyond today's `review`
+  (title, body, base/head, files) and `threads` (agent threads):
+  - the PR's GitHub review threads with their comments and resolved /
+    outdated state, read fresh from GitHub (for "were the comments truly
+    resolved"; a stale `resolved` would give a wrong answer), third-party
+    text through `sanitizeThirdParty`, an unreadable GitHub said as such,
+    never an empty list;
+  - the reviewer's progress: the comparison on screen when the question
+    was asked, and which commits and lines have been reviewed.
+  Owner, 2026-11-15: "We can figure out the details of the MCP exposed
+  data as we go." The tools' exact shape is settled during
+  implementation, together with the session extending the MCP (step 2 of
+  `2026-11-13-spawned-agent-mcp-design.md`): whichever lands first adds a
+  tool, the other reuses it. Read-only, scoped to the agent's review,
+  like every MCP tool.
+- crb never moves the checkout for this question (CAR-149 decision 8);
+  the agent checks out what it needs.
 
 ### Which code it answers against
 
-**The comparison on screen when the question was sent**, like a thread
-conversation. Owner: "whatever I'm viewing. the mcp should give it more
-context if needed and it can checkout whatever (another session is working
-on making the acp spawned agents to have access to the mcp)".
+**The comparison on screen when the question was sent.** Owner:
+"whatever I'm viewing. the mcp should give it more context if needed and
+it can checkout whatever".
 
-- Each human message carries `view` (the comparison on screen); the runner
-  moves the checkout to `view.right` and sends `view` (left/right OIDs,
-  patch set numbers) and the patch sets, as the thread conversation does.
-  The thread conversation's "fixed later" rule doesn't apply: there is no
-  one thread opened on one commit.
+- Each human message stores `view` (the comparison on screen) as thread
+  conversations' messages do. It is not put in the prompt: the agent
+  reads it through MCP (above).
 - The view must be the real one. The drawer sits outside Files changed's
   `SendViewProvider` (`FilesPage.tsx`), and `useSendView` falls back to
   "latest patch set vs base branch" outside it. Lift the provider (or what
@@ -304,10 +303,6 @@ on making the acp spawned agents to have access to the mcp)".
   on Files changed from either tab **(call: on Overview, the same
   comparison the review is set to; the builder confirms there is one
   per-review choice and uses it)**.
-- The agent may check out other commits and ask carbonless for more
-  context on its own; giving the ACP agent the crb MCP is another
-  session's work, and this change doesn't depend on it. Once it lands, the
-  envelope's thread block could shrink to an index **(note, not now)**.
 
 ## Principles check
 
@@ -334,10 +329,16 @@ on making the acp spawned agents to have access to the mcp)".
 Unit:
 - store: open/answer/seen on a `review` thread; a second `review` open is
   refused; two on read collapse to the first; ai open refused; any resolve
-  refused/ignored; the runner picks a waiting review thread up.
-- prompt: the `review_conversation` envelope carries the facts, files and
-  sanitised threads; a hostile thread body is fenced; truncation and
-  "GitHub unreadable" are stated in `notice`.
+  refused/ignored; a waiting review thread is handed out by `next` and wakes a
+  spawned agent.
+- `next` for a review question: the thread, `replyTo`, `subject:
+  "review"`, the conversation's messages and the generic preamble, and no
+  review data (no title, body, files, GitHub threads, commits, hunk or
+  anchored file); `reply` stores the answer; spawned and joined agents get
+  the same payload.
+- the MCP read tools added for it: scoped to the agent's review,
+  third-party text sanitised (a hostile comment body is fenced), GitHub
+  unreadable said as such, never an empty list.
 - web: chip states (not configured → setup; configured → toggles the
   drawer; count; unread dot; pressed; accessible name); the drawer
   (empty state focuses the composer, opens at the end / at "new", marks
@@ -360,7 +361,7 @@ look at.
 
 ## Left to the builder
 
-Drawer width and push/overlay breakpoint, the shortcut key, the thread
-cap in the envelope, the exact preamble wording, how the drawer shares
+Drawer width and push/overlay breakpoint, the shortcut key, the exact
+preamble wording, the MCP read tools' shape (with the MCP session), how the drawer shares
 components with `ThreadAgentPanel` (prefer extracting the conversation
 body over copying it).
