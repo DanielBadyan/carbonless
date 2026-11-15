@@ -206,6 +206,40 @@ test("a thread that already has a conversation: the agent's message goes at its 
 	]);
 });
 
+test("a whole-file conversation: its citation opens the file's header threads, its card and its Re row", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// Two agent turns' worth of setup and a page move: past 30 s on a
+	// loaded machine (agent.spec.ts does the same).
+	test.slow();
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{
+					match: "Where else",
+					text: "The whole file: {{cite:0}}.",
+					open: [{ code: { path: CALC }, text: "Every line here is one." }],
+				},
+				{ text: "ok" },
+			],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	const request = await ask(page, section, 3, REQUEST);
+	const link = request.getByTestId("agent-conversation-link");
+	await expect(link).toHaveText(CALC);
+	await link.click();
+	const opened = section
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Every line here is one." });
+	await expect(opened).toBeVisible();
+	await expect(opened.getByTestId("agent-re-text")).toHaveText(`“${REQUEST}”`);
+});
+
 test("a reply in a conversation the agent opened is a question it gets, with the request it came from", async ({
 	page,
 	pr,
