@@ -50,7 +50,7 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
-import { AgentHandle } from "../agent/ThreadAgentButton";
+import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -1826,10 +1826,7 @@ function ThreadItem({
 					{more && (
 						// Its own row, centred under the card; the agent's handle at its
 						// right end while the actions row is closed.
-						<div
-							data-testid="thread-more-row"
-							className="relative flex justify-center"
-						>
+						<CentredWithHandle testId="thread-more-row" handle={!actions}>
 							<MoreToggle
 								open={open}
 								onClick={() => setOpen((o) => !o)}
@@ -1843,10 +1840,7 @@ function ThreadItem({
 								replies={replies}
 								kind={kind}
 							/>
-							{!actions && (
-								<AgentHandle className="absolute right-0 bottom-0" />
-							)}
-						</div>
+						</CentredWithHandle>
 					)}
 				</div>
 			</li>

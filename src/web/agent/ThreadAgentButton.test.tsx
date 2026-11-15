@@ -101,7 +101,7 @@ describe("ThreadAgentButton", () => {
 	});
 
 	it("a drawer handle (its right edge the drawer's side), Resolve's height, in every state; never a header pill", async () => {
-		const tab = (el: HTMLElement) => {
+		const handle = (el: HTMLElement) => {
 			expect(el.className).toContain("h-10");
 			expect(el.className).toContain("min-w-10");
 			expect(el.className).toContain("rounded-l-lg");
@@ -110,13 +110,13 @@ describe("ThreadAgentButton", () => {
 			expect(el.className).not.toContain("rounded-full");
 		};
 		show({});
-		tab(screen.getByRole("button", { name: "Ask agent" }));
+		handle(screen.getByRole("button", { name: "Ask agent" }));
 		cleanup();
 		show({ conversation: conversation({ unread: true, seenUpTo: "m3" }) });
-		tab(screen.getByRole("button", { name: "4 agent messages, 1 new" }));
+		handle(screen.getByRole("button", { name: "4 agent messages, 1 new" }));
 		cleanup();
 		show({}, { threads: null });
-		tab(screen.getByTestId("thread-agent-loading"));
+		handle(screen.getByTestId("thread-agent-loading"));
 		cleanup();
 		show(
 			{},
@@ -126,7 +126,7 @@ describe("ThreadAgentButton", () => {
 					new Response(JSON.stringify({ error: "broke" }), { status: 502 }),
 			},
 		);
-		tab(
+		handle(
 			await screen.findByRole("button", {
 				name: "Agent messages couldn't load",
 			}),

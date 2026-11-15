@@ -421,19 +421,17 @@ describe("replying from an Overview card", () => {
 		const card = within(humans).getByTestId("thread");
 		const more = within(card).getByTestId("thread-more");
 		expect(more).toHaveAccessibleName("Reply");
-		// Its own row, centred in the card.
+		// Its own row, centred in the card: the toggle in the middle of three
+		// columns, the agent's handle (writes are on) in the right one.
 		const row = within(card).getByTestId("thread-more-row");
-		expect(row).toHaveClass("flex", "justify-center");
-		expect(row).toContainElement(more);
-		// The toggle alone in its flow (the agent's handle pinned at its right end).
-		expect(
-			[...row.children].filter(
-				(c) =>
-					!["thread-agent-button", "thread-agent-loading"].includes(
-						c.getAttribute("data-testid") ?? "",
-					),
-			),
-		).toHaveLength(1);
+		expect(row).toHaveClass("grid", "grid-cols-[1fr_auto_1fr]");
+		expect(row.children[0]).toHaveClass("col-start-2");
+		expect(row.children[0]).toContainElement(more);
+		expect(row.children[1]).toHaveClass("col-start-3");
+		// (Its spinner while the agent threads load: never "Ask agent" first.)
+		expect(row.children[1]?.getAttribute("data-testid")).toMatch(
+			/^thread-agent-(button|loading)$/,
+		);
 		expect(more).toHaveTextContent(/^Reply$/);
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 		await user.click(more);

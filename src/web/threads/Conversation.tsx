@@ -106,9 +106,10 @@ export function useCanAct(thread: ReviewThread): boolean {
 }
 
 /**
- * The reply box with the Resolve button beside it (below it on a phone)
- * and the thread agent's handle at the row's right end: each only where
- * the viewer may; the handle alone when they may do neither.
+ * The reply box with the Resolve button beside it (below it on a phone
+ * while the box is open, or always with the agent's handle) and the
+ * thread agent's handle at the row's right end: each only where the
+ * viewer may; the handle alone when they may do neither.
  */
 export function ThreadActions(props: {
 	thread: ReviewThread;
@@ -127,11 +128,15 @@ export function ThreadActions(props: {
 	// Nothing to do here but the agent: its handle alone, at the row's end.
 	if (!canAct && !asking) return agent ? <AgentHandleRow /> : null;
 	const box = asking ? !thread.resolved : on && thread.viewerCan.reply;
+	// With the agent's handle beside Resolve, a phone's line is too short
+	// for the closed box too: Resolve and the handle go under it, the box
+	// keeps the width (owner: the handle "shouldn't limit the width").
+	const stacked = box && (boxOpen || agent !== null);
 	return (
 		<div
 			data-testid="thread-actions"
 			data-box-open={(box && boxOpen) || undefined}
-			className={`flex gap-2 ${box && boxOpen ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
+			className={`flex gap-2 ${stacked ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
 		>
 			{box && (
 				<div className="min-w-0 flex-1">

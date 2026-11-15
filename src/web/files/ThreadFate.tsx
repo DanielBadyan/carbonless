@@ -35,7 +35,7 @@ import type {
 	ReviewThread,
 	ThreadAnchorRef,
 } from "../../shared/types";
-import { AgentHandle } from "../agent/ThreadAgentButton";
+import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -656,7 +656,7 @@ function UnplacedReplies({
 			{actions && <ThreadActions thread={thread} />}
 			{more ? (
 				// The agent's handle at the row's right end while the actions row is closed.
-				<div className="relative flex justify-center">
+				<CentredWithHandle handle={!actions}>
 					<MoreToggle
 						open={open}
 						onClick={() => setOpen((o) => !o)}
@@ -664,8 +664,7 @@ function UnplacedReplies({
 						replies={replies}
 						kind="more"
 					/>
-					{!actions && <AgentHandle className="absolute right-0 bottom-0" />}
-				</div>
+				</CentredWithHandle>
 			) : (
 				!actions && <AgentHandleRow />
 			)}

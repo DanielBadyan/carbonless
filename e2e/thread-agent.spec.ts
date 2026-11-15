@@ -516,10 +516,10 @@ const overlaps = (a: Box, b: Box) =>
  * full width (no gutter kept for it).
  */
 async function expectBottomHandle(card: Locator, page: Page) {
-	const tab = agentButton(card);
-	await tab.scrollIntoViewIfNeeded();
-	await expect(tab).toBeInViewport();
-	const t = await tab.boundingBox();
+	const handle = agentButton(card);
+	await handle.scrollIntoViewIfNeeded();
+	await expect(handle).toBeInViewport();
+	const t = await handle.boundingBox();
 	const c = await card.boundingBox();
 	if (!t || !c) throw new Error("no boxes");
 	const resolve = card.getByTestId("thread-actions").getByRole("button", {
@@ -588,27 +588,131 @@ test("the agent opener is a handle at the card's bottom beside Resolve, the pane
 	await expect(panel(card).getByTestId("agent-answering")).toBeVisible();
 	// Open: beside Resolve, under the panel's right edge, pressed.
 	await expectBottomHandle(card, page);
-	const tabBox = await agentButton(card).boundingBox();
+	const handleBox = await agentButton(card).boundingBox();
 	const panelBox = await panel(card).boundingBox();
-	if (!tabBox || !panelBox) throw new Error("no boxes");
+	if (!handleBox || !panelBox) throw new Error("no boxes");
 	expect(
-		Math.abs(tabBox.x + tabBox.width - (panelBox.x + panelBox.width)),
+		Math.abs(handleBox.x + handleBox.width - (panelBox.x + panelBox.width)),
 	).toBeLessThanOrEqual(2);
 	await agentButton(card).click();
 	await expectClosed(card);
 	releaseAcp(acpScenario, "prompt");
-	// Closed with an unread answer: the count and the dot on the tab.
+	// Closed with an unread answer: the count and the dot on the handle.
 	await expect(card.getByTestId("agent-unread-dot")).toBeVisible();
 	await expect(agentButton(card)).toHaveAccessibleName(
 		"2 agent messages, 1 new",
 	);
 	await expect(agentButton(card)).toHaveText("2");
 	await expectBottomHandle(card, page);
+	// A fresh page: the card closed, its handle at the Show more row's end,
+	// sunk as the toggle is, neither it nor its dot reaching into the content above.
+	await page.reload();
+	const fresh = overviewCard(page);
+	await expect(fresh.getByTestId("agent-unread-dot")).toBeVisible();
+	await expect(fresh.getByTestId("thread-actions")).toHaveCount(0);
+	await expectBottomHandle(fresh, page);
+	const moreRow = fresh.getByTestId("thread-more-row");
+	await expect(moreRow.getByTestId("thread-agent-button")).toBeVisible();
+	const above = await moreRow.evaluate(
+		(el) => el.previousElementSibling?.getBoundingClientRect().bottom ?? 0,
+	);
+	const dot = await fresh.getByTestId("agent-unread-dot").boundingBox();
+	const h = await agentButton(fresh).boundingBox();
+	const toggle = await fresh.getByTestId("thread-more").boundingBox();
+	if (!dot || !h || !toggle) throw new Error("no boxes");
+	expect(h.y).toBeGreaterThanOrEqual(above);
+	expect(dot.y).toBeGreaterThanOrEqual(above);
+	expect(
+		Math.abs(h.y + h.height - (toggle.y + toggle.height)),
+	).toBeLessThanOrEqual(1);
 	// In Files changed too.
 	const thread = await filesThread(page, s.url);
 	await expect(thread.getByTestId("agent-unread-dot")).toBeVisible();
 	await expectBottomHandle(thread, page);
 	await agentButton(thread).click();
 	await expect(panel(thread)).toHaveAttribute("data-open", "true");
+	await expectNoPageOverflow(page);
+});
+
+test("at 360px a long Show more toggle and a two-digit handle share their row without overlapping", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	const at = (m: number) => `2026-01-02T09:0${m}:00Z`;
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: CALC, line: 3, subjectType: "LINE" }, [
+				threadComment({
+					login: "rev1",
+					text: QUESTION,
+					createdAt: at(0),
+					commit: head,
+				}),
+				threadComment({ login: "rev2", text: "Agreed.", createdAt: at(1) }),
+				threadComment({ login: "rev1", text: "Fixing.", createdAt: at(2) }),
+				threadComment({ login: "rev2", text: "Thanks.", createdAt: at(3) }),
+				threadComment({ login: "Octo_Cat", text: "My draft", pending: true }),
+			]),
+		];
+	});
+	const s = await agentCrb({ scenario: { agent: AGENT, answers: [] } });
+	// Twelve agent messages on the thread, the last one unseen.
+	const messages = Array.from({ length: 12 }, (_, i) => ({
+		id: `m${i + 1}`,
+		by: i % 2 ? "ai" : "human",
+		at: `2026-01-03T10:${String(i).padStart(2, "0")}:00Z`,
+		text: `Message ${i + 1}`,
+	}));
+	await page.route(/\/agent\/threads$/, (route) =>
+		route.request().method() === "GET"
+			? route.fulfill({
+					json: {
+						threads: [
+							{
+								id: "A1",
+								anchor: {
+									subject: "thread",
+									// The fake gh's id for PR 7's first thread.
+									thread: "T7-0",
+									path: CALC,
+									commit: head,
+									side: "RIGHT",
+									line: 3,
+									startSide: "RIGHT",
+									startLine: 3,
+								},
+								openedBy: "human",
+								at: messages[0]?.at,
+								messages,
+								resolved: false,
+								waiting: false,
+								unread: true,
+								seenUpTo: "m10",
+							},
+						],
+					},
+				})
+			: route.fallback(),
+	);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	const toggle = card.getByTestId("thread-more");
+	await expect(toggle).toHaveAccessibleName(/^Show more, 4 replies, 1 pending/);
+	const handle = agentButton(card);
+	await expect(handle).toHaveText("12");
+	await expectBottomHandle(card, page);
+	const t = await toggle.boundingBox();
+	const h = await handle.boundingBox();
+	if (!t || !h) throw new Error("no boxes");
+	// Side by side on the row's bottom, the toggle clear of the handle.
+	expect(t.x + t.width).toBeLessThanOrEqual(h.x);
+	expect(Math.abs(t.y + t.height - (h.y + h.height))).toBeLessThanOrEqual(1);
+	expect(h.width).toBeGreaterThanOrEqual(40);
 	await expectNoPageOverflow(page);
 });

@@ -175,7 +175,7 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	expect(storedReplies(p, "Kept on purpose")).toBe(1);
 });
 
-test("a short card's toggle says Reply; on a phone the closed box and Resolve share a line", async ({
+test("a short card's toggle says Reply; on a phone Resolve and the agent handle sit under the closed box", async ({
 	page,
 	pr,
 	startCrb,
@@ -206,11 +206,32 @@ test("a short card's toggle says Reply; on a phone the closed box and Resolve sh
 		if (!b) throw new Error("not laid out");
 		return b;
 	};
-	// Closed and empty: one line, Resolve beside it (desktop and phone).
+	// Closed and empty: one line, Resolve and the agent's handle beside it
+	// on a desktop. On a phone they go under it, right-aligned: the box keeps
+	// the line's width and its placeholder clear of the send button.
 	let b = await rect(box);
 	let r = await rect(resolve);
-	expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
-	expect(Math.abs(r.y + r.height - (b.y + b.height))).toBeLessThanOrEqual(2);
+	const handle = await rect(c.getByTestId("thread-agent-button"));
+	if (isMobile) {
+		expect(r.y).toBeGreaterThanOrEqual(b.y + b.height);
+		expect(handle.x).toBeGreaterThanOrEqual(r.x + r.width);
+		const row = await rect(c.getByTestId("thread-actions"));
+		expect(row.x + row.width - (handle.x + handle.width)).toBeLessThanOrEqual(
+			1,
+		);
+		// The box and its send button take the line (master gave the box ~128px).
+		const sendBox = await rect(send(c));
+		expect(sendBox.x + sendBox.width - row.x).toBeGreaterThanOrEqual(
+			row.width - 1,
+		);
+		expect(b.width).toBeGreaterThanOrEqual(200);
+		const hint = await rect(c.getByText("Reply…", { exact: true }));
+		expect(hint.x + hint.width).toBeLessThanOrEqual(b.x + b.width);
+	} else {
+		expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
+		expect(Math.abs(r.y + r.height - (b.y + b.height))).toBeLessThanOrEqual(2);
+		expect(handle.x).toBeGreaterThanOrEqual(r.x + r.width);
+	}
 	expect(r.height).toBeGreaterThanOrEqual(40);
 	expect((await rect(send(c))).height).toBeGreaterThanOrEqual(40);
 	const overflow = () =>
