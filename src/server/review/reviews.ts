@@ -25,6 +25,7 @@ import {
 } from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
 import { RefConflictError, RefStore } from "./refStore.js";
+import { splitCarries } from "./splitCarry.js";
 
 /** The pull request fields a review records (Task 5's PrMeta fits this). */
 export interface ReviewPr {
@@ -513,6 +514,49 @@ export class ReviewService {
 				slug,
 			);
 		}
+		return this.getProgress(reviewId, slug);
+	}
+
+	/**
+	 * Carries the reviewer's marks on whole hunks of the patch set on
+	 * `snapshot` onto the pieces the snapshot now cuts them into
+	 * (splitCarries, CAR-156): one `split-carried` event by the engine,
+	 * written only when some piece has a mark to take and none of its own,
+	 * so a second call (any later read) writes nothing. Any patch set,
+	 * earlier ones too: it adds no mark the reviewer didn't make. Nothing
+	 * for a snapshot that is no patch set of theirs. The progress after.
+	 */
+	async carrySplits(
+		reviewId: string,
+		slug: string,
+		snapshot: Snapshot,
+	): Promise<ProgressState> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		const ref = progressRef(reviewId, slug);
+		const existing = await this.store.readEvents(ref);
+		const progress = foldProgress(existing);
+		const states = progress.statesByRevision.get(snapshot.revision);
+		if (!states || states.size === 0) return progress;
+		const entries = splitCarries(snapshot, states);
+		if (entries.length === 0) return progress;
+		const pieces = new Set(entries.map((e) => e.key)).size;
+		const number = progress.patchsets.find(
+			(p) => p.revision === snapshot.revision,
+		)?.number;
+		const event = newEvent(
+			"split-carried",
+			slug,
+			{ patchset: snapshot.revision, states: entries },
+			"auto",
+			stamper(existing)(),
+		);
+		await this.store.appendEvent(
+			ref,
+			`crb: carried marks onto ${pieces} split cluster${pieces === 1 ? "" : "s"} of PS${number}`,
+			event,
+			slug,
+		);
 		return this.getProgress(reviewId, slug);
 	}
 

@@ -64,6 +64,28 @@ export interface Cluster {
 	noNewlineOld?: boolean;
 	/** The last added line has no newline at end of file. */
 	noNewlineNew?: boolean;
+	/**
+	 * Every line is whitespace-only change, side for side (git's `-w`:
+	 * src/shared/whitespace.ts splitHunk). With "Ignore whitespace" on, such
+	 * a cluster is shown as one quiet row and left out of progress.
+	 */
+	whitespaceOnly?: true;
+	/**
+	 * A piece of a git hunk cut at its whitespace-only runs (CAR-156): the
+	 * key the whole hunk had as one cluster before, and where this piece's
+	 * lines sit in it (its first removed and added line's index there, and
+	 * the whole hunk's removed count), so a mark on the whole hunk carries
+	 * onto its pieces (docs/review-data-storage.md, "Split carries").
+	 */
+	split?: ClusterSplit;
+}
+
+/** Where a piece of a split hunk sits in it (Cluster.split). */
+export interface ClusterSplit {
+	key: string;
+	removedAt: number;
+	addedAt: number;
+	removed: number;
 }
 
 export interface FileSummary {

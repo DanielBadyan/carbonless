@@ -1412,6 +1412,77 @@ describe("Session", () => {
 			return { newHead, snap2 };
 		};
 
+		it("carries marks made on a whole hunk before it split onto its pieces, in the latest patch set and an earlier one (CAR-156)", async () => {
+			// Lines 10-15: a change, a whitespace-only change, a change.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			lines[9] = "line ten";
+			lines[10] = "line eleven";
+			lines[11] = "  line 12";
+			lines[12] = "  line 13";
+			lines[13] = "line fourteen";
+			lines[14] = "line fifteen";
+			pr.moveHead({ "a.txt": `${lines.join("\n")}\n` });
+			const s = await Session.open(pr.arg, process.cwd());
+			const snap = s.snapshot();
+			const file = snap.files.find((f) => f.path === "a.txt");
+			const pieces = file?.clusters.filter((c) => c.split) ?? [];
+			expect(pieces.map((c) => c.whitespaceOnly === true)).toEqual([
+				false,
+				true,
+				false,
+			]);
+			// The snapshot as the old rule cut it: the hunk whole, under its old key.
+			const [first] = pieces;
+			const whole = {
+				key: first?.split?.key as string,
+				kind: "lines" as const,
+				oldStart: first?.oldStart as number,
+				oldCount: pieces.reduce((n, c) => n + c.oldCount, 0),
+				newStart: first?.newStart as number,
+				newCount: pieces.reduce((n, c) => n + c.newCount, 0),
+				removed: pieces.flatMap((c) => c.removed),
+				added: pieces.flatMap((c) => c.added),
+				lines: pieces.reduce((n, c) => n + c.lines, 0),
+			};
+			const before = {
+				...snap,
+				files: snap.files.map((f) =>
+					f === file
+						? {
+								...f,
+								clusters: [...f.clusters.filter((c) => !c.split), whole],
+							}
+						: f,
+				),
+			};
+			const reviews = new ReviewService(
+				new RefStore(clonePath("acme", "widget")),
+			);
+			await reviews.recordStates(s.id, "octo-cat", before, [
+				{ key: whole.key, state: "reviewed" },
+			]);
+			const { snap2 } = await startSecond(s);
+			// PS2 is the latest: opening carries nothing there (its pieces were
+			// never marked); PS1's pieces take the hunk's mark when it opens.
+			const again = await Session.open(pr.arg, process.cwd());
+			expect((await again.review()).revision).toBe(snap2.revision);
+			const old = await again.reviewAt(1);
+			const shown = old.files
+				.find((f) => f.path === "a.txt")
+				?.clusters.filter((c) => c.split);
+			expect(shown?.map((c) => c.state)).toEqual([
+				"reviewed",
+				"reviewed",
+				"reviewed",
+			]);
+			const events = await new RefStore(clonePath("acme", "widget")).readEvents(
+				`refs/crb/reviews/${s.id}/reviewers/octo-cat/progress`,
+			);
+			expect(events.filter((e) => e.type === "split-carried")).toHaveLength(1);
+		});
+
 		it("remembers the head seen on the previous open", async () => {
 			const first = await Session.open(pr.arg, process.cwd());
 			expect(first.info().lastSeen).toBeNull();

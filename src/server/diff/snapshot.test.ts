@@ -8,8 +8,9 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
-import type { Snapshot } from "../../shared/types.js";
+import type { Cluster, Snapshot } from "../../shared/types.js";
 import { listChangedFiles } from "./files.js";
+import { clusterKeys } from "./identity.js";
 import {
 	buildSnapshot,
 	loadContext,
@@ -397,5 +398,189 @@ describe("cross-renames and context-dependent counts", () => {
 		const [add, del] = withContext.split("\t").map(Number);
 		expect([file?.additions, file?.deletions]).not.toEqual([add, del]);
 		expect(file).toMatchObject({ additions: 8, deletions: 3 });
+	});
+});
+
+describe("whitespace-only runs are clusters of their own (CAR-156)", () => {
+	let fx: GitFixture;
+	let snap: Snapshot;
+	const OLD = {
+		"mixed.ts": "a\nb\n  c\n  d\ne\nf\n",
+		"allws.ts": "if (x) {\n  y();\n  z();\n}\n",
+		"none.ts": "one\ntwo\n",
+		"blank.ts": "x\n  \ny\np\nq\n",
+		"crlf.ts": "a\r\nb\r\n",
+		"moved.ts": "m\n  b1\n  b2\nz\n",
+		"tabs.ts": "k\n\tv\nw\n",
+	};
+	const NEW = {
+		"mixed.ts": "A\nB\nc\nd\nE\nF\n",
+		"allws.ts": "if (x) {\n\ty();\n\tz();\n}\n",
+		"none.ts": "uno\ndos\n",
+		"blank.ts": "X\n\ny2\np\n\nq\n",
+		"crlf.ts": "a\nb\n",
+		"moved.ts": "b1\nb2\nm\nz\n",
+		"tabs.ts": "K\n    v\nW\n",
+	};
+	const file = (path: string) => {
+		const f = snap.files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return f;
+	};
+	const shape = (path: string) =>
+		file(path).clusters.map(
+			(c) =>
+				`${c.whitespaceOnly ? "~" : "*"}-${c.oldStart},${c.oldCount}+${c.newStart},${c.newCount}`,
+		);
+
+	beforeAll(async () => {
+		fx = createGitFixture([
+			{ message: "base", files: OLD },
+			{ message: "head", files: NEW },
+		]);
+		snap = await buildSnapshot(
+			fx.path,
+			fx.shas[0] as string,
+			fx.shas[1] as string,
+		);
+	});
+	afterAll(() => fx.cleanup());
+
+	it("cuts change / whitespace-only / change in one hunk into three clusters, at git's positions", () => {
+		expect(shape("mixed.ts")).toEqual(["*-1,2+1,2", "~-3,2+3,2", "*-5,2+5,2"]);
+		const [first, ws, last] = file("mixed.ts").clusters;
+		expect(first).toMatchObject({
+			removed: ["a", "b"],
+			added: ["A", "B"],
+			lines: 4,
+		});
+		expect(ws).toMatchObject({
+			removed: ["  c", "  d"],
+			added: ["c", "d"],
+			lines: 4,
+		});
+		expect(last).toMatchObject({
+			removed: ["e", "f"],
+			added: ["E", "F"],
+			lines: 4,
+		});
+	});
+
+	it("keeps an all-whitespace hunk and a hunk with no whitespace-only line whole, keys as before", () => {
+		expect(shape("allws.ts")).toEqual(["~-2,2+2,2"]);
+		expect(shape("none.ts")).toEqual(["*-1,2+1,2"]);
+		for (const path of ["allws.ts", "none.ts"]) {
+			for (const c of file(path).clusters) expect(c.split).toBeUndefined();
+		}
+		const { key, ...none } = file("none.ts").clusters[0] as Cluster;
+		const [wholeKey] = clusterKeys(
+			"none.ts",
+			[none],
+			NEW["none.ts"].split("\n").slice(0, -1),
+		);
+		expect(key).toBe(wholeKey);
+	});
+
+	it("pairs a blank line with a whitespace-only one, keeps an added blank line a change, and treats CRLF and tabs as whitespace", () => {
+		expect(shape("blank.ts")).toEqual([
+			"*-1,1+1,1",
+			"~-2,1+2,1",
+			"*-3,1+3,1",
+			"*-4,0+5,1",
+		]);
+		expect(shape("crlf.ts")).toEqual(["~-1,2+1,2"]);
+		expect(shape("tabs.ts")).toEqual(["*-1,1+1,1", "~-2,1+2,1", "*-3,1+3,1"]);
+	});
+
+	it("keeps a block re-indented and moved across a line a change: git keeps the line, the block's sides land in two hunks", () => {
+		expect(shape("moved.ts")).toEqual(["*-0,0+1,2", "*-2,2+3,0"]);
+	});
+
+	it("leaves git diff -w's changed lines outside the whitespace-only clusters: exactly, within a hunk; more, never fewer, across hunks", () => {
+		const numstat = execFileSync(
+			"git",
+			["diff", "-w", "--numstat", fx.shas[0] as string, fx.shas[1] as string],
+			{ cwd: fx.path, encoding: "utf8", env: testGitEnv() },
+		);
+		const counted = new Map<string, number>();
+		for (const line of numstat.trim().split("\n")) {
+			const [added, deleted, path] = line.split("\t");
+			counted.set(path as string, Number(added) + Number(deleted));
+		}
+		for (const f of snap.files) {
+			const real = f.clusters
+				.filter((c) => !c.whitespaceOnly)
+				.reduce((n, c) => n + c.lines, 0);
+			if (f.path === "moved.ts") {
+				// -w matches the block across the moved line; per hunk, nothing pairs.
+				expect(real).toBe(4);
+				expect(counted.get(f.path)).toBe(2);
+			} else expect(real, f.path).toBe(counted.get(f.path) ?? 0);
+			// Every changed line is in exactly one cluster.
+			expect(
+				f.clusters.reduce((n, c) => n + c.lines, 0),
+				f.path,
+			).toBe(f.additions + f.deletions);
+		}
+	});
+
+	it("names each piece's whole hunk by the key it had as one cluster, and where the piece sits in it", () => {
+		const pieces = file("mixed.ts").clusters;
+		const whole = {
+			kind: "lines" as const,
+			oldStart: 1,
+			oldCount: 6,
+			newStart: 1,
+			newCount: 6,
+			removed: OLD["mixed.ts"].split("\n").slice(0, -1),
+			added: NEW["mixed.ts"].split("\n").slice(0, -1),
+			lines: 12,
+		};
+		const [wholeKey] = clusterKeys("mixed.ts", [whole], whole.added);
+		expect(pieces.map((c) => c.split)).toEqual([
+			{ key: wholeKey, removedAt: 0, addedAt: 0, removed: 6 },
+			{ key: wholeKey, removedAt: 2, addedAt: 2, removed: 6 },
+			{ key: wholeKey, removedAt: 4, addedAt: 4, removed: 6 },
+		]);
+		const keys = pieces.map((c) => c.key);
+		expect(new Set([...keys, wholeKey]).size).toBe(4);
+	});
+
+	it("shows the pieces as one display hunk, each line under its own cluster", async () => {
+		const index = file("mixed.ts").index;
+		const { hunks } = await loadFileHunks(fx.path, snap, index);
+		expect(hunks).toHaveLength(1);
+		const [first, ws, last] = file("mixed.ts").clusters.map((c) => c.key);
+		expect(
+			hunks[0]?.lines.map(
+				(l) =>
+					`${l.kind}:${l.text}:${l.clusterKey === first ? 1 : l.clusterKey === ws ? 2 : l.clusterKey === last ? 3 : 0}`,
+			),
+		).toEqual([
+			"del:a:1",
+			"del:b:1",
+			"add:A:1",
+			"add:B:1",
+			"del:  c:2",
+			"del:  d:2",
+			"add:c:2",
+			"add:d:2",
+			"del:e:3",
+			"del:f:3",
+			"add:E:3",
+			"add:F:3",
+		]);
+		const blank = await loadFileHunks(fx.path, snap, file("blank.ts").index);
+		expect(blank.hunks[0]?.lines.map((l) => `${l.kind}:${l.text}`)).toEqual([
+			"del:x",
+			"add:X",
+			"del:  ",
+			"add:",
+			"del:y",
+			"add:y2",
+			"context:p",
+			"add:",
+			"context:q",
+		]);
 	});
 });
