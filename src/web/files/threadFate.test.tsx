@@ -375,6 +375,21 @@ describe("PlacementChip", () => {
 	});
 });
 
+/** Each fate's sentence: the open row's title and, resolved, its quiet line. */
+const SENTENCES: [Fate | null, string][] = [
+	["deleted", "Commented line has been deleted since the review"],
+	["rewritten", "Commented line has been rewritten since the review"],
+	["outdated", "GitHub marks the commented line outdated"],
+	["untraced", "Couldn't trace the commented line here"],
+	["reverted", "The commented change has been reverted since the review"],
+	[
+		"base-changed",
+		"The base changed under the commented line since the review",
+	],
+	["file-gone", "Commented file has been deleted since the review"],
+	[null, "Couldn't work out where this thread is now"],
+];
+
 describe("ChangedSince", () => {
 	/** Carried from line 3 on PS1 to line 9, rewritten: what replaced it is the head's. */
 	const changed = {
@@ -488,27 +503,41 @@ describe("ChangedSince", () => {
 describe("UnplacedRow", () => {
 	afterEach(() => vi.unstubAllGlobals());
 
-	it.each<[Fate | null, string]>([
-		["deleted", "Commented line has been deleted since the review"],
-		["rewritten", "Commented line has been rewritten since the review"],
-		["outdated", "GitHub marks the commented line outdated"],
-		["untraced", "Couldn't trace the commented line here"],
-		["reverted", "The commented change has been reverted since the review"],
-		[
-			"base-changed",
-			"The base changed under the commented line since the review",
-		],
-		["file-gone", "Commented file has been deleted since the review"],
-		[null, "Couldn't work out where this thread is now"],
-	])("its top row says the fate %s in a sentence", (fate, sentence) => {
-		render(
-			wrap(info(), <UnplacedRow thread={thread()} readId="r1" fate={fate} />),
-		);
-		const top = screen.getByTestId("unplaced-fate");
-		expect(top.textContent).toBe(sentence);
-		// One line on a phone: truncated, never wrapped.
-		expect(top.className).toContain("truncate");
-	});
+	it.each(SENTENCES)(
+		"its top row says the fate %s in a sentence",
+		(fate, sentence) => {
+			render(
+				wrap(info(), <UnplacedRow thread={thread()} readId="r1" fate={fate} />),
+			);
+			const top = screen.getByTestId("unplaced-fate");
+			expect(top.textContent).toBe(sentence);
+			// One line on a phone: truncated, never wrapped.
+			expect(top.className).toContain("truncate");
+		},
+	);
+
+	it.each(SENTENCES)(
+		"resolved, its quiet line keeps the fate %s's sentence (CAR-158)",
+		(fate, sentence) => {
+			render(
+				wrap(
+					info(),
+					<UnplacedRow
+						thread={thread({ resolved: true, author: "rev1" })}
+						readId="r1"
+						fate={fate}
+					/>,
+				),
+			);
+			const line = screen.getByTestId("unplaced-collapsed");
+			expect(line.textContent).toBe(`${sentence} · rev1`);
+			expect(line).toHaveAccessibleName(
+				`Resolved thread by rev1: ${sentence}. Expand`,
+			);
+			// One line on a phone: truncated, never wrapped.
+			expect(line.querySelector(".truncate")).toBeTruthy();
+		},
+	);
 
 	it("moved? names where the line may have gone, as text", () => {
 		render(
@@ -527,6 +556,48 @@ describe("UnplacedRow", () => {
 			`Commented line may have moved to lib/${HOSTILE}.ts`,
 		);
 		expect(top.querySelector("img")).toBeNull();
+	});
+
+	it("resolved, moved? still names where the line may have gone (CAR-158)", () => {
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({ resolved: true, author: "rev1" })}
+					readId="r1"
+					fate="moved"
+					movedTo={`lib/${HOSTILE}.ts`}
+				/>,
+			),
+		);
+		const line = screen.getByTestId("unplaced-collapsed");
+		expect(line.textContent).toBe(
+			`Commented line may have moved to lib/${HOSTILE}.ts · rev1`,
+		);
+		expect(line).toHaveAccessibleName(
+			`Resolved thread by rev1: Commented line may have moved to lib/${HOSTILE}.ts. Expand`,
+		);
+		expect(line.querySelector("img")).toBeNull();
+	});
+
+	it("resolved, its quiet line's whole sentence shows in a tooltip, as the open row's (CAR-158)", async () => {
+		const user = userEvent.setup();
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({ resolved: true, author: "rev1" })}
+					readId="r1"
+					fate="deleted"
+				/>,
+			),
+		);
+		await user.tab();
+		expect(screen.getByTestId("unplaced-collapsed")).toHaveFocus();
+		// Not a description: the button's name already says it.
+		expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
 	});
 
 	it("the original code sits in a titled box: Original Reviewed Change, then where it was", () => {
@@ -658,10 +729,24 @@ describe("a resolved unplaced thread", () => {
 		const quiet = rows[1] as HTMLElement;
 		expect(quiet).toHaveAttribute("data-resolved", "true");
 		const line = within(quiet).getByTestId("unplaced-collapsed");
-		expect(line.textContent).toBe("File deleted · a.ts · rev1");
+		// As the open row: the sentence truncates on its own; who wrote it
+		// never shrinks; the path has a line of its own, outside the
+		// sentence's truncation, so a phone still shows both (CAR-158).
+		const fate = within(line).getByTestId("unplaced-collapsed-fate");
+		expect(fate.textContent).toBe(
+			"Commented file has been deleted since the review",
+		);
+		expect(fate.className).toContain("truncate");
+		const who = within(line).getByTestId("unplaced-collapsed-who");
+		expect(who.textContent).toBe(" · rev1");
+		expect(who.className).toContain("shrink-0");
+		const path = within(line).getByTestId("unplaced-collapsed-path");
+		expect(path.textContent).toBe("a.ts");
+		expect(fate.contains(path)).toBe(false);
+		expect(path.parentElement?.className).toContain("flex-col");
 		// Its name says what it shows, the path too.
 		expect(line).toHaveAccessibleName(
-			"Resolved thread by rev1: File deleted · a.ts. Expand",
+			"Resolved thread by rev1: Commented file has been deleted since the review · a.ts. Expand",
 		);
 		expect(line).toHaveAttribute("aria-expanded", "false");
 		expect(line.className).toContain("text-muted");
@@ -697,7 +782,7 @@ describe("a resolved unplaced thread", () => {
 			),
 		);
 		expect(screen.getByTestId("unplaced-collapsed").textContent).toContain(
-			"Line deleted",
+			"Commented line has been deleted since the review",
 		);
 		expect(screen.queryByTestId("original-code")).toBeNull();
 		rerender(

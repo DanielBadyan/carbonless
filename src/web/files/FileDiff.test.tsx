@@ -2345,12 +2345,12 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
 		// In its bordered row box, as a review thread's.
 		expect(open).toHaveClass("rounded-md", "border", "border-line");
-		// Resolved: after the rest, one quiet line (the fate shortened) that
+		// Resolved: after the rest, one quiet line (the fate sentence) that
 		// expands to the full row and collapses again, as a review thread's.
 		expect(quiet).toHaveAttribute("data-resolved", "true");
 		const collapsed = within(quiet).getByTestId("unplaced-collapsed");
 		expect(collapsed).toHaveAccessibleName(
-			"Resolved thread by you: Line deleted. Expand",
+			"Resolved thread by you: Commented line has been deleted since the review. Expand",
 		);
 		expect(within(quiet).queryByTestId("agent-thread")).toBeNull();
 		await user.click(collapsed);
