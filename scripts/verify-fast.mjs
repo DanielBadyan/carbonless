@@ -121,7 +121,6 @@ const E2E_MAP = [
 			"keepalive",
 		],
 	],
-	[/^src\/web\/index\.css$/, ["gutter-pin", "sticky"]],
 	[
 		/^src\/web\/files\/find\/|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/App\.tsx$|^src\/server\/diff\/snapshot\.ts$/,
 		["find"],

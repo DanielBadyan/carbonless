@@ -422,12 +422,9 @@ test("a closed file's header opens it; the file bubble sits in the middle of the
 		.locator("td")
 		.first()
 		.evaluate((td) => {
-			// The text itself, wherever the cell keeps it (its sticky span).
-			const walker = document.createTreeWalker(td, NodeFilter.SHOW_TEXT);
-			let text: Node | null = null;
-			for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-				if (n.textContent?.includes("@@")) text = n;
-			}
+			const text = [...td.childNodes].find(
+				(n) => n.nodeType === Node.TEXT_NODE && n.textContent?.includes("@@"),
+			);
 			if (!text) return Number.NaN;
 			const range = document.createRange();
 			range.selectNodeContents(text);

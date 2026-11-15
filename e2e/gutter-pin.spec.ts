@@ -4,17 +4,20 @@ import {
 	expectNoPageOverflow,
 	fileSection,
 	openFiles,
-	setSwitch,
 	sideBySide,
 	tapHeight,
 	tapWidth,
+	underStack,
 } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
- * A long line makes the diff scroll sideways. Only the code scrolls: the
- * cluster's rail, its controls and both line numbers stay at the scroller's
- * left edge, in every kind of row, opaque, and still pick lines there.
+ * A long line makes the diff scroll sideways. The whole row scrolls (rail,
+ * controls, numbers and code: the code gets the full width), and only a
+ * cluster's checkbox and cross-off float at the visible left edge of the
+ * code while their slot is scrolled past it (stickyControls.ts), at its
+ * top-left corner while they float under the file header too. The leading
+ * columns tighten when the diff is narrow, and on a phone.
  */
 
 /** DESIGN_SHOTS=<dir>: also save gutter-{chromium,phone}-*.png there. */
@@ -90,152 +93,232 @@ async function expectAdjacent(row: Locator) {
 	for (const gap of gaps) expect(Math.abs(gap)).toBeLessThan(0.5);
 }
 
-const expectOpaque = async (cell: Locator, name: string) => {
-	const bg = await cell.evaluate((el) => getComputedStyle(el).backgroundColor);
-	expect(bg, name).not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+/**
+ * One tall cluster of added lines in a file with a long line: tall enough
+ * for its controls to float under the file header too.
+ */
+const TALL = "src/tall.ts";
+const tallBase = Array.from({ length: 12 }, (_, i) =>
+	i === 2 ? `const tall3 = "${"tall ".repeat(80)}";` : `tall ${i + 1}`,
+);
+const tallFixture: PrOptions = {
+	base: { [TALL]: text(tallBase) },
+	files: [
+		{
+			message: "Tall",
+			files: {
+				[TALL]: text([
+					...tallBase.slice(0, 2),
+					...Array.from({ length: 40 }, (_, i) => `added ${i + 1}`),
+					...tallBase.slice(2, -1),
+					// A second cluster: marking the first doesn't finish the file.
+					"tall 12 changed",
+				]),
+			},
+		},
+	],
 };
 
-test("line numbers and the gutter stay put while the code scrolls sideways", async ({
+/** What a click or tap at the element's centre hits is the element (or in it). */
+const onTop = (l: Locator) =>
+	l.evaluate((el) => {
+		const b = el.getBoundingClientRect();
+		const hit = document.elementFromPoint(
+			b.left + b.width / 2,
+			b.top + b.height / 2,
+		);
+		return hit !== null && el.contains(hit);
+	});
+
+test("scrolled sideways, the row scrolls whole and only the cluster's controls float at the code's left edge", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
-}) => {
-	await setup(pr);
+}, testInfo) => {
+	await pr(tallFixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const section = fileSection(page, WIDE);
+	const section = fileSection(page, TALL);
 	await section.getByRole("button", { name: "Expand file" }).click();
 	const line = (n: number) =>
 		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
-	const context = line(4);
-	const added = section.locator('tr[data-testid="diff-line"][data-kind="add"]');
-	await expect(added).toHaveCount(1);
-	// The added line's row is the cluster's first: it holds the checkbox.
-	const cellsOf = (row: Locator) => ({
-		rail: row.locator("td").first(),
-		controls: row.locator("td").nth(1),
-		old: row.getByTestId("old"),
-		new: row.getByTestId("new"),
-	});
-	const rows = { context: cellsOf(context), added: cellsOf(added) };
-	const code = {
-		context: context.getByTestId("code"),
-		added: added.getByTestId("code"),
+	// The cluster's first row holds its controls.
+	const first = line(3);
+	await expect(first).toHaveAttribute("data-kind", "add");
+	const slot = first.locator("[data-sticky-slot]");
+	const controls = first.locator("[data-sticky-controls]");
+	const box = first.getByTestId("cluster-box-target");
+	// Named for what it does next: no name, so it's found checked too.
+	const checkbox = first.getByRole("checkbox");
+	const cross = first.getByRole("button", { name: "Cross off cluster" });
+	const tap = async (l: Locator) => {
+		if (isMobile) await l.tap();
+		else await l.click();
 	};
-	// The file cluster's label row: rail, controls, then the label's cell.
-	const clusterRow = section.locator("tbody.group > tr").first();
-	const cluster = {
-		rail: clusterRow.locator("td").first(),
-		controls: clusterRow.locator("td").nth(1),
+	const shot = async (name: string) => {
+		if (shots) {
+			await page.screenshot({
+				path: `${shots}/gutter-${testInfo.project.name}-${name}.png`,
+			});
+		}
 	};
-	await expect(clusterRow).toContainText(`Renamed from ${WIDE_WAS}`);
-	// A row's words stay in view too: the label, the hunk header, a gap's count.
-	const words = {
-		label: clusterRow.getByText(`Renamed from ${WIDE_WAS}`),
-		hunk: section.getByTestId("hunk-header").getByText(/^@@ /),
-		gap: section.getByTestId("gap-row").getByText(/hidden lines$/),
-	};
-	const before = {
-		context: await xs(rows.context),
-		added: await xs(rows.added),
-		cluster: await xs(cluster),
-		words: await xs(words),
-		code: await xs(code),
-	};
+	// Clear of the sticky header and of what floats at the viewport's bottom.
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	const scroller = diffScroller(section);
-	const width = await scroller.evaluate((el) => el.clientWidth);
-	// Unscrolled, nothing moved: the cells lie in table order, each starting
-	// where the one before it ends.
-	await expectAdjacent(context);
-	await expectAdjacent(added);
-	await expectAdjacent(clusterRow);
+	const edge = await x(scroller);
+	const cells = {
+		rail: first.locator("td").first(),
+		controls: first.locator("td").nth(1),
+		old: first.getByTestId("old"),
+		new: first.getByTestId("new"),
+		code: first.getByTestId("code"),
+	};
+	const before = await xs(cells);
+	const slotX = await x(slot);
+	expect(await x(controls)).toBeCloseTo(slotX, 0);
+	await expect(controls).not.toHaveAttribute("data-stuck");
 
 	await scroller.evaluate((el) => {
 		el.scrollLeft = 120;
 	});
 	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
-	const after = {
-		context: await xs(rows.context),
-		added: await xs(rows.added),
-		cluster: await xs(cluster),
-		words: await xs(words),
-		code: await xs(code),
-	};
-	// The code moved, the leading cells did not.
-	for (const k of ["context", "added"] as const) {
-		expect(after.code[k], `${k} code`).toBeCloseTo(
-			(before.code[k] ?? Number.NaN) - 120,
-			0,
-		);
-		expect(after[k], k).toEqual(before[k]);
+	// Nothing is pinned: every cell moved with the code.
+	const after = await xs(cells);
+	for (const [name, at] of Object.entries(before)) {
+		expect(after[name], name).toBeCloseTo(at - 120, 0);
 	}
-	expect(after.cluster).toEqual(before.cluster);
-	expect(after.words).toEqual(before.words);
-	// Opaque: the row's own tint, never the code showing through.
-	for (const [k, r] of Object.entries(rows)) {
-		for (const [name, cell] of Object.entries(r)) {
-			await expectOpaque(cell, `${k} ${name}`);
+	// The controls float at the code's visible left edge, in their row.
+	await expect(controls).toHaveAttribute("data-stuck", "shift");
+	await expect(box).toBeVisible();
+	await expect
+		.poll(async () => Math.abs((await x(controls)) - edge))
+		.toBeLessThan(4);
+	const row = await first.boundingBox();
+	const c = await controls.boundingBox();
+	if (!row || !c) throw new Error("not rendered");
+	// In their row (on touch the cross-off is stacked under it, as unscrolled).
+	expect(c.y).toBeGreaterThanOrEqual(row.y - 1);
+	expect(c.y).toBeLessThan(row.y + row.height);
+	// What a tap there hits is the control, not the code under it.
+	expect(await onTop(box)).toBe(true);
+	expect(await onTop(cross)).toBe(true);
+	const crossX = await x(cross);
+	expect(crossX).toBeGreaterThanOrEqual(edge);
+	expect(crossX).toBeLessThan(edge + 60);
+	if (isMobile) {
+		for (const target of [box, cross]) {
+			expect(await tapWidth(target)).toBeGreaterThanOrEqual(40);
+			expect(await tapHeight(target)).toBeGreaterThanOrEqual(40);
 		}
 	}
-	await expectOpaque(cluster.controls, "cluster controls");
-	// What's on top at each pinned cell is the cell (or, over a controls
-	// cell on touch, the cluster's stacked controls reaching down from its
-	// first row), never the code under it.
-	for (const [k, r] of Object.entries(rows)) {
-		for (const [name, cell] of Object.entries(r)) {
-			const covered = await cell.evaluate((el) => {
-				const b = el.getBoundingClientRect();
-				const hit = document.elementFromPoint(
-					b.left + b.width / 2,
-					b.top + b.height / 2,
-				);
-				if (!hit) return false;
-				return (
-					el.contains(hit) ||
-					((el as HTMLTableCellElement).cellIndex === 1 &&
-						hit.closest("[data-sticky-controls]") !== null)
-				);
-			});
-			expect(covered, `${k} ${name} on top`).toBe(true);
-		}
-	}
-
-	// Picking by number works where the number is pinned.
-	if (isMobile) await rows.context.new.tap();
-	else await rows.context.new.click();
-	await expect(context).toHaveAttribute("data-picked", "true");
-	await expect(section.locator("tr[data-picked]")).toHaveCount(1);
-	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
-	await page.keyboard.press("Escape");
-	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
-
-	// The checkbox still marks the cluster from its pinned cell (on the
-	// cluster's first row, the deleted line; the file cluster's is above).
-	const checkbox = section
-		.locator('tr[data-testid="diff-line"]')
-		.getByRole("checkbox", { name: "Mark cluster reviewed" });
-	await checkbox.click();
+	await shot("sideways");
+	// They work where they float.
+	await tap(box);
 	await expect(checkbox).toBeChecked();
-	await expect(added).toHaveAttribute("data-reviewed", "true");
-	expect(await xs(rows.added)).toEqual(before.added);
-	await expectOpaque(rows.added.old, "reviewed old");
-	await checkbox.click();
+	await expect(first).toHaveAttribute("data-reviewed", "true");
+	await tap(box);
 	await expect(checkbox).not.toBeChecked();
-
-	// An opened thread's row stays in view at the scroller's width, as before.
-	await context.getByRole("button", { name: /1 comment on line 4/ }).click();
-	const card = section.getByTestId("thread-row").locator("div.sticky");
-	await expect(card).toBeVisible();
-	const cardBox = await card.boundingBox();
-	const scrollerBox = await scroller.boundingBox();
-	if (!cardBox || !scrollerBox) throw new Error("not rendered");
-	expect(cardBox.x).toBeCloseTo(scrollerBox.x, 0);
-	expect(cardBox.width).toBeLessThanOrEqual(width);
+	await tap(cross);
+	await expect(cross).toHaveAttribute("aria-pressed", "true");
+	await tap(cross);
+	await expect(cross).toHaveAttribute("aria-pressed", "false");
+	// And from the keyboard: Space on the focused box.
+	if (!isMobile) {
+		await checkbox.focus();
+		await page.keyboard.press("Space");
+		await expect(checkbox).toBeChecked();
+		await page.keyboard.press("Space");
+		await expect(checkbox).not.toBeChecked();
+	}
 	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
-	expect(await xs(rows.context)).toEqual(before.context);
+	await expectNoPageOverflow(page);
 
-	// A file that doesn't scroll lays its cells out as before: no gap.
+	// Down the cluster, under the file header: the top-left corner of the code.
+	await underStack(line(20));
+	await expect(controls).toHaveAttribute("data-stuck", "fixed");
+	const header = await section.locator(":scope > header").boundingBox();
+	const corner = await controls.boundingBox();
+	if (!header || !corner) throw new Error("not rendered");
+	expect(Math.abs(corner.x - edge)).toBeLessThan(4);
+	expect(corner.y).toBeGreaterThanOrEqual(header.y + header.height - 1);
+	expect(corner.y).toBeLessThan(header.y + header.height + 16);
+	expect(await onTop(box)).toBe(true);
+	await shot("sideways-down");
+	await tap(box);
+	await expect(checkbox).toBeChecked();
+	await tap(box);
+	await expect(checkbox).not.toBeChecked();
+	await expectNoPageOverflow(page);
+	// Unscrolled sideways, they float at the slot's x again, as before.
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 0;
+	});
+	await expect
+		.poll(async () => Math.abs((await x(controls)) - slotX))
+		.toBeLessThan(1);
+
+	// Back in view and unscrolled: in their slot, exactly as they were.
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await expect(controls).not.toHaveAttribute("data-stuck");
+	expect(await x(controls)).toBe(await x(slot));
+	expect(await xs(cells)).toEqual(before);
+});
+
+test("on the narrowest phone, the floating controls never make the page scroll sideways", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	test.skip(!isMobile, "a phone's width");
+	await page.setViewportSize({ width: 360, height: 780 });
+	await pr(tallFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const line = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const first = line(3);
+	const controls = first.locator("[data-sticky-controls]");
+	const box = first.getByTestId("cluster-box-target");
+	const shot = async (name: string) => {
+		if (shots) {
+			await page.screenshot({
+				path: `${shots}/gutter-${testInfo.project.name}-${name}.png`,
+			});
+		}
+	};
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const scroller = diffScroller(section);
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	await expect(controls).toHaveAttribute("data-stuck", "shift");
+	const edge = await x(scroller);
+	await expect
+		.poll(async () => Math.abs((await x(controls)) - edge))
+		.toBeLessThan(4);
+	expect(await tapWidth(box)).toBeGreaterThanOrEqual(40);
+	expect(await tapHeight(box)).toBeGreaterThanOrEqual(40);
+	await expectNoPageOverflow(page);
+	await shot("360-sideways");
+	await underStack(line(20));
+	await expect(controls).toHaveAttribute("data-stuck", "fixed");
+	await expectNoPageOverflow(page);
+	await shot("360-sideways-down");
+});
+
+test("a file that doesn't scroll sideways lays its cells out edge to edge", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
 	const other = fileSection(page, SHORT);
 	await other.getByRole("button", { name: "Expand file" }).click();
 	const otherRow = other.locator(
@@ -249,6 +332,7 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 	).toBe(true);
 	await expectAdjacent(otherRow);
 	await expectAdjacent(other.locator("tbody.group > tr").first());
+	await expect(other.locator("[data-stuck]")).toHaveCount(0);
 });
 
 /** A cell's width and left padding, in px. */
@@ -317,28 +401,9 @@ test("a narrow diff (the tree dragged wide) tightens the leading columns; with r
 	expect(
 		await tight.sign.evaluate((el) => getComputedStyle(el).marginRight),
 	).toBe("4px");
-	// Pinned at the new sums: nothing moves but the code.
-	const pinned = {
-		rail: tight.row.locator("td").first(),
-		controls: tight.controls,
-		old: tight.old,
-		new: tight.new,
-	};
-	await expectAdjacent(tight.row);
-	const before = await xs(pinned);
-	const codeBefore = await x(tight.row.getByTestId("code"));
-	await scroller.evaluate((el) => {
-		el.scrollLeft = 120;
-	});
-	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
-	expect(await xs(pinned)).toEqual(before);
-	expect(await x(tight.row.getByTestId("code"))).toBeCloseTo(
-		codeBefore - 120,
-		0,
-	);
 });
 
-test("a phone is cramped: a narrow pinned block whose controls and numbers still take a tap while scrolled", async ({
+test("a phone is cramped: a narrow leading block whose controls and numbers still take a tap", async ({
 	page,
 	pr,
 	startCrb,
@@ -363,11 +428,6 @@ test("a phone is cramped: a narrow pinned block whose controls and numbers still
 	if (!old) throw new Error("not rendered");
 	expect(last.x + last.width - old.x).toBeGreaterThanOrEqual(40);
 
-	const scroller = diffScroller(section);
-	await scroller.evaluate((el) => {
-		el.scrollLeft = 120;
-	});
-	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
 	// The two controls' 40px targets, by what a tap would hit.
 	// On the cluster's first row, the deleted line (the file cluster above
 	// has its own).
@@ -391,76 +451,45 @@ test("a phone is cramped: a narrow pinned block whose controls and numbers still
 	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
 	await row.getByTestId("new").tap();
 	await expect(row).toHaveAttribute("data-picked", "true");
-	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
 	await expectNoPageOverflow(page);
 });
 
-/**
- * The code cell's own furniture scrolls under the pinned cells like its
- * text: a pair's word marks, and the ⚠ of a change that only shows with
- * hidden characters (a positioned button with a 40px touch target) never
- * paint over a pinned number or take its tap. A gap's stacked arrows keep
- * the controls column's width.
- */
-const MARKS = "src/marks.ts";
-const tail = "mark ".repeat(80);
-const marksBase = Array.from({ length: 60 }, (_, i) =>
-	i === 4 || i === 44 ? `const w${i + 1} = "${tail}";` : `mark ${i + 1}`,
+/** A file whose gaps get two and three stacked arrows. */
+const GAPS = "src/gaps.ts";
+const gapsBase = Array.from({ length: 60 }, (_, i) =>
+	i === 4 ? `const w5 = "${"gap ".repeat(80)}";` : `gap ${i + 1}`,
 );
-const marksFixture: PrOptions = {
-	base: { [MARKS]: text(marksBase) },
+const gapsFixture: PrOptions = {
+	base: { [GAPS]: text(gapsBase) },
 	files: [
 		{
-			message: "Marks",
+			message: "Gaps",
 			files: {
-				[MARKS]: text(
-					marksBase.map((l, i) =>
-						i === 4
-							? `const v5 = "${tail}";`
-							: // A byte order mark: a change nothing shows.
-								i === 44
-								? `const w\uFEFF45 = "${tail}";`
-								: l,
-					),
+				[GAPS]: text(
+					gapsBase.map((l, i) => (i === 4 || i === 44 ? `${l} changed` : l)),
 				),
 			},
 		},
 	],
 };
 
-test("word marks and a hidden change's ⚠ scroll under the pinned cells; a gap's arrows keep the column", async ({
+test("a gap's arrows fit the rail and controls columns", async ({
 	page,
 	pr,
 	startCrb,
-	isMobile,
-}, testInfo) => {
-	await pr(marksFixture);
+}) => {
+	await pr(gapsFixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const section = fileSection(page, MARKS);
+	const section = fileSection(page, GAPS);
 	await section.getByRole("button", { name: "Expand file" }).click();
-	// Hidden characters off: the BOM draws nothing, its line warns.
-	await setSwitch(page, "Show hidden characters", false);
-	await page.keyboard.press("Escape");
-	const shot = async (name: string) => {
-		if (shots) {
-			await section.screenshot({
-				path: `${shots}/gutter-${testInfo.project.name}-${name}.png`,
-			});
-		}
-	};
-	const marked = section.locator(
+	const row = section.locator(
 		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="5"]',
 	);
-	await expect(marked.locator("[data-word]")).not.toHaveCount(0);
-	const warned = section.locator(
-		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="45"]',
-	);
-	const warning = warned.locator("[data-hidden-change]");
-	await expect(warning).toBeVisible();
-	// The gaps: their arrows (stacked where there are two or three) in the
-	// rail and controls, the columns after them start where every line's do.
-	const lineNumberX = await x(marked.getByTestId("old"));
+	await expect(row).toBeVisible();
+	// The gaps' arrows (stacked where there are two or three) sit in the
+	// rail and controls: the columns after them start where every line's do.
+	const lineNumberX = await x(row.getByTestId("old"));
 	const gaps = await section.getByTestId("gap-row").evaluateAll((rows) =>
 		rows.map((tr) => ({
 			arrows: tr.querySelectorAll("button[data-glyph]").length,
@@ -469,89 +498,6 @@ test("word marks and a hidden change's ⚠ scroll under the pinned cells; a gap'
 	);
 	expect(Math.max(...gaps.map((g) => g.arrows))).toBeGreaterThan(1);
 	for (const g of gaps) expect(g.end).toBeCloseTo(lineNumberX, 0);
-	await shot("unscrolled");
-
-	// Scroll the ⚠ right under the new number's centre.
-	const scroller = diffScroller(section);
-	const number = warned.getByTestId("new");
-	const centre = async (l: Locator) => {
-		const b = await l.boundingBox();
-		if (!b) throw new Error("not rendered");
-		return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-	};
-	const by = Math.round((await centre(warning)).x - (await centre(number)).x);
-	await scroller.evaluate((el, left) => {
-		el.scrollLeft = left;
-	}, by);
-	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(by);
-	await shot("scrolled");
-	// Clear of what floats at the viewport's bottom (the diff's own
-	// scrollbar, the phone's Files button) and of the sticky header.
-	await warned.evaluate((el) => el.scrollIntoView({ block: "center" }));
-	// What's on top at the number, all across it, is the number: else what
-	// is, named.
-	const over = await number.evaluate((el) => {
-		const b = el.getBoundingClientRect();
-		const y = b.top + b.height / 2;
-		const out: string[] = [];
-		for (let at = b.left + 1; at < b.right - 1; at += 2) {
-			const hit = document.elementFromPoint(at, y);
-			if (hit === null || !el.contains(hit)) {
-				out.push(
-					`${Math.round(at)}: ${hit?.tagName ?? "nothing"} ${hit?.getAttribute("data-testid") ?? ""} ${hit?.className ?? ""}`,
-				);
-			}
-		}
-		return out;
-	});
-	expect(over, "the number, not the ⚠, on top").toEqual([]);
-	for (const row of [marked, warned]) {
-		for (const cell of [row.getByTestId("old"), row.getByTestId("new")]) {
-			const covered = await cell.evaluate((el) => {
-				const b = el.getBoundingClientRect();
-				const hit = document.elementFromPoint(
-					b.left + b.width / 2,
-					b.top + b.height / 2,
-				);
-				return hit !== null && el.contains(hit);
-			});
-			expect(covered).toBe(true);
-		}
-	}
-	// A tap or click on the number picks the line; hidden characters stay off.
-	if (isMobile) await number.tap();
-	else await number.click();
-	await expect(warned).toHaveAttribute("data-picked", "true");
-	await expect(warning).toBeVisible();
-	await page.keyboard.press("Escape");
-	await expectNoPageOverflow(page);
-
-	// Focused while under the numbers (in the scroller's box, so the
-	// browser wouldn't scroll, but behind the pinned cells), the ⚠ scrolls
-	// out from under them, not left hidden there.
-	await scroller.evaluate((el, left) => {
-		el.scrollLeft = left;
-	}, by);
-	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(by);
-	await warning.evaluate((el) => (el as HTMLElement).focus());
-	await expect
-		.poll(async () => {
-			const w = await warning.boundingBox();
-			const n = await number.boundingBox();
-			return w && n ? Math.round(w.x - (n.x + n.width)) : Number.NaN;
-		})
-		.toBeGreaterThanOrEqual(0);
-
-	// Side by side, for the eyes (DESIGN_SHOTS).
-	if (shots) {
-		await sideBySide(page, true);
-		await page.keyboard.press("Escape");
-		await expect(
-			section.locator('table[data-view="side-by-side"]'),
-		).toBeVisible();
-		await shot("side-by-side");
-		await sideBySide(page, false);
-	}
 });
 
 /**

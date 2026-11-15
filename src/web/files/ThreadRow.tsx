@@ -140,9 +140,9 @@ const CARD =
  * cells, then the card over that side's number and code columns and a
  * blank over the other side's, in the blank side's tone. Text wraps to the
  * card's width; wide code in a comment scrolls in the comment. Across the
- * table the card sits above the pinned cells (DiffBody's PIN_CELL, z 3 to
- * 5): a touch cluster's cross-off, reaching down from the line above, never
- * covers the card's corner or takes its taps.
+ * table the card sits at z 5 (DiffBody's OVER_CONTROLS): a touch cluster's
+ * cross-off, reaching down from the line above, never covers the card's
+ * corner or takes its taps.
  */
 export function TailRow(props: {
 	testId: string;

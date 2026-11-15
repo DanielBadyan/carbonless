@@ -15,7 +15,25 @@ const THREAD_ROW = '[data-testid="thread-row"]';
  */
 const END_GAP = 2;
 
-/** Where one cluster's controls go for the stack bottom `top` (viewport px). */
+/**
+ * How far right of the diff's visible left edge floating controls sit, in
+ * px (their ring shows; less than the slot's own inset, so an unscrolled
+ * slot never counts as hidden).
+ */
+const SIDE_GAP = 2;
+
+export type Placement =
+	| { mode: "static" }
+	/** Sideways only: translated right, in their row, to the visible edge. */
+	| { mode: "shift"; x: number }
+	| { mode: "fixed"; top: number; left: number }
+	| { mode: "end"; offset: number; x: number };
+
+/**
+ * Where one cluster's controls go, on both axes: below the stack `top`
+ * when their slot slips under it (vertically), and at the diff's visible
+ * left edge `edge` when the diff is scrolled sideways past the slot.
+ */
 export function placeControls(m: {
 	/** The stack's bottom: the open file header's bottom edge. */
 	top: number;
@@ -26,20 +44,23 @@ export function placeControls(m: {
 	above: number;
 	below: number;
 	height: number;
-}):
-	| { mode: "static" }
-	| { mode: "fixed"; top: number }
-	| { mode: "end"; offset: number } {
+	/** The slot's natural left, and the diff scroller's left (viewport px). */
+	slotLeft: number;
+	edge: number;
+}): Placement {
 	const { top, slotTop, clusterBottom, above, below, height } = m;
+	// Scrolled sideways past the slot: moved right just as far as the edge.
+	const x = Math.max(0, m.edge + SIDE_GAP - m.slotLeft);
+	const sideways: Placement = x > 0 ? { mode: "shift", x } : { mode: "static" };
 	// Its targets would slip under the stack: float them just below it.
-	if (slotTop - above >= top) return { mode: "static" };
+	if (slotTop - above >= top) return sideways;
 	const fixedTop = top + above;
 	if (fixedTop + height + below + END_GAP <= clusterBottom) {
-		return { mode: "fixed", top: fixedTop };
+		return { mode: "fixed", top: fixedTop, left: m.slotLeft + x };
 	}
 	// The cluster's end is near: ride up with it.
 	const offset = clusterBottom - END_GAP - below - height - slotTop;
-	return offset > 0 ? { mode: "end", offset } : { mode: "static" };
+	return offset > 0 ? { mode: "end", offset, x } : sideways;
 }
 
 /**
@@ -75,9 +96,13 @@ function reset(slot: HTMLElement, controls: HTMLElement) {
  * Keeps each cluster's checkbox and cross-off control on screen while any of
  * the cluster's rows are: they float right below the open file's sticky
  * header, then scroll away with the cluster's end, where the next cluster's
- * take over. CSS sticky can't do it: the diff's horizontal scroller is the
- * nearest scroll container. Only the controls move (fixed, or translated at
- * the end); their slot keeps its size, so the diff text never shifts.
+ * take over. Scrolled sideways past their slot, they float at the diff's
+ * visible left edge (in their row, or at the top-left corner of the code
+ * while they float under the header too); the rest of the row scrolls.
+ * CSS sticky can't do it: the diff's horizontal scroller is the nearest
+ * scroll container, and a cell is too narrow to stick inside. Only the
+ * controls move (fixed, or translated); their slot keeps its size, so the
+ * diff text never shifts.
  */
 export function useStickyControls(
 	root: RefObject<HTMLElement | null>,
@@ -98,7 +123,7 @@ export function useStickyControls(
 				?.querySelector<HTMLElement>(":scope > header");
 			if (!header) return;
 			const top = header.getBoundingClientRect().bottom;
-			const scrollLeft = scroller.current?.getBoundingClientRect().left ?? 0;
+			const edge = scroller.current?.getBoundingClientRect().left ?? 0;
 			const slots = box.querySelectorAll<HTMLElement>(`[${SLOT}]`);
 			// Measure everything first, then write: one layout per frame.
 			const plans = [...slots].map((slot) => {
@@ -132,15 +157,10 @@ export function useStickyControls(
 					above: c.top - minTop,
 					below: maxBottom - c.bottom,
 					height: c.height,
+					slotLeft: s.left,
+					edge,
 				});
-				return {
-					slot,
-					controls,
-					place,
-					width: s.width,
-					height: s.height,
-					left: Math.max(s.left, scrollLeft),
-				};
+				return { slot, controls, place, width: s.width, height: s.height };
 			});
 			for (const plan of plans) {
 				if (!plan) continue;
@@ -157,13 +177,18 @@ export function useStickyControls(
 				if (place.mode === "fixed") {
 					controls.style.position = "fixed";
 					controls.style.top = `${place.top}px`;
-					controls.style.left = `${plan.left}px`;
+					controls.style.left = `${place.left}px`;
 					controls.style.transform = "";
 				} else {
+					// In their row (or riding up with the cluster's end):
+					// translated, so the slot and the text keep their places.
 					controls.style.position = "";
 					controls.style.top = "";
 					controls.style.left = "";
-					controls.style.transform = `translateY(${place.offset}px)`;
+					controls.style.transform =
+						place.mode === "shift"
+							? `translateX(${place.x}px)`
+							: `translate(${place.x}px, ${place.offset}px)`;
 				}
 			}
 		};

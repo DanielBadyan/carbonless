@@ -207,11 +207,6 @@ export async function expectNoPageOverflow(page: Page) {
 	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 }
 
-/**
- * How tall the element's tap target is: the run of points through its
- * centre that hit it (a hit area a pseudo-element extends counts, a box
- * does not say). Principle 5 wants 40px.
- */
 /** How wide the element's tap target is, as tapHeight measures its height. */
 export const tapWidth = (el: Locator) =>
 	el.evaluate((node) => {
@@ -227,6 +222,11 @@ export const tapWidth = (el: Locator) =>
 		return right - left + 1;
 	});
 
+/**
+ * How tall the element's tap target is: the run of points through its
+ * centre that hit it (a hit area a pseudo-element extends counts, a box
+ * does not say). Principle 5 wants 40px.
+ */
 export const tapHeight = (el: Locator) =>
 	el.evaluate((node) => {
 		const r = node.getBoundingClientRect();
