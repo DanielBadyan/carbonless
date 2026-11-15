@@ -6,7 +6,7 @@ import { parseHead } from "../src/server/pinnedHead";
 import type { ServerState } from "../src/server/serverState";
 import { parseTraceparent } from "../src/server/trace";
 import { VERSION_HEADER } from "../src/server/version";
-import { type Served, START_TIMEOUT_MS } from "./crb-process";
+import { deadline, type Served, START_TIMEOUT_MS } from "./crb-process";
 
 /*
  * `crb <pr>` without the client process (CAR-106): the harness POSTs
@@ -143,7 +143,9 @@ export async function openOverHttp(
 		output: `crb: ${message}\n`,
 	});
 	// runCli's bound: a hung open fails as a failed one, with the server's log.
-	const signal = AbortSignal.timeout(START_TIMEOUT_MS);
+	const abort = new AbortController();
+	const { signal } = abort;
+	const cancel = deadline(START_TIMEOUT_MS, () => abort.abort());
 	let res: Response;
 	let body: { url?: unknown; error?: unknown };
 	try {
@@ -163,6 +165,8 @@ export async function openOverHttp(
 				? `crb serve did not answer the open in ${START_TIMEOUT_MS / 1000} s`
 				: `Could not reach crb serve at ${state.url}: ${(error as Error).message}`,
 		);
+	} finally {
+		cancel();
 	}
 	if (!res.ok || typeof body.url !== "string") {
 		return failed(

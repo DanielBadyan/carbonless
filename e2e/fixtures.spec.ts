@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readRequests, type Span, spansOf } from "../scripts/test-profile/load";
 import { tracer } from "../src/server/trace";
@@ -269,6 +269,37 @@ test("a crb serve that prints no URL in time is killed, not left running", async
 	} finally {
 		if (alive(pid)) process.kill(pid, "SIGKILL");
 	}
+});
+
+test("a crb serve that printed its URL while the test process was frozen past the start deadline counts as started", async ({
+	workdir,
+}) => {
+	// A stand-in for crb: prints the line, then (once it is in the pipe)
+	// leaves a mark, and stays up like a server.
+	const mark = join(workdir, "printed");
+	const cli = join(workdir, "fake-crb.cjs");
+	writeFileSync(
+		cli,
+		`process.stdout.write("carbonless listening on http://127.0.0.1:1/\\n", () => {
+	require("node:fs").writeFileSync(${JSON.stringify(mark)}, "");
+});
+setInterval(() => {}, 1000);
+`,
+	);
+	const started = Date.now();
+	const served = startServe(workdir, [], crbEnv(workdir), cli, 200).catch(
+		(e: unknown) => e,
+	);
+	// Frozen (as a swapped-out process is): no timer, no read, until the
+	// line is in the pipe and the deadline long past.
+	while (!existsSync(mark) || Date.now() < started + 1000) {
+		if (Date.now() > started + 60_000) throw new Error("no mark in 60 s");
+	}
+	const result = await served;
+	expect(result).not.toBeInstanceOf(Error);
+	const { child, url } = result as Awaited<ReturnType<typeof startServe>>;
+	child.kill("SIGKILL");
+	expect(url).toBe("http://127.0.0.1:1/");
 });
 
 /** Files under `dir`, 0 when it doesn't exist. */
