@@ -29,6 +29,7 @@ import {
 	useAgentOn,
 	withThread,
 } from "./api";
+import { useConversationLanding } from "./conversationLinks";
 
 /** The comparison a message is sent in; the server fills left/right. */
 export type SendView = Omit<AgentView, "left" | "right">;
@@ -122,9 +123,14 @@ export function standingSuggestion(
 	if (!conversation || conversation.orphaned || thread.resolved) {
 		return undefined;
 	}
-	const latest = [...conversation.messages]
-		.reverse()
-		.find((m) => m.by === "ai" && m.stop !== "error" && m.stop !== "cancelled");
+	const latest = [...conversation.messages].reverse().find(
+		(m) =>
+			m.by === "ai" &&
+			// A message from `open` answers nothing: it never retracts one.
+			!m.origin &&
+			m.stop !== "error" &&
+			m.stop !== "cancelled",
+	);
 	return latest?.suggests === "resolve" ? latest : undefined;
 }
 
@@ -339,6 +345,13 @@ export function useThreadAgent(
 		if (to === "composer") composerRef.current?.focus();
 		else if (to === "button") buttonRef.current?.focus();
 	}, [open]);
+	// A link to this conversation: its panel opens (AgentMessageItems takes the landing).
+	const { landing } = useConversationLanding(conversation?.id);
+	useEffect(() => {
+		if (!landing) return;
+		setFolded(false);
+		setOpen(true);
+	}, [landing]);
 	const toggle = useCallback(() => {
 		setFolded(false);
 		setOpen((o) => {

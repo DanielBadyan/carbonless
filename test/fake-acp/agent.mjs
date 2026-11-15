@@ -210,6 +210,30 @@ function answerFor(latest) {
 	);
 }
 
+/** The answer's `open` steps, in order: each one's cite (null when refused). */
+async function opens(steps) {
+	const cites = [];
+	let ghThreads = null;
+	for (const step of steps ?? []) {
+		let thread = step.thread;
+		if (step.ghThread !== undefined) {
+			if (!ghThreads) {
+				const r = await tool("review", { token });
+				ghThreads = r.value.review?.threads ?? [];
+			}
+			thread = ghThreads[step.ghThread]?.id ?? "unknown";
+		}
+		const r = await tool("open", {
+			token,
+			text: step.text,
+			...(step.key !== undefined ? { key: step.key } : {}),
+			...(step.code ? { code: step.code } : { thread }),
+		});
+		cites.push(r.error ? null : r.value.cite);
+	}
+	return cites;
+}
+
 /**
  * A turn as a joined session works: attach with the kickoff's request (once),
  * the scenario's extra tools, then next → reply until none waits.
@@ -277,11 +301,14 @@ async function mcpTurn(cx, sessionId, prompt) {
 				text: "stray",
 			});
 		}
+		const cites = await opens(answer.open);
 		await tool("reply", {
 			token,
 			thread: q.value.thread,
 			replyTo: q.value.replyTo ?? "",
-			text: answer.text,
+			text: answer.text.replace(/\{\{cite:(\d+)\}\}/g, (all, i) =>
+				typeof cites[Number(i)] === "string" ? cites[Number(i)] : all,
+			),
 		});
 		if (answer.stop && answer.stop !== "end_turn") {
 			return { stopReason: answer.stop };

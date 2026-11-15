@@ -16,9 +16,14 @@ export interface FilesSearch {
 	/** …or the viewed head (a commit id), and the comparison base. */
 	head?: string;
 	from?: number | "branch";
+	/** An agent conversation to open on arrival (its card), and a message in it to outline. */
+	conversation?: string;
+	message?: string;
 }
 
 const OID = /^[0-9a-f]{40}$/;
+/** An agent thread or message id (a lowercase ULID). */
+const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 
 /** A positive integer, as the address has it (a string) or as given. */
 function positive(raw: unknown): number | undefined {
@@ -42,6 +47,12 @@ export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
 	const from = positive(raw.from);
 	if (from !== undefined) out.from = from;
 	else if (raw.from === "branch") out.from = "branch";
+	if (typeof raw.conversation === "string" && ULID.test(raw.conversation)) {
+		out.conversation = raw.conversation;
+		if (typeof raw.message === "string" && ULID.test(raw.message)) {
+			out.message = raw.message;
+		}
+	}
 	return out;
 }
 

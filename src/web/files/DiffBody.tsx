@@ -60,6 +60,7 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
+import { usePendingLanding } from "../agent/conversationLinks";
 import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
@@ -2678,6 +2679,16 @@ export function DiffBody(props: {
 			});
 		}
 	}, [agentEnded]);
+	// A link to a conversation here (a citation, a Re row): its line's
+	// threads open, so its card shows and takes the landing.
+	const landing = usePendingLanding();
+	useEffect(() => {
+		if (!agentEnded || !landing) return;
+		for (const [key, list] of agentEnded) {
+			if (!list.some((p) => p.thread.id === landing.conversation)) continue;
+			setOpenAgent((open) => (open.has(key) ? open : new Set(open).add(key)));
+		}
+	}, [agentEnded, landing]);
 
 	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls

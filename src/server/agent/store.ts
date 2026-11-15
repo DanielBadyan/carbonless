@@ -4,6 +4,7 @@ import {
 	type AgentAnchor,
 	type AgentIdentity,
 	type AgentMessage,
+	type AgentOrigin,
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
@@ -11,7 +12,6 @@ import {
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
-	MAX_ORIGIN_REQUEST,
 } from "../../shared/agent.js";
 import {
 	type AgentEvent,
@@ -91,6 +91,7 @@ function messageOf(
 		...(e.type === "agent-message" && e.suggests
 			? { suggests: e.suggests }
 			: {}),
+		...(e.origin ? { origin: e.origin } : {}),
 	};
 }
 
@@ -152,7 +153,6 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 					resolved: false,
 					waiting: false,
 					unread: false,
-					...(e.origin ? { origin: e.origin } : {}),
 					...(clientId !== undefined ? { clientId } : {}),
 				});
 				if (github !== undefined) byGithub.set(github, e.thread);
@@ -170,8 +170,29 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 		}
 	}
 	const out = [...threads.values()];
+	// A message `open` wrote answers nothing, even when its origin is dropped
+	// below (fail safe: a bad origin never makes a question look answered).
+	const fromOpen = new Set<string>();
 	for (const t of out) {
-		t.waiting = isWaiting(t.messages);
+		for (const m of t.messages) if (m.origin) fromOpen.add(m.id);
+	}
+	// An origin must name a human message of a folded thread; else it's dropped.
+	const human = new Set<string>();
+	for (const t of out) {
+		for (const m of t.messages)
+			if (m.by === "human") human.add(`${t.id} ${m.id}`);
+	}
+	for (const t of out) {
+		for (const m of t.messages) {
+			if (!m.origin) continue;
+			const target = alias.get(m.origin.thread) ?? m.origin.thread;
+			if (!human.has(`${target} ${m.origin.message}`)) delete m.origin;
+			else if (target !== m.origin.thread)
+				m.origin = { ...m.origin, thread: target };
+		}
+	}
+	for (const t of out) {
+		t.waiting = isWaiting(t.messages, fromOpen);
 		// The seen mark furthest along; a message the fold doesn't hold counts for nothing.
 		let mark = -1;
 		for (const upTo of seenUpTo.get(t.id) ?? []) {
@@ -188,20 +209,26 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 }
 
 /**
- * Whether a human message waits for an answer: one after the last ai
- * message's `replyTo` (the last human message its prompt included), or,
- * for an ai message without it, after that ai message.
+ * Whether a human message waits for an answer: one after the last answer's
+ * `replyTo` (the last human message its prompt included), or, for an answer
+ * without it, after that answer. An ai message with an origin (the agent's
+ * `open`; `fromOpen`, so also one whose origin was dropped on read)
+ * answers nothing and is skipped: it never stops a question waiting.
  */
-function isWaiting(messages: readonly AgentMessage[]): boolean {
+function isWaiting(
+	messages: readonly AgentMessage[],
+	fromOpen: ReadonlySet<string>,
+): boolean {
 	let lastAi = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
-		if (messages[i]?.by === "ai") {
+		const m = messages[i];
+		if (m?.by === "ai" && !fromOpen.has(m.id)) {
 			lastAi = i;
 			break;
 		}
 	}
 	const ai = messages[lastAi];
-	if (!ai) return messages.length > 0;
+	if (!ai) return messages.some((m) => m.by === "human");
 	const answered = ai.replyTo
 		? messages.findIndex((m) => m.id === ai.replyTo)
 		: lastAi;
@@ -247,8 +274,10 @@ type OpenInput =
 			text: string;
 			by: "ai";
 			agent: AgentIdentity;
-			/** Why the agent opened it; cut to MAX_ORIGIN_REQUEST characters. */
-			origin?: { request: string };
+			/** The request the agent opened it from. */
+			origin?: AgentOrigin;
+			/** The agent's idempotency key: a key already stored returns that thread. */
+			key?: string;
 	  };
 type MessageInput =
 	| { by: "human"; text: string; clientId: string; view?: AgentView }
@@ -256,6 +285,16 @@ type MessageInput =
 			by: "ai";
 			text: string;
 			agent: AgentIdentity;
+			/** An origin message (the agent's `open` on a thread): no stop, activity or replyTo. */
+			origin: AgentOrigin;
+			/** The agent's idempotency key on this thread. */
+			key?: string;
+	  }
+	| {
+			by: "ai";
+			text: string;
+			agent: AgentIdentity;
+			origin?: undefined;
 			stop: AgentStop;
 			activity: AgentActivity[];
 			/** The id of the last human message the prompt included. */
@@ -281,6 +320,12 @@ export class AgentThreadStore {
 	readonly #opened = new Map<string, string>();
 	/** `<thread> <clientId>` of every human message; seeded from the ref on read. */
 	readonly #messaged = new Set<string>();
+	/**
+	 * `<request message> <key>` of the agent's keyed writes (an opening, or
+	 * an origin message on a thread) → the thread written and whether it was
+	 * opened then; seeded from the ref on read.
+	 */
+	readonly #aiKeys = new Map<string, { thread: string; opened: boolean }>();
 	#writes: Promise<unknown> = Promise.resolve();
 
 	constructor(
@@ -320,10 +365,13 @@ export class AgentThreadStore {
 	open(input: OpenInput): Promise<AgentThreadFold> {
 		return this.#serial(async () => {
 			const events = await this.#events();
-			if (input.by === "human") {
-				const known = this.#opened.get(input.clientId);
-				if (known !== undefined) return this.#find(events, known);
-			}
+			const known =
+				input.by === "human"
+					? this.#opened.get(input.clientId)
+					: input.key !== undefined && input.origin
+						? this.#aiKeys.get(aiKey(input.origin, input.key))?.thread
+						: undefined;
+			if (known !== undefined) return this.#find(events, known);
 			const { text, truncated } = capText(input.text);
 			const event = newEvent(
 				"agent-thread-opened",
@@ -336,15 +384,9 @@ export class AgentThreadStore {
 					...(input.by === "ai"
 						? {
 								agent: input.agent,
-								...(input.origin
-									? {
-											origin: {
-												request: input.origin.request.slice(
-													0,
-													MAX_ORIGIN_REQUEST,
-												),
-											},
-										}
+								...(input.origin ? { origin: input.origin } : {}),
+								...(input.key !== undefined
+									? { details: { key: input.key } }
 									: {}),
 							}
 						: {
@@ -371,6 +413,12 @@ export class AgentThreadStore {
 			) {
 				return current;
 			}
+			// A keyed write already made returns what it wrote, wherever that was.
+			const keyed =
+				input.by === "ai" && input.origin && input.key !== undefined
+					? this.#aiKeys.get(aiKey(input.origin, input.key))
+					: undefined;
+			if (keyed) return this.#find(events, keyed.thread);
 			const { text, truncated } = capText(input.text);
 			const event = newEvent(
 				"agent-message",
@@ -379,22 +427,32 @@ export class AgentThreadStore {
 					thread,
 					text,
 					...(truncated ? { truncated } : {}),
-					...(input.by === "ai"
+					...(input.by === "ai" && input.origin
 						? {
 								agent: input.agent,
-								stop: input.stop,
-								activity: capActivity(input.activity),
-								...(input.replyTo ? { replyTo: input.replyTo } : {}),
-								...(input.stop === "error" && input.error
-									? { error: input.error.slice(0, MAX_AGENT_ERROR) }
+								stop: "end_turn" as const,
+								activity: [],
+								origin: input.origin,
+								...(input.key !== undefined
+									? { details: { key: input.key } }
 									: {}),
-								...(input.head ? { head: input.head } : {}),
-								...(input.suggests ? { suggests: input.suggests } : {}),
 							}
-						: {
-								details: { clientId: input.clientId },
-								...(input.view ? { view: input.view } : {}),
-							}),
+						: input.by === "ai"
+							? {
+									agent: input.agent,
+									stop: input.stop,
+									activity: capActivity(input.activity),
+									...(input.replyTo ? { replyTo: input.replyTo } : {}),
+									...(input.stop === "error" && input.error
+										? { error: input.error.slice(0, MAX_AGENT_ERROR) }
+										: {}),
+									...(input.head ? { head: input.head } : {}),
+									...(input.suggests ? { suggests: input.suggests } : {}),
+								}
+							: {
+									details: { clientId: input.clientId },
+									...(input.view ? { view: input.view } : {}),
+								}),
 				},
 				input.by,
 				stampAfter(events),
@@ -450,6 +508,10 @@ export class AgentThreadStore {
 	}
 
 	#remember(e: CrbEvent): void {
+		if (e.by === "ai") {
+			this.#rememberKey(e);
+			return;
+		}
 		if (e.by !== "human") return;
 		if (e.type !== "agent-thread-opened" && e.type !== "agent-message") return;
 		const clientId = clientIdOf(e);
@@ -459,6 +521,37 @@ export class AgentThreadStore {
 		} else if (!this.#opened.has(clientId)) {
 			this.#opened.set(clientId, e.thread);
 		}
+	}
+
+	/** The agent's idempotency keys (`details.key`), scoped by the origin's request message. */
+	#rememberKey(e: CrbEvent): void {
+		const key = e.details?.key;
+		if (typeof key !== "string") return;
+		if (e.type !== "agent-thread-opened" && e.type !== "agent-message") return;
+		if (!e.origin) return;
+		const k = aiKey(e.origin, key);
+		if (this.#aiKeys.has(k)) return;
+		this.#aiKeys.set(k, {
+			thread: e.thread,
+			opened: e.type === "agent-thread-opened",
+		});
+	}
+
+	/**
+	 * The agent's keyed write from request `origin`, if stored: its thread
+	 * (a later opening's id finds the first's) and whether it opened it.
+	 */
+	async keyed(
+		origin: AgentOrigin,
+		key: string,
+	): Promise<{ thread: string; opened: boolean } | undefined> {
+		const events = await this.#events();
+		const k = this.#aiKeys.get(aiKey(origin, key));
+		if (!k) return undefined;
+		const thread = this.#find(events, k.thread).id;
+		// An opening folded into a conversation already on its GitHub thread
+		// (an alias) continued that one: not opened, as its first call said.
+		return { thread, opened: k.opened && thread === k.thread };
 	}
 
 	#find(events: readonly CrbEvent[], thread: string): AgentThreadFold {
@@ -486,6 +579,8 @@ export class AgentThreadStore {
 		return next;
 	}
 }
+
+const aiKey = (origin: AgentOrigin, key: string) => `${origin.message} ${key}`;
 
 /** Now, or just after the newest stored event when the clock is behind it. */
 function stampAfter(events: readonly CrbEvent[]): number {

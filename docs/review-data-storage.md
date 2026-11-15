@@ -509,8 +509,8 @@ tree, slug identities, compare-and-swap). Written by
 
 | Type | By | Payload |
 |---|---|---|
-| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; or `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` `{request}` (why the agent opened it, at most 200 characters); human only: `view` (below); a human's carries `details.clientId` |
-| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`); human only: `view`; a human's carries `details.clientId` |
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; or `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
+| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
 
@@ -518,8 +518,20 @@ tree, slug identities, compare-and-swap). Written by
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
 `{patchset}`), and the resolved `left` and `right` commit OIDs. Readers drop
 an event whose `view` is malformed, or carried by an ai event; the same
-for `origin` on a human opening (or one over 200 characters), `head` and
-`suggests` on a human message, and any `agent-thread-seen` by ai.
+for `origin` on a human event, `head` and `suggests` on a human message,
+and any `agent-thread-seen` by ai.
+
+`origin` `{thread, message}` (two lowercase ULIDs, ai only; since
+2026-11-15) is the request an agent message came from: the reviewer's
+message the agent was answering when it called MCP `open`. It sits on the
+event that carries the message: `agent-thread-opened` for a conversation
+the agent opened (its text is the first message), `agent-message` for one
+it continued (a GitHub thread that already had a conversation). It
+replaces the earlier `origin: {request}` text, which nothing wrote; readers
+drop an event with that shape. The fold drops an origin unless its
+`thread` folds to a thread (an alias counts as its first opening) and its
+`message` is a human message there. "Started N" on a request message is
+folded from the origins on read (`startedBy`), never stored.
 
 - **Write rule**, enforced on write and on read: the agent may open a
   thread and answer in one, never resolve one; an `agent-thread-resolved`
@@ -529,11 +541,13 @@ for `origin` on a human opening (or one over 200 characters), `head` and
   answer look seen.
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
-  while a human message has no answer: one comes after the last ai
-  message's `replyTo` (the last human message its prompt included), or,
-  for an ai message without `replyTo`, after that ai message; with no ai
-  message, any human message waits (an agent-opened one doesn't until the
-  reviewer replies). A reply sent while its thread's turn runs is stamped
+  while a human message has no answer: one comes after the last answer's
+  `replyTo` (the last human message its prompt included), or, for an
+  answer without `replyTo`, after that answer; with no answer, any human
+  message waits (an agent-opened one doesn't until the reviewer replies).
+  An ai message with an `origin` is not an answer: the rule skips it, so a
+  question waiting on a thread stays waiting when the agent adds an origin
+  message there (principle 8). A reply sent while its thread's turn runs is stamped
   before the answer, so `replyTo` is what keeps it waiting, across
   restarts; resolved is the last `agent-thread-resolved`'s
   word, false before any. Messages and resolves of a thread never opened
@@ -553,12 +567,14 @@ for `origin` on a human opening (or one over 200 characters), `head` and
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent
   after a server restart, writes one thread; a message's `clientId` counts
-  only on its own thread. The dedupe and the timestamp order hold within
+  only on its own thread. The agent's `open` may carry a key
+  (`details.key`): an opening with a key already in the ref returns that
+  thread, and an origin message with a key already written to that thread
+  is not written again; agent keys and human `clientId`s never match each
+  other. The dedupe and the timestamp order hold within
   one store, so the server keeps one store per review and reviewer.
 - **Caps:** the writer cuts a text at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on
-  a code point) and flags it `truncated`, cuts an `origin.request` to 200
-  characters (`MAX_ORIGIN_REQUEST`; a reader drops an event whose request
-  is over 200), and keeps an activity list's first 50 entries, fewer if
+  a code point) and flags it `truncated`, and keeps an activity list's first 50 entries, fewer if
   its JSON passes 4 KiB. Readers skip an event
   whose text is over 32 KiB or whose activity has more than 50 entries; the
   4 KiB byte cap is the writer's alone. The anchor's code is computed from the clone on read, never stored.

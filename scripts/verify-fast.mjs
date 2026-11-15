@@ -77,8 +77,8 @@ const E2E_MAP = [
 	// The reviewer's agent: review buddy's span threads and the thread
 	// agent (a conversation per GitHub thread), web and server.
 	[
-		/^src\/(web|server)\/agent\//,
-		["agent", "agent-setup", "thread-agent", "agent-join"],
+		/^src\/(web|server)\/agent\/|^test\/fake-acp\//,
+		["agent", "agent-setup", "thread-agent", "agent-join", "agent-open"],
 	],
 	// The join bar sits above the header (App), the setup line's key (app.ts).
 	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],

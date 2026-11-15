@@ -1,5 +1,5 @@
 // A stand-in for crb's MCP server in the fake agent's own tests: the same
-// tool names and shapes (attach, next, reply, threads, detach), one
+// tool names and shapes (attach, next, reply, open, review, threads, detach), one
 // question to hand out, and every call recorded. In-process over HTTP
 // (recorderServer), or run as a stdio server (`node mcp-recorder.mjs`),
 // appending each call to $RECORDER_LOG (JSONL).
@@ -29,7 +29,9 @@ function tools(state, record, headers = {}) {
 	const tool = (name, schema, body) =>
 		server.registerTool(name, { inputSchema: schema }, (args) => {
 			record({ tool: name, args, headers });
-			return ok(body(args));
+			const value = body(args);
+			// `{error}` is a refusal, as crb's tools give one.
+			return value?.error ? { ...ok(value), isError: true } : ok(value);
 		});
 	tool(
 		"attach",
@@ -59,6 +61,31 @@ function tools(state, record, headers = {}) {
 		},
 	);
 	tool("threads", { token: z.string() }, () => ({ threads: [] }));
+	tool("review", { token: z.string() }, () => ({
+		review: { threads: [{ id: "PRRT_gh0" }] },
+	}));
+	tool(
+		"open",
+		{
+			token: z.string(),
+			text: z.string(),
+			key: z.string().optional(),
+			code: z.object({}).passthrough().optional(),
+			thread: z.string().optional(),
+		},
+		(args) => {
+			state.opened = (state.opened ?? 0) + 1;
+			// A thread id "PRRT_refused" is refused, as crb refuses one.
+			if (args.thread === "PRRT_refused")
+				return { error: "thread-unavailable" };
+			return {
+				ok: true,
+				thread: `c${state.opened}`,
+				created: true,
+				cite: `crb:c/c${state.opened}`,
+			};
+		},
+	);
 	tool("detach", { token: z.string() }, () => ({ ok: true }));
 	return server;
 }

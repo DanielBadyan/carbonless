@@ -132,6 +132,55 @@ describe("the fake ACP agent with a crb MCP server", () => {
 		expect(JSON.stringify(logged)).not.toContain('"tok"');
 	});
 
+	it("open steps: between next and reply, a GitHub thread by its index in review, and the reply cites what opened (a refused one stays a placeholder)", async () => {
+		const { recorderServer } = (await import(
+			join(FAKE, "mcp-recorder.mjs")
+		)) as { recorderServer: () => Promise<Recorder> };
+		const rec = await recorderServer();
+		stops.push(() => rec.close());
+		const agent = await fakeAgent(
+			{
+				answers: [
+					{
+						text: "See {{cite:0}}, {{cite:1}} and {{cite:2}}.",
+						open: [
+							{
+								code: { path: "a.txt", line: 2 },
+								text: "Such a case.",
+								key: "k0",
+							},
+							{ ghThread: 0, text: "Here too." },
+							{ thread: "PRRT_refused", text: "Not here." },
+						],
+					},
+				],
+			},
+			[{ type: "http", name: "crb", url: rec.url, headers: [] }],
+		);
+		expect(await agent.prompt(kickoff("01req"))).toBe("end_turn");
+		expect(rec.calls.map((c) => c.tool)).toEqual([
+			"attach",
+			"next",
+			"open",
+			"review",
+			"open",
+			"open",
+			"reply",
+			"next",
+		]);
+		expect(rec.calls[2]?.args).toEqual({
+			token: "tok",
+			text: "Such a case.",
+			key: "k0",
+			code: { path: "a.txt", line: 2 },
+		});
+		expect(rec.calls[4]?.args).toMatchObject({ thread: "PRRT_gh0" });
+		expect(rec.calls[6]?.args).toMatchObject({
+			thread: "t1",
+			text: "See crb:c/c1, crb:c/c2 and {{cite:2}}.",
+		});
+	});
+
 	it("over stdio (mcpHttp false): spawns the server with its args and env and works the same; tools and detach are called", async () => {
 		const recLog = join(dir, "recorder.log");
 		const agent = await fakeAgent(

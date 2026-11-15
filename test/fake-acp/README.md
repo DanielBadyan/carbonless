@@ -29,7 +29,10 @@ way a joined session does: `attach` with the JSON line `{"review":…,
 from `answers`, matched against the question's latest message) until none
 waits. `mcp` in the scenario tunes it (`attach: false`, `replies: "none"`,
 `tools`, `strayReply`, `detach`), and `mcpHttp: false` stops it advertising
-HTTP so crb gives it the stdio bridge. Each call is logged as `mcp/<tool>`
+HTTP so crb gives it the stdio bridge. An answer's `open` steps call
+crb's `open` after `next` and before `reply`, in order (`ghThread: N`
+takes the id of the Nth GitHub thread `review` lists); the reply's text
+cites each by `{{cite:N}}`, a refused one left as is. Each call is logged as `mcp/<tool>`
 without the token. `test/fake-acp/mcp-recorder.mjs` is a stand-in MCP
 server for the fake's own tests. With no `crb` server, the fake answers
 in the prompt's text as before (the ACP transport's tests).

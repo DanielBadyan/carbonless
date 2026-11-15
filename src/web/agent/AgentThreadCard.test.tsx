@@ -508,27 +508,7 @@ describe("activitySummary", () => {
 		}
 	});
 
-	it("the origin chip's tooltip holds the whole request", async () => {
-		const request = `${"r".repeat(190)}ABCDEFGHIJ`;
-		show(
-			thread({
-				openedBy: "ai",
-				origin: { request },
-				waiting: false,
-				messages: [
-					{ id: "m1", by: "ai", at: "2026-11-07T10:00:00Z", text: "Found." },
-				],
-			}),
-			status(),
-		);
-		act(() => screen.getByTestId("agent-origin-chip").focus());
-		// Its text shows on the chip too (cut only past 200): the tooltip is the
-		// second place the whole request appears, in a tooltip element.
-		const tips = await screen.findAllByText(`${request}`, { exact: true });
-		expect(tips.some((t) => t.getAttribute("role") === "tooltip")).toBe(true);
-	});
-
-	it("the view chip shows PS 3 on a human message; the origin chip shows over an ai-opened first message, cut to 200", () => {
+	it("the view chip shows PS 3 on a human message", () => {
 		const view = (target: AgentView["target"]): AgentView => ({
 			target,
 			from: { branch: true },
@@ -558,35 +538,5 @@ describe("activitySummary", () => {
 		);
 		const chips = screen.getAllByTestId("agent-view-chip");
 		expect(chips.map((c) => c.textContent)).toEqual(["PS 3", "abcdef1"]);
-		expect(screen.queryByTestId("agent-origin-chip")).toBeNull();
-		cleanup();
-		show(
-			thread({
-				openedBy: "ai",
-				origin: { request: "x".repeat(300) },
-				waiting: false,
-				messages: [
-					{
-						id: "m1",
-						by: "ai",
-						at: "2026-11-07T10:00:00Z",
-						text: "Found one.",
-						agent: { name: "Claude Agent", version: "0.100.0" },
-					},
-					{
-						id: "m2",
-						by: "ai",
-						at: "2026-11-07T10:01:00Z",
-						text: "And another.",
-					},
-				],
-			}),
-			status(),
-		);
-		const origin = screen.getByTestId("agent-origin-chip");
-		expect(origin.textContent).toBe(`↳ ${"x".repeat(199)}…`);
-		// Over the first message only.
-		expect(screen.getAllByTestId("agent-origin-chip")).toHaveLength(1);
-		expect(origin.nextElementSibling?.textContent).toContain("Found one.");
 	});
 });
