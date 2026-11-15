@@ -19,6 +19,7 @@ import {
 	type AgentPlacementsAnswer,
 	type AgentResolvedRequest,
 	type AgentSeenRequest,
+	type AgentSetupDone,
 	type AgentStatus,
 	type AgentThread,
 	type OpenAgentThreadRequest,
@@ -381,6 +382,18 @@ export const agentConfigQuery = queryOptions({
 		fetchJson<{ agent: AgentConfig | null; problems: string[] }>(
 			"/api/config/agent",
 		),
+	staleTime: 0,
+	retry: false,
+});
+
+/**
+ * Which one-time setups this machine has done (CAR-160): Invite's after an
+ * approved join, Spawn's after a Spawn. Read each time the modal opens;
+ * until it's in (or if it fails) no step folds.
+ */
+export const agentSetupDoneQuery = queryOptions({
+	queryKey: ["agent-setup-done"],
+	queryFn: () => fetchJson<AgentSetupDone>("/api/config/agent/setup"),
 	staleTime: 0,
 	retry: false,
 });

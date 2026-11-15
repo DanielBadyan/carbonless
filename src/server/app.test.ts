@@ -1412,6 +1412,45 @@ describe("API", () => {
 			expect((await get("/api/agent")).spawned).toBe(true);
 		});
 
+		it("the one-time setups done (CAR-160): Invite on an approved join only, Spawn on a start, each its own", async () => {
+			const done = async () => {
+				const res = await app.inject({
+					method: "GET",
+					url: "/api/config/agent/setup",
+					headers: { host },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				return res.json();
+			};
+			// The beforeEach's start: Spawn's is done, Invite's isn't.
+			expect(await done()).toEqual({ invite: false, spawn: true });
+			rmSync(
+				join(process.env.XDG_STATE_HOME as string, "carbonless", "agent-setup"),
+				{ recursive: true, force: true },
+			);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			const { session } = await registry.open({ pr: pr.arg });
+			const agent = session.agent;
+			if (!agent) throw new Error("no agent");
+			const who = { name: "carbonless · main", machine: "devbox" };
+			// Declined: not done.
+			const first = agent.join.request(who).request;
+			const deny = await post(`/api/agent/join/${first}`, { approve: false });
+			expect(deny.statusCode, deny.body).toBe(200);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			// A stale answer (nothing pending) records nothing.
+			const stale = await post(`/api/agent/join/${first}`, { approve: true });
+			expect(stale.statusCode).toBe(409);
+			expect(await done()).toEqual({ invite: false, spawn: false });
+			const second = agent.join.request(who).request;
+			const ok = await post(`/api/agent/join/${second}`, { approve: true });
+			expect(ok.statusCode, ok.body).toBe(200);
+			expect(await done()).toEqual({ invite: true, spawn: false });
+			const start = await post("/api/agent/start");
+			expect(start.statusCode, start.body).toBe(200);
+			expect(await done()).toEqual({ invite: true, spawn: true });
+		});
+
 		it("POST /agent/detach answers ok and the status says off", async () => {
 			expect((await get("/api/agent")).spawned).toBe(true);
 			const res = await post("/api/agent/detach");

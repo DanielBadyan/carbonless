@@ -42,6 +42,7 @@ import {
 	UnknownAgentMessageError,
 	UnknownAgentThreadError,
 } from "./agent/store.js";
+import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
 import { updateConfig } from "./config.js";
 import { GhError, WriteRefusedError } from "./errors.js";
@@ -858,6 +859,8 @@ export async function buildApp(
 						joinRequestParam(request.params.request),
 						approve,
 					);
+					// Invite's one-time setup works: the modal folds it.
+					if (approve) await markSetupDone("invite");
 					return { ok: true };
 				},
 			);
@@ -869,6 +872,8 @@ export async function buildApp(
 			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
+				// Spawn's one-time setup is behind it: the modal folds it.
+				await markSetupDone("spawn");
 				return { ok: true };
 			});
 			// The reviewer's Detach: a joined session disconnected, or the
@@ -895,6 +900,8 @@ export async function buildApp(
 			throw new BadRequestError((error as Error).message);
 		}
 	});
+	// Which one-time setups this machine has done (folded in the modal).
+	app.get("/api/config/agent/setup", () => readSetupDone());
 	app.post("/api/config/agent/check", (request) => {
 		const agent = parseAgentConfig(request.body, false);
 		if (!agent) throw new BadRequestError("Expected an agent");

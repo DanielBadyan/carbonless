@@ -227,6 +227,16 @@ export type AgentCheck =
 	| { ok: true; agent: AgentIdentity }
 	| { ok: false; error: string; stderr: string };
 
+/**
+ * Which one-time setups this machine has done (CAR-160): Invite's once a
+ * join was approved, Spawn's once a Spawn started. The modal folds that
+ * tab's step 1.
+ */
+export interface AgentSetupDone {
+	invite: boolean;
+	spawn: boolean;
+}
+
 /** A failed turn's stored reason, in characters (the server cuts it shorter). */
 export const MAX_AGENT_ERROR = 1000;
 
