@@ -802,7 +802,7 @@ function WordsSign({ failed }: { failed?: boolean }) {
 					tabIndex={-1}
 					data-words-pending={failed ? undefined : ""}
 					data-words-failed={failed ? "" : undefined}
-					className={`mr-2 inline-flex w-[1ch] select-none justify-center align-[-1px] ${failed ? "text-bad" : "text-muted"} focus-visible:outline-2 focus-visible:outline-accent`}
+					className={`${SIGN_MR} inline-flex w-[1ch] select-none justify-center align-[-1px] ${failed ? "text-bad" : "text-muted"} focus-visible:outline-2 focus-visible:outline-accent`}
 				>
 					{failed ? (
 						<AlertIcon size={12} aria-hidden />
