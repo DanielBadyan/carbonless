@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { newQueryClient } from "../queryClient";
-import { repoKey } from "./homeApi";
-import { HOME_MAX_AGE_MS, HOME_STORAGE_KEY, persistHome } from "./homePersist";
+import { leaveHome, repoKey } from "./homeApi";
+import {
+	HOME_MAX_AGE_MS,
+	HOME_STORAGE_KEY,
+	persistHome,
+	renderAfter,
+} from "./homePersist";
 
 const stops: (() => void)[] = [];
 afterEach(async () => {
@@ -68,6 +73,8 @@ describe("persistHome", () => {
 		const before = await page();
 		before.setQueryData(VIEW, { view: "kept" });
 		await until(() => stored().includes("kept"));
+		// That page is gone: only the review page's save could write.
+		stops.pop()?.();
 		const review = await page({ restore: false });
 		review.setQueryData(["session"], { id: "review" });
 		window.dispatchEvent(new Event("pagehide"));
@@ -81,6 +88,70 @@ describe("persistHome", () => {
 		expect(stored()).not.toContain("just in");
 		window.dispatchEvent(new Event("pagehide"));
 		expect(stored()).toContain("just in");
+	});
+
+	it("a review page's own reads never write Home's unchanged answers again", async () => {
+		const home = await page();
+		home.setQueryData(VIEW, { view: "v" });
+		await until(() => stored().includes('"v"'));
+		stops.pop()?.();
+		let writes = 0;
+		const counted = {
+			getItem: (k: string) => sessionStorage.getItem(k),
+			setItem: (k: string, v: string) => {
+				writes++;
+				sessionStorage.setItem(k, v);
+			},
+			removeItem: (k: string) => sessionStorage.removeItem(k),
+		} as Storage;
+		const review = newQueryClient();
+		stops.push(
+			await persistHome(review, { storage: counted, throttleTime: 0 }),
+		);
+		expect(review.getQueryData(VIEW)).toEqual({ view: "v" });
+		// Restored and marked stale: saved once as such.
+		await until(() => writes === 1);
+		for (let i = 0; i < 5; i++) {
+			review.setQueryData(["session"], { id: i });
+			review.setQueryData(["files", i], { n: i });
+		}
+		window.dispatchEvent(new Event("pagehide"));
+		await new Promise((r) => setTimeout(r, 5));
+		expect(writes).toBe(1);
+		// A change of Home's own is saved.
+		review.setQueryData(VIEW, { view: "w" });
+		await until(() => writes === 2);
+		expect(stored()).toContain('"w"');
+	});
+
+	it("opening a PR from Home saves at once", async () => {
+		const client = await page({ throttleTime: 60_000 });
+		client.setQueryData(VIEW, { view: "clicked" });
+		expect(stored()).not.toContain("clicked");
+		leaveHome();
+		expect(stored()).toContain("clicked");
+	});
+
+	it("back from the back-forward cache, Home's answers are read again", async () => {
+		const client = await page();
+		client.setQueryData(VIEW, { view: "v" });
+		const shown = (persisted: boolean) => {
+			const event = new Event("pageshow");
+			Object.defineProperty(event, "persisted", { value: persisted });
+			window.dispatchEvent(event);
+		};
+		shown(false);
+		expect(client.getQueryState(VIEW)?.isInvalidated).toBe(false);
+		shown(true);
+		expect(client.getQueryState(VIEW)?.isInvalidated).toBe(true);
+	});
+
+	it("the app renders even when the restore fails", async () => {
+		const render = vi.fn();
+		await renderAfter(Promise.reject(new Error("boom")), render);
+		expect(render).toHaveBeenCalledOnce();
+		await renderAfter(Promise.resolve(), render);
+		expect(render).toHaveBeenCalledTimes(2);
 	});
 
 	it("drops answers another build saved, or too old to show", async () => {

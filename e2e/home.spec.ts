@@ -1165,13 +1165,17 @@ async function holdHomeReads(page: Page, edit: (title: string) => string) {
 		seen++;
 		asked();
 		await gate;
-		const answer = await route.fetch();
-		const body = await answer.json();
-		if (Array.isArray(body.rows)) {
-			for (const row of body.rows) row.title = edit(row.title);
-		}
 		// A read the page dropped meanwhile has nobody to answer.
-		await route.fulfill({ response: answer, json: body }).catch(() => {});
+		try {
+			const answer = await route.fetch();
+			const body = await answer.json();
+			if (Array.isArray(body.rows)) {
+				for (const row of body.rows) row.title = edit(row.title);
+			}
+			await route.fulfill({ response: answer, json: body });
+		} catch {
+			// Dropped: nothing to do.
+		}
 	};
 	await page.route(pattern, handler);
 	return {

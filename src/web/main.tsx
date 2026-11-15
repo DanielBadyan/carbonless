@@ -3,7 +3,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { stripAccessKey } from "./accessKey";
-import { persistHome, reloadedHome } from "./home/homePersist";
+import { persistHome, reloadedHome, renderAfter } from "./home/homePersist";
 import { newQueryClient } from "./queryClient";
 import { createAppRouter } from "./router";
 import "./index.css";
@@ -17,7 +17,7 @@ stripAccessKey(window.location, window.history);
 const router = createAppRouter();
 
 // Home's last answers first (homePersist.ts): Home shows them at once.
-void persistHome(queryClient, { restore: !reloadedHome() }).then(() => {
+void renderAfter(persistHome(queryClient, { restore: !reloadedHome() }), () => {
 	createRoot(root).render(
 		<StrictMode>
 			<QueryClientProvider client={queryClient}>

@@ -7,7 +7,7 @@ import {
 } from "@tanstack/query-persist-client-core";
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 import type { Query, QueryClient } from "@tanstack/react-query";
-import { REPO_GC_MS } from "./homeApi";
+import { onLeaveHome, REPO_GC_MS } from "./homeApi";
 
 /**
  * Home's last answers, kept for the tab across page loads (owner,
@@ -39,6 +39,14 @@ const kept = (query: Query) =>
 	isHomeRead(query.queryKey) &&
 	Date.now() - query.state.dataUpdatedAt <= HOME_MAX_AGE_MS;
 
+/** Which answers a save holds, at which age and staleness. */
+const fingerprint = (saved: PersistedClient) =>
+	saved.clientState.queries
+		.map(
+			(q) => `${q.queryHash} ${q.state.dataUpdatedAt} ${q.state.isInvalidated}`,
+		)
+		.join("\n");
+
 /** The tab's sessionStorage; none where it's blocked (nothing is kept). */
 export function tabStorage(): Storage | undefined {
 	try {
@@ -66,10 +74,11 @@ export function reloadedHome(): boolean {
 /**
  * Keeps `client`'s Home answers in `storage`: restores them (unless
  * `restore` is false), marked stale so Home reads them again, then saves
- * each change (throttled) and, at once, as the page goes or is hidden
- * (a row opened right after an answer came). Resolves once restored, to
- * a function that stops it all (tests); never rejects (unreadable storage
- * restores nothing).
+ * each change of them (throttled) and, at once, as Home opens a PR or the
+ * page goes or is hidden (a row opened right after an answer came). A page
+ * back from the browser's back-forward cache reads Home again. Resolves
+ * once restored, to a function that stops it all (tests); never rejects
+ * (unreadable storage restores nothing).
  */
 export async function persistHome(
 	client: QueryClient,
@@ -80,19 +89,35 @@ export async function persistHome(
 	}: { storage?: Storage; restore?: boolean; throttleTime?: number } = {},
 ): Promise<() => void> {
 	if (!storage) return () => {};
+	// What storage holds from this page: a save of the same answers is
+	// skipped (a review page's own reads change nothing of Home's).
+	let written: string | undefined;
+	let writing: string | undefined;
+	const write = (value: string) => {
+		storage.setItem(HOME_STORAGE_KEY, value);
+		written = writing;
+	};
 	const throttled = createSyncStoragePersister({
-		storage,
+		storage: {
+			getItem: (k) => storage.getItem(k),
+			setItem: (_, v) => write(v),
+			removeItem: (k) => storage.removeItem(k),
+		},
 		key: HOME_STORAGE_KEY,
+		serialize: (saved) => {
+			writing = fingerprint(saved);
+			return JSON.stringify(saved);
+		},
 		...(throttleTime === undefined ? {} : { throttleTime }),
 	});
-	// A page without Home's answers (a review's, long after) never wipes
-	// the saved ones.
-	const some = (persisted: PersistedClient) =>
-		persisted.clientState.queries.length > 0;
+	// Something new to save: never none (a page without Home's answers, a
+	// review's long after, never wipes the saved ones), never the same.
+	const changed = (saved: PersistedClient) =>
+		saved.clientState.queries.length > 0 && fingerprint(saved) !== written;
 	const persister: Persister = {
 		...throttled,
 		persistClient: (saved) => {
-			if (some(saved)) return throttled.persistClient(saved);
+			if (changed(saved)) return throttled.persistClient(saved);
 		},
 		...(restore ? {} : { restoreClient: () => undefined }),
 	};
@@ -113,9 +138,10 @@ export async function persistHome(
 	const now: Persister = {
 		...persister,
 		persistClient: (saved) => {
-			if (!some(saved)) return;
+			if (!changed(saved)) return;
 			try {
-				storage.setItem(HOME_STORAGE_KEY, JSON.stringify(saved));
+				writing = fingerprint(saved);
+				write(JSON.stringify(saved));
 			} catch {
 				// Full or blocked: the last save stands.
 			}
@@ -127,8 +153,15 @@ export async function persistHome(
 	const hidden = () => {
 		if (document.visibilityState === "hidden") flush();
 	};
+	// Back from the back-forward cache: this page's scripts didn't run
+	// again, its Home answers are as old as when it was left.
+	const shown = (event: PageTransitionEvent) => {
+		if (event.persisted) void client.invalidateQueries({ queryKey: ["home"] });
+	};
 	window.addEventListener("pagehide", flush);
+	window.addEventListener("pageshow", shown);
 	document.addEventListener("visibilitychange", hidden);
+	const unLeave = onLeaveHome(flush);
 	try {
 		await restored;
 	} catch {
@@ -139,6 +172,17 @@ export async function persistHome(
 	return () => {
 		unsubscribe();
 		window.removeEventListener("pagehide", flush);
+		window.removeEventListener("pageshow", shown);
 		document.removeEventListener("visibilitychange", hidden);
+		unLeave();
 	};
 }
+
+/**
+ * Renders once `restore` is done, whatever its outcome: a failed restore
+ * is a first open, never a blank page.
+ */
+export const renderAfter = (
+	restore: Promise<unknown>,
+	render: () => void,
+): Promise<void> => restore.catch(() => {}).then(render);
