@@ -156,6 +156,16 @@ export function useConversationLanding(id: string | undefined): {
 	};
 }
 
+/** The landing pending on the page showing, whichever conversation it names. */
+export function usePendingLanding(): ConversationLanding | null {
+	const current = useSyncExternalStore(
+		subscribe,
+		() => landing,
+		() => landing,
+	);
+	return usePageActive() ? current : null;
+}
+
 /** Forgets a pending landing (tests). */
 export function resetConversationLanding(): void {
 	landing = null;

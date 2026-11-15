@@ -249,7 +249,7 @@ without one until you spawn there too. A config saved later restarts it
 only in the reviews where it was spawned.
 
 **How does a spawned agent answer?** Like a session you invite: through
-crb's MCP tools (`attach`, `next`, `reply`, `threads`, `review`,
+crb's MCP tools (`attach`, `next`, `reply`, `open`, `threads`, `review`,
 `detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
 when the agent supports it, else through `crb mcp-bridge` over stdio) and
 a join that pressing Spawn already approved: there is no Approve bar, and
@@ -262,6 +262,19 @@ the PR's head as of Spawn, with the base commit in its objects), and to
 an answer; what it says in the prompt itself is never stored. It gets
 exactly what `next` gives a joined session; crb makes its checkout of the
 PR's head once, at Spawn, and never moves it.
+
+**How does the agent point at code?** Two ways. In an answer, a
+`path:line` or `path:start-end` of one of the PR's files becomes a link
+to Files changed. And while it answers you, it can open a conversation
+on the place itself (`open`): on lines, a text range or a whole changed
+file, at the head your question showed it, or on a GitHub thread (at the
+end of that thread's conversation, if it has one). Each starts with a Re
+row: your request's first words (Show more for all of it), a way back to
+it, and the list of every conversation it started. Your request shows
+Started N, with the unread ones counted. The answer cites each by a
+`crb:c/<id>` token, which crb turns into a link only when the
+conversation is this review's. Reply in one and it is a question like
+any other; the agent gets your request's text with it (`re`).
 
 How it differs from a joined session:
 - **Waking up.** It runs no watch command: when a question waits and it
