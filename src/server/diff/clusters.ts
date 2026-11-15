@@ -78,7 +78,9 @@ export interface HunkPart<C> {
  * split comes back as itself, flagged when it is all whitespace. Never
  * for a file-level cluster.
  */
-export function splitCluster<C extends LineCluster>(c: C): HunkPart<C>[] {
+export function splitCluster<C extends LineCluster>(
+	c: C,
+): HunkPart<C & { whitespaceOnly?: true }>[] {
 	const pieces = splitHunk(
 		c.removed,
 		c.added,
