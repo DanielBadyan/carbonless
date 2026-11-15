@@ -60,7 +60,9 @@ describe("ProgressBar", () => {
 			/>,
 		);
 		expect(
-			screen.getByRole("img", { name: "1 whitespace-only cluster not counted" }),
+			screen.getByRole("img", {
+				name: "1 whitespace-only cluster not counted",
+			}),
 		).toBeInTheDocument();
 		for (const none of [0, undefined]) {
 			rerender(
