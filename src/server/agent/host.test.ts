@@ -214,6 +214,12 @@ describe("AgentHost with a session joined through MCP", () => {
 	let ghThreads: ReviewThread[];
 	/** Reading GitHub's threads fails while set. */
 	let ghDown: boolean;
+	/** The threads' comments as the stub reads them; unset: the read fails. */
+	let ghComments:
+		| ((
+				ids: string[],
+		  ) => Promise<Map<string, { author: string; body: string }[]>>)
+		| undefined;
 	/** Runs (once) in place of the next single-thread read: a race's other side. */
 	let onThread: ((id: string) => Promise<ReviewThread | null>) | undefined;
 
@@ -231,11 +237,16 @@ describe("AgentHost with a session joined through MCP", () => {
 				thread: async (id) => {
 					const hook = onThread;
 					onThread = undefined;
+					ghComments = undefined;
 					if (hook) return hook(id);
 					return ghThreads.find((t) => t.id === id) ?? null;
 				},
 				patchsets: () => [],
 				base: () => "c".repeat(40),
+				comments: async (ids) => {
+					if (!ghComments) throw new Error("gh: comments unreadable");
+					return ghComments(ids);
+				},
 			},
 			session: { facts, viewer: "dan" },
 			runner: (off) => {
@@ -1310,6 +1321,75 @@ describe("AgentHost with a session joined through MCP", () => {
 				host.sessionOpen(token, { thread: "PRRT_9", text }),
 			).rejects.toBeInstanceOf(OwnThreadError);
 			expect((await store.read())[0]?.messages).toHaveLength(1);
+		});
+
+		describe("review lists the PR's GitHub threads", () => {
+			const listed = (n: number) =>
+				Array.from({ length: n }, (_, i) =>
+					ghOn(`PRRT_${i}`, {
+						author: "rev",
+						body: `Opener ${i}`,
+						line: 2,
+						outdated: false,
+					}),
+				);
+			it("each comment of each thread, at most 200 threads, each body cut at 2048 characters", async () => {
+				ghThreads = listed(201);
+				ghComments = async (ids) =>
+					new Map(
+						ids.map((id) => [
+							id,
+							[
+								{ author: "rev", body: "x".repeat(3000) },
+								{ author: "ann\u202e", body: "Done<!-- psst -->" },
+							],
+						]),
+					);
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				expect(r.threads).toHaveLength(200);
+				expect(r.threadsTruncated).toBe(true);
+				const [first] = r.threads ?? [];
+				expect(first).toMatchObject({
+					id: "PRRT_0",
+					path: "a.txt",
+					line: 2,
+					side: "RIGHT",
+					resolved: false,
+					outdated: false,
+				});
+				expect(first?.commentsPartial).toBeUndefined();
+				expect(first?.comments[0]?.body).toHaveLength(2048);
+				expect(first?.comments[0]?.body.endsWith("…")).toBe(true);
+				expect(first?.comments[1]).toEqual({ author: "ann", body: "Done" });
+			});
+
+			it("200 threads exactly: none left out", async () => {
+				ghThreads = listed(200);
+				ghComments = async () => new Map();
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				expect(r.threads).toHaveLength(200);
+				expect(r.threadsTruncated).toBeUndefined();
+			});
+
+			it("comments that can't be read: each thread's opener only, marked partial", async () => {
+				ghThreads = listed(2);
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				expect(r.threads?.map((t) => [t.comments, t.commentsPartial])).toEqual([
+					[[{ author: "rev", body: "Opener 0" }], true],
+					[[{ author: "rev", body: "Opener 1" }], true],
+				]);
+			});
+
+			it("threads that can't be read: an error, never an empty list", async () => {
+				ghDown = true;
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				expect(r.threads).toBeUndefined();
+				expect(r.threadsError).toContain("HTTP 502");
+			});
 		});
 
 		it("parallel opens can't pass the 25 cap: exactly 25 land", async () => {
