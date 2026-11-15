@@ -26,6 +26,7 @@ import type {
 import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { findFloat, findState } from "./files/find/findState";
+import { FilesPage } from "./pages";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
 
@@ -321,6 +322,19 @@ const calls = (path: string) =>
  */
 const filesPageLoaded = () => import("./files/FilesPage");
 
+/**
+ * Shows Files changed and returns its region, rendered: its lazy page's
+ * code loaded first (so it never suspends), then the navigation flushed in
+ * act. The page's first render is plain CPU work (about a second at load
+ * 10 on the devbox, past a findBy's 4 s on a loaded one), so the test
+ * waits for that work, not for a clock.
+ */
+async function showFiles(router: ReturnType<typeof createAppRouter>) {
+	await FilesPage.preload?.();
+	await act(() => router.navigate(at("/files")));
+	return screen.getByRole("region", { name: "Files changed" });
+}
+
 describe("App", () => {
 	afterEach(() => {
 		cleanup();
@@ -343,8 +357,7 @@ describe("App", () => {
 	it("does not ask GitHub again when the overview remounts", async () => {
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
-		await router.navigate(at("/files"));
-		await screen.findByRole("region", { name: "Files changed" });
+		await showFiles(router);
 		await router.navigate(at("/"));
 		await screen.findByRole("region", { name: "What it does" });
 		expect(calls("/api/overview")).toBe(1);
@@ -354,8 +367,7 @@ describe("App", () => {
 	it("keeps a visited page mounted, hidden and inert, while the other shows", async () => {
 		const { router } = renderApp();
 		const what = await screen.findByRole("region", { name: "What it does" });
-		await router.navigate(at("/files"));
-		const files = await screen.findByRole("region", { name: "Files changed" });
+		const files = await showFiles(router);
 		await screen.findByRole("progressbar", { name: "Review progress" });
 		const reads = calls("/api/review");
 		// The overview is still there, as it was, but out of reach.
