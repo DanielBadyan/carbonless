@@ -164,8 +164,9 @@ export function AgentHandle(props: { className?: string }) {
 /**
  * A row centred under the card (the Show more toggle) with the agent's
  * handle at its right end while `handle`: with an agent, three columns,
- * the outer two equal, so the toggle stays centred and never runs under
- * the handle (the left one gives way first when the row is tight). The
+ * the outer two equal while there is room, so the toggle stays centred;
+ * when tight the left one gives way first, the right one never below the
+ * handle's width, so the toggle never runs under it. The
  * columns stay while the handle is elsewhere, so the toggle is never
  * remounted (its focus kept). Both sit on the row's bottom, the handle
  * sunk as the toggle is (`-mb-2`), so neither rises into what is above.
@@ -187,10 +188,14 @@ export function CentredWithHandle(props: {
 	return (
 		<div
 			data-testid={props.testId}
-			className="grid grid-cols-[1fr_auto_1fr] items-end gap-2"
+			// The right column never narrower than the handle (a bare 1fr
+			// resolved under it, and the handle ran into the toggle); the
+			// toggle's column gives way last, wrapping its words if it must.
+			className="grid grid-cols-[1fr_minmax(0,auto)_minmax(max-content,1fr)] items-end gap-2"
 		>
-			{/* No min-w-0: the toggle's own width is its column's floor. */}
-			<div className="col-start-2 flex justify-center">{props.children}</div>
+			<div className="col-start-2 flex min-w-0 justify-center">
+				{props.children}
+			</div>
 			{props.handle && (
 				<AgentHandle className="relative col-start-3 -mb-2 justify-self-end" />
 			)}
