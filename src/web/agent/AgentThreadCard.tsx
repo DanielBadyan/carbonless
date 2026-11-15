@@ -27,6 +27,7 @@ import {
 	type AgentThread,
 	type AgentView,
 	MAX_AGENT_TEXT,
+	startedBy,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
 import { Badge, LabeledIcon } from "../overview/parts";
@@ -51,6 +52,8 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { useConversationLanding } from "./conversationLinks";
+import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
 
@@ -441,10 +444,20 @@ export function AgentThreadCard(props: {
 	const replies = [...writes.pending.entries()].filter(
 		([, w]) => w.thread === thread.id,
 	);
+	const card = useRef<HTMLElement>(null);
+	// A link to this conversation (a citation, Go to your request, a list):
+	// open, in view; a message named is outlined by AgentMessageItems.
+	const { landing } = useConversationLanding(thread.id);
+	useEffect(() => {
+		if (!landing) return;
+		setExpanded(true);
+		if (!landing.message) {
+			card.current?.scrollIntoView?.({ block: "center" });
+		}
+	}, [landing]);
 	const closed = resolved && !expanded;
 	// Span threads too: an accent dot while an answer is unseen, and the
 	// same seen mark the thread panel writes, once it has been in view.
-	const card = useRef<HTMLElement>(null);
 	useSeenWriter(thread, !closed, card);
 	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
 	const toggle = (
@@ -524,6 +537,12 @@ export function AgentThreadCard(props: {
 					className="shrink-0 text-agent-ink"
 				/>
 				<span className="font-semibold text-ink-soft">{name}</span>
+				{thread.openedBy === "ai" && (
+					<span data-testid="agent-opened-this" className="flex gap-1.5">
+						opened this
+						<RelativeTime iso={thread.at} />
+					</span>
+				)}
 				<UnreadDot unread={thread.unread} />
 				{state === "resolved" && (
 					<LabeledIcon
@@ -631,18 +650,44 @@ export function AgentMessageItems(props: {
 	const { thread, status, answering, viewer, name } = props;
 	const waiting =
 		thread !== undefined && agentThreadState(thread, answering) === "waiting";
+	// Every conversation: a request's Re row and Started list read them.
+	const all =
+		useQuery({ ...agentThreadsQuery, enabled: false }).data?.threads ?? [];
+	const started = startedBy(all);
+	const lit = useLandedMessage(thread);
 	return (
 		<>
-			{thread?.messages.map((m) => (
-				<Fragment key={m.id}>
-					{m.id === props.divider && <NewDivider />}
-					{m.by === "human" ? (
-						<HumanMessage message={m} viewer={viewer} />
-					) : (
-						<AiMessage message={m} name={name} footer={props.footer?.(m)} />
-					)}
-				</Fragment>
-			))}
+			{thread?.messages.map((m) => {
+				const from = (started.get(m.id) ?? [])
+					.map((id) => all.find((t) => t.id === id))
+					.filter((t): t is AgentThread => t !== undefined);
+				return (
+					<Fragment key={m.id}>
+						{m.id === props.divider && <NewDivider />}
+						<div
+							data-message-id={m.id}
+							data-landed={m.id === lit || undefined}
+							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 motion-reduce:transition-none ${
+								m.id === lit
+									? "outline-2 outline-accent"
+									: "outline-2 outline-transparent"
+							}`}
+						>
+							{m.by === "ai" && m.origin && (
+								<ReRow origin={m.origin} current={thread.id} threads={all} />
+							)}
+							{m.by === "human" ? (
+								<HumanMessage message={m} viewer={viewer} />
+							) : (
+								<AiMessage message={m} name={name} footer={props.footer?.(m)} />
+							)}
+							{m.by === "human" && from.length > 0 && (
+								<StartedButton request={m.id} threads={from} />
+							)}
+						</div>
+					</Fragment>
+				);
+			})}
 			{answering && (
 				<div
 					data-testid="agent-answering"
@@ -702,6 +747,36 @@ export function AgentMessageItems(props: {
 			))}
 		</>
 	);
+}
+
+/** How long a message landed on keeps its outline. */
+export const LANDED_MS = 2000;
+
+/**
+ * The message a link landed on, while it is outlined: scrolled into view
+ * once it shows, its outline gone after LANDED_MS. Taking it here ends
+ * the landing.
+ */
+function useLandedMessage(thread: AgentThread | undefined): string | null {
+	const { landing, done } = useConversationLanding(thread?.id);
+	const [lit, setLit] = useState<string | null>(null);
+	const hasMessage =
+		landing?.message !== undefined &&
+		thread?.messages.some((m) => m.id === landing.message) === true;
+	useEffect(() => {
+		if (!landing) return;
+		done(landing);
+		if (!hasMessage || !landing.message) return;
+		setLit(landing.message);
+		const el = document.querySelector(`[data-message-id="${landing.message}"]`);
+		el?.scrollIntoView?.({ block: "center" });
+	}, [landing, hasMessage, done]);
+	useEffect(() => {
+		if (!lit) return;
+		const timer = setTimeout(() => setLit(null), LANDED_MS);
+		return () => clearTimeout(timer);
+	}, [lit]);
+	return lit;
 }
 
 /** Above the first message the reviewer hadn't seen when the conversation opened. */

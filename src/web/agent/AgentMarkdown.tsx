@@ -6,7 +6,8 @@
  * stripped. Fenced code in a language the diff highlights is drawn as the
  * diff's code rows; a `diff` fence as added and deleted rows. `path:line`
  * refs to files of the PR become router links to Files changed at the
- * answer's `head` (codeLinks.ts).
+ * answer's `head` (codeLinks.ts), and `crb:c/<id>` citations of this
+ * review's agent conversations links that open them (conversationLinks.ts).
  */
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
@@ -18,7 +19,15 @@ import { languageFor } from "../files/highlight";
 import { type FilesSearch, parseFilesSearch } from "../files/landing";
 import { GithubHtml } from "../GithubHtml";
 import { CodeRows } from "../threads/CommentBody";
+import { agentThreadsQuery } from "./api";
 import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
+import {
+	type ConversationTarget,
+	conversationLabel,
+	conversationSearch,
+	linkCitations,
+	useGithubAuthors,
+} from "./conversationLinks";
 
 const md = new Marked({ gfm: true, breaks: false, async: false });
 
@@ -148,6 +157,85 @@ function useCodeLinks(
 	}, [root, router, files, patchsets, head, text]);
 }
 
+/**
+ * Turns the agent's citations (`crb:c/<id>`) in the rendered prose into
+ * router links labelled with where the conversation is, for ids among this
+ * review's agent threads only; anything else stays text. A conversation
+ * whose file isn't this review's shows its label, unlinked.
+ */
+function useCitationLinks(
+	root: React.RefObject<HTMLDivElement | null>,
+	text: string,
+) {
+	const router = useRouter({ warn: false });
+	const threads = useQuery({ ...agentThreadsQuery, enabled: false }).data
+		?.threads;
+	const review = useQuery({ ...reviewQuery(), enabled: false }).data;
+	const session = useQuery({ ...sessionQuery, enabled: false }).data;
+	const authorOf = useGithubAuthors();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `text` is what re-renders the prose.
+	useLayoutEffect(() => {
+		const el = root.current;
+		if (!el || !router || !threads?.length) return;
+		const id = router.state.matches
+			.map((m) => (m.params as { id?: string }).id)
+			.find((x) => x);
+		if (!id) return;
+		const files = new Set(review?.files.map((f) => f.path) ?? []);
+		const patchsets = session?.patchsets ?? [];
+		const byId = new Map(threads.map((t) => [t.id, t]));
+		const doc = el.ownerDocument;
+		for (const prose of el.querySelectorAll<HTMLElement>(".markdown-body")) {
+			linkCitations(prose, (threadId) => {
+				const thread = byId.get(threadId);
+				if (!thread) return null;
+				const label = conversationLabel(thread, authorOf);
+				const target = conversationSearch(thread, files, patchsets);
+				if (!target) {
+					const span = doc.createElement("span");
+					span.dataset.testid = "agent-conversation-link";
+					span.setAttribute("aria-disabled", "true");
+					span.title = "Not in this review's files";
+					span.className = "text-faint";
+					span.textContent = label;
+					return span;
+				}
+				const link = doc.createElement("a");
+				link.dataset.testid = "agent-conversation-link";
+				link.className = LINK_CLASS;
+				link.textContent = label;
+				link.href = router.buildLocation({
+					to: target.to,
+					params: { id },
+					search: target.search,
+				} as never).href;
+				link.dataset.target = JSON.stringify(target);
+				return link;
+			});
+		}
+		const onClick = (e: MouseEvent) => {
+			const link = (e.target as Element | null)?.closest<HTMLElement>("a");
+			if (!link || link.dataset.testid !== "agent-conversation-link") return;
+			if (e.button !== 0) return;
+			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+			e.preventDefault();
+			let target: ConversationTarget;
+			try {
+				target = JSON.parse(link.dataset.target ?? "");
+			} catch {
+				return;
+			}
+			void router.navigate({
+				to: target.to,
+				params: { id },
+				search: target.search,
+			} as never);
+		};
+		el.addEventListener("click", onClick);
+		return () => el.removeEventListener("click", onClick);
+	}, [root, router, threads, review, session, authorOf, text]);
+}
+
 export function AgentMarkdown(props: {
 	text: string;
 	/** The commit the answer was written on: its code links open there. */
@@ -156,6 +244,7 @@ export function AgentMarkdown(props: {
 	const parts = useMemo(() => agentParts(props.text), [props.text]);
 	const root = useRef<HTMLDivElement>(null);
 	useCodeLinks(root, props.text, props.head);
+	useCitationLinks(root, props.text);
 	return (
 		<div ref={root} className="min-w-0">
 			{parts.map((part, i) =>

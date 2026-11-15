@@ -105,6 +105,7 @@ import { useSince } from "./useSince";
 const NO_THREADS: ReviewThread[] = [];
 const NO_AGENT_THREADS: AgentThread[] = [];
 
+import { requestConversationOpen } from "../agent/conversationLinks";
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncStale } from "./useSetStates";
 import { useViewShortcuts } from "./viewShortcuts";
@@ -908,6 +909,10 @@ export function FilesPage() {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
 	useEffect(() => {
 		if (!active || !data || !search.path) return;
+		// An agent conversation's link: its card opens once it shows.
+		if (search.conversation) {
+			requestConversationOpen(search.conversation, search.message);
+		}
 		const file = landingFile(data.files, search);
 		landingSeq.current += 1;
 		setLanding({
@@ -931,7 +936,16 @@ export function FilesPage() {
 		openInTree(file.index);
 		anchor.current = null;
 		setOpen(keyOf(file.index));
-	}, [active, data, search.path, search.line, search.side, search.moved]);
+	}, [
+		active,
+		data,
+		search.path,
+		search.line,
+		search.side,
+		search.moved,
+		search.conversation,
+		search.message,
+	]);
 
 	// "Not in this diff" is about the link just followed: it goes after a
 	// while, or when the page is left.

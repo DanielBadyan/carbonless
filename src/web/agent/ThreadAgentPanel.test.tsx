@@ -18,6 +18,10 @@ import { ThreadActions } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
+import {
+	requestConversationOpen,
+	resetConversationLanding,
+} from "./conversationLinks";
 import { ThreadAgentButton } from "./ThreadAgentButton";
 import { AgentCover } from "./ThreadAgentPanel";
 import {
@@ -531,5 +535,27 @@ describe("ThreadAgentPanel", () => {
 		act(() => first?.toggle());
 		expect(result.current).not.toBe(first);
 		expect(result.current?.open).toBe(true);
+	});
+
+	it("a link to the conversation opens its panel (CAR-80)", () => {
+		const client = new QueryClient();
+		clients.push(client);
+		client.setQueryData(overviewQuery.queryKey, { writes: "on" } as PrOverview);
+		const id = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		client.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [conversation({ id })],
+		});
+		const t = reviewThread();
+		const { result } = renderHook(() => useThreadAgent(t), {
+			wrapper: ({ children }) => (
+				<QueryClientProvider client={client}>{children}</QueryClientProvider>
+			),
+		});
+		expect(result.current?.open).toBe(false);
+		act(() => requestConversationOpen("01k9e6m2q8x4v7c3n5b0h1j2bb"));
+		expect(result.current?.open).toBe(false);
+		act(() => requestConversationOpen(id));
+		expect(result.current?.open).toBe(true);
+		resetConversationLanding();
 	});
 });
