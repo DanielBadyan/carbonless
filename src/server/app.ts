@@ -42,6 +42,7 @@ import {
 	UnknownAgentMessageError,
 	UnknownAgentThreadError,
 } from "./agent/store.js";
+import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
 import { updateConfig } from "./config.js";
 import { GhError, WriteRefusedError } from "./errors.js";
@@ -440,6 +441,8 @@ export async function buildApp(
 		async (request) => {
 			const agent = registry.peek(request.params.id)?.agent;
 			if (!agent) return {};
+			// A hidden tab is an open page: its spawned agent stays (no use).
+			agent.pageSeen();
 			const { joinRequest, left } = agent.join.view();
 			return {
 				...(joinRequest ? { joinRequest } : {}),
@@ -455,6 +458,8 @@ export async function buildApp(
 				"preHandler",
 				async (request) => {
 					sessions.set(request, await registry.get(request.params.id));
+					// The page is open: a spawned agent's idle clock restarts.
+					registry.pageSeen(request.params.id);
 				},
 			);
 			review.get("/session", async (request) => sessionOf(request).info());
@@ -858,6 +863,8 @@ export async function buildApp(
 						joinRequestParam(request.params.request),
 						approve,
 					);
+					// Invite's one-time setup works: the modal folds it.
+					if (approve) await markSetupDone("invite");
 					return { ok: true };
 				},
 			);
@@ -869,6 +876,8 @@ export async function buildApp(
 			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
+				// Spawn's one-time setup is behind it: the modal folds it.
+				await markSetupDone("spawn");
 				return { ok: true };
 			});
 			// The reviewer's Detach: a joined session disconnected, or the
@@ -895,6 +904,8 @@ export async function buildApp(
 			throw new BadRequestError((error as Error).message);
 		}
 	});
+	// Which one-time setups this machine has done (folded in the modal).
+	app.get("/api/config/agent/setup", () => readSetupDone());
 	app.post("/api/config/agent/check", (request) => {
 		const agent = parseAgentConfig(request.body, false);
 		if (!agent) throw new BadRequestError("Expected an agent");

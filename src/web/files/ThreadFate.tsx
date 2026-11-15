@@ -26,11 +26,11 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { HunkLine } from "../../shared/diffHunk";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { Fate, ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	CodeRow,
+	DiffSide,
 	PlacementsAnswer,
 	ReviewThread,
 	ThreadAnchorRef,
@@ -109,10 +109,11 @@ export const FATES: Record<
 		icon: Icon;
 		tone: "red" | "yellow";
 		tip: string;
-		/** An unplaced row's top line (owner, 2026-11-08). */
+		/**
+		 * An unplaced row's top line (owner, 2026-11-08), and its quiet line
+		 * once resolved: one wording for both (CAR-158).
+		 */
 		sentence: string;
-		/** A resolved row's quiet line: the sentence shortened. */
-		short: string;
 	}
 > = {
 	deleted: {
@@ -121,7 +122,6 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its lines were deleted",
 		sentence: "Commented line has been deleted since the review",
-		short: "Line deleted",
 	},
 	rewritten: {
 		label: "rewritten",
@@ -129,7 +129,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
 		sentence: "Commented line has been rewritten since the review",
-		short: "Line rewritten",
 	},
 	outdated: {
 		label: "outdated",
@@ -138,7 +137,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Outdated on GitHub; its own commit can't be traced",
 		sentence: "GitHub marks the commented line outdated",
-		short: "Outdated",
 	},
 	untraced: {
 		label: "untraced",
@@ -146,7 +144,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Couldn't trace the commented line here",
 		sentence: "Couldn't trace the commented line here",
-		short: "Line untraced",
 	},
 	"file-gone": {
 		label: "file deleted",
@@ -154,7 +151,6 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its file was deleted",
 		sentence: "Commented file has been deleted since the review",
-		short: "File deleted",
 	},
 	moved: {
 		label: "moved?",
@@ -162,7 +158,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Its file was renamed and its lines didn't follow: maybe moved",
 		sentence: "Commented line may have moved",
-		short: "Line may have moved",
 	},
 	reverted: {
 		label: "reverted",
@@ -170,7 +165,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The PR no longer changes this place",
 		sentence: "The commented change has been reverted since the review",
-		short: "Change reverted",
 	},
 	"base-changed": {
 		label: "base changed",
@@ -178,7 +172,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
-		short: "Base changed",
 	},
 };
 
@@ -189,7 +182,6 @@ const UNKNOWN_FATE = {
 	tone: "red" as const,
 	tip: "Where this thread sits now couldn't be computed",
 	sentence: "Couldn't work out where this thread is now",
-	short: "Place unknown",
 };
 
 /** "PS2", or nothing without a patch set. */
@@ -268,8 +260,9 @@ export function ChangedChip({
 }
 
 /**
- * A changed thread's old lines (from its own patch set) above the lines
- * that replaced them, and the fate line with a way to its patch set.
+ * A changed thread's code as it was written on (its own patch set's lines,
+ * never the ones it sits on now: those are the diff's own row above), and
+ * the fate line with a way to its patch set.
  */
 export function ChangedSince({
 	thread,
@@ -279,44 +272,16 @@ export function ChangedSince({
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
-	/** The old and new lines too (the Overview's card shows its own code). */
+	/** Its original code too (the Overview's card shows its own). */
 	lines?: boolean;
 }) {
 	const info = usePlacementInfo();
 	const ps = info.openedOn(thread);
 	const id = useReviewId();
-	const { old, now, anchor } = placement;
-	const rows: (HunkLine & { marked?: boolean })[] = [
-		...old.text.map((text, i) => ({
-			kind: "del" as const,
-			oldNo: old.startLine + i,
-			newNo: null,
-			text,
-		})),
-		...now.map((text, i) => ({
-			kind: "add" as const,
-			oldNo: null,
-			newNo: anchor.line - now.length + 1 + i,
-			text,
-		})),
-	];
+	const { old } = placement;
 	return (
 		<div data-testid="placement-changed-pane" className="space-y-1">
-			{lines && rows.length > 0 && (
-				<figure
-					aria-label={`Lines as they were${ps === null ? "" : ` on PS${ps}`}, and now`}
-					className="overflow-x-auto rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin]"
-				>
-					<table className="w-full border-collapse">
-						<CodeRows
-							lines={rows}
-							path={anchor.path}
-							wrap={false}
-							testId="placement-changed-line"
-						/>
-					</table>
-				</figure>
-			)}
+			{lines && <OriginalCode thread={thread} fallback={old} />}
 			<p
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
@@ -342,23 +307,29 @@ export function ChangedSince({
 	);
 }
 
+/** A changed placement's commented lines as the tracer read them in the thread's own patch set. */
+export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
+
 /**
  * The code a thread was written on, cut to its commented lines and two
  * lines either side, the commented ones highlighted; labelled with its
  * patch set, path and line numbers. A frame while the code is still on
- * its way; nothing when there is none.
+ * its way. With no code to show (none, or none of it marked), the
+ * commented lines from `fallback` (a changed placement's `old`: the same
+ * patch set's lines, never where the thread sits now); else nothing.
  */
 export function OriginalCode({
 	thread,
+	fallback,
 }: {
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
+	fallback?: OldLines;
 }) {
 	const info = usePlacementInfo();
 	const code = thread.code;
 	const path = code?.anchor.path ?? thread.path;
-	if (!code) return null;
-	if (code.source === "pending") {
+	if (code?.source === "pending") {
 		return (
 			<div
 				data-testid="original-code-loading"
@@ -371,14 +342,11 @@ export function OriginalCode({
 			</div>
 		);
 	}
-	const marked = code.rows.flatMap((r, i) => (r.marked ? [i] : []));
-	if (marked.length === 0) return null;
-	const first = Math.max(0, (marked[0] as number) - 2);
-	const last = Math.min(code.rows.length - 1, (marked.at(-1) as number) + 2);
-	const rows = code.rows.slice(first, last + 1);
-	const side = code.anchor.side;
+	const shown = codeRows(code) ?? oldRows(fallback);
+	if (!shown) return null;
+	const { rows, side } = shown;
 	const numberOf = (r: CodeRow) => (side === "LEFT" ? r.oldNo : r.newNo);
-	const nums = code.rows
+	const nums = rows
 		.filter((r) => r.marked)
 		.map(numberOf)
 		.filter((n): n is number => n !== null);
@@ -420,6 +388,35 @@ export function OriginalCode({
 			</div>
 		</figure>
 	);
+}
+
+/** A code window cut to its marked rows ±2; null with none marked. */
+function codeRows(
+	code: ReviewThread["code"],
+): { rows: CodeRow[]; side: DiffSide } | null {
+	if (!code) return null;
+	const marked = code.rows.flatMap((r, i) => (r.marked ? [i] : []));
+	if (marked.length === 0) return null;
+	const first = Math.max(0, (marked[0] as number) - 2);
+	const last = Math.min(code.rows.length - 1, (marked.at(-1) as number) + 2);
+	return { rows: code.rows.slice(first, last + 1), side: code.anchor.side };
+}
+
+/** A changed placement's old lines as marked rows on their side; null with no text. */
+function oldRows(
+	old: OldLines | undefined,
+): { rows: CodeRow[]; side: DiffSide } | null {
+	if (!old || old.text.length === 0) return null;
+	const rows = old.text.map(
+		(text, i): CodeRow => ({
+			kind: "context",
+			oldNo: old.side === "LEFT" ? old.startLine + i : null,
+			newNo: old.side === "RIGHT" ? old.startLine + i : null,
+			text,
+			marked: true,
+		}),
+	);
+	return { rows, side: old.side };
 }
 
 /**
@@ -484,7 +481,7 @@ export function UnplacedRow(props: {
  * thread and an agent thread (only the body differs): its fate in a
  * sentence on the top line, the code it was written on in the "Original
  * Reviewed Change" box, then `children`. Resolved, one quiet line (the
- * resolved icon, the fate shortened, `who`) until expanded; resolving it
+ * resolved icon, the same fate sentence, `who`) until expanded; resolving it
  * collapses it again (owner, 2026-11-08).
  */
 export function UnplacedShell(props: {
@@ -524,27 +521,49 @@ export function UnplacedShell(props: {
 				data-resolved="true"
 				className="min-w-0"
 			>
-				<button
-					type="button"
-					aria-expanded={false}
-					aria-label={`Resolved thread by ${props.who}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
-					data-testid="unplaced-collapsed"
-					onClick={() => setExpanded(true)}
-					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
-					<span className="truncate">
-						{fate.short}
-						{props.path && (
-							<>
-								{" · "}
-								<code className="font-mono">{props.path}</code>
-							</>
-						)}
-						{" · "}
-						{props.who}
-					</span>
-				</button>
+				{/* As the open row: the sentence truncates on its line, who wrote
+				    it never shrinks, and the path has a line of its own, so two
+				    resolved rows on a phone still tell apart (CAR-158). */}
+				<Tooltip content={sentence} describe={false}>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							aria-expanded={false}
+							aria-label={`Resolved thread by ${props.who}: ${sentence}${props.path ? ` · ${props.path}` : ""}. Expand`}
+							data-testid="unplaced-collapsed"
+							onClick={() => setExpanded(true)}
+							className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
+							<span className="flex min-w-0 flex-1 flex-col">
+								<span className="flex min-w-0">
+									<span
+										data-testid="unplaced-collapsed-fate"
+										className="min-w-0 truncate"
+									>
+										{sentence}
+									</span>
+									<span
+										data-testid="unplaced-collapsed-who"
+										className="shrink-0 whitespace-pre"
+									>
+										{" · "}
+										{props.who}
+									</span>
+								</span>
+								{props.path && (
+									<code
+										data-testid="unplaced-collapsed-path"
+										className="truncate font-mono"
+									>
+										{props.path}
+									</code>
+								)}
+							</span>
+						</button>
+					)}
+				</Tooltip>
 			</li>
 		);
 	}

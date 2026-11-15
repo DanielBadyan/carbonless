@@ -21,3 +21,15 @@ after its first chunk and `hold: ["initialize"]` keeps the handshake, until
 `releaseAcp(path, op)`; the fake polls the file every 20 ms, like the fake
 gh, so a test gates on its own cue and never on the clock. A
 `session/cancel` ends a held turn with `stopReason: "cancelled"`.
+
+**As crb's buddy over MCP.** When `session/new` carries an MCP server named
+`crb` (HTTP, or stdio: the fake spawns it), every turn works through it the
+way a joined session does: `attach` with the JSON line `{"review":…,
+"request":…}` the kickoff prompt carries, then `next` → `reply` (the text
+from `answers`, matched against the question's latest message) until none
+waits. `mcp` in the scenario tunes it (`attach: false`, `replies: "none"`,
+`tools`, `strayReply`, `detach`), and `mcpHttp: false` stops it advertising
+HTTP so crb gives it the stdio bridge. Each call is logged as `mcp/<tool>`
+without the token. `test/fake-acp/mcp-recorder.mjs` is a stand-in MCP
+server for the fake's own tests. With no `crb` server, the fake answers
+in the prompt's text as before (the ACP transport's tests).

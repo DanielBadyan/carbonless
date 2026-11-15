@@ -39,9 +39,14 @@ function storedHarness(): McpId {
  * Invite: a session the reviewer already runs joins the review. Step 1
  * adds this crb's /mcp to the session's harness (once per machine), step 2
  * is the sentence to send it, step 3 answers its request to join (the
- * same answer as the join bar's, so either one clears the other).
+ * same answer as the join bar's, so either one clears the other). Step 1
+ * folds once a join was approved on this machine.
  */
-export function InviteTab(props: { status: AgentStatus }) {
+export function InviteTab(props: {
+	status: AgentStatus;
+	/** Step 1 done on this machine (an approved join): folded. */
+	setupDone?: boolean;
+}) {
 	const setup = useQuery(joinSetupQuery);
 	const id = boundReviewId();
 	const origin = window.location.origin;
@@ -59,7 +64,7 @@ export function InviteTab(props: { status: AgentStatus }) {
 			<p className="text-sm text-ink-soft">
 				Invite a session you already created to join the review.
 			</p>
-			<Step n={1} title="One-time setup">
+			<Step n={1} title="One-time setup" done={props.setupDone}>
 				<fieldset className="m-0 min-w-0 border-0 p-0">
 					<legend className="sr-only">Harness</legend>
 					<div className="flex flex-wrap gap-1.5">

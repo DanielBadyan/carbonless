@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SincePiece } from "../../shared/pieces";
 import type {
 	ClusterView,
 	DiffLine,
@@ -484,7 +485,7 @@ describe("the since view's gaps", () => {
 		expect(await within(gap).findByRole("alert")).toBeInTheDocument();
 	});
 
-	it("a file the interdiff doesn't touch is one gap; a thread on a hidden line shows once it opens", async () => {
+	it("a file the interdiff doesn't touch is one gap; a thread on a hidden line shows once its bubble opens", async () => {
 		renderGaps({ hunks: [], newLineCount: 30, wholeGap: true }, [threadOn(25)]);
 		const user = userEvent.setup();
 		const gap = await screen.findByTestId("gap-row");
@@ -496,13 +497,13 @@ describe("the since view's gaps", () => {
 				name: "1 comment on hidden lines 1–30",
 			}),
 		);
-		expect(await screen.findByText("pr line 25")).toBeInTheDocument();
-		// The thread opens on its line.
-		const bubble = await screen.findByRole("button", {
-			name: "1 comment on line 25",
-		});
-		expect(bubble).toHaveAttribute("aria-expanded", "true");
-		expect(bubble.closest("tr")).toHaveTextContent("pr line 25");
+		expect(await screen.findByTestId("thread-row")).toBeInTheDocument();
+		// Under its hidden row, the lines still hidden.
+		expect(screen.queryByText("pr line 25")).toBeNull();
+		expect(screen.getByTestId("gap-row")).toHaveTextContent("30 hidden lines");
+		expect(
+			screen.queryByRole("button", { name: "1 comment on line 25" }),
+		).toBeNull();
 	});
 });
 
@@ -893,5 +894,231 @@ describe("GoneFile: a whole file undone since the compared patch set", () => {
 				},
 			],
 		});
+	});
+
+	it("its header marks every piece at once, closed: ✓ reviews them, ⊘ crosses them off (CAR-155)", async () => {
+		const posts: { changes: unknown[] }[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method === "POST") {
+					posts.push(JSON.parse(String(init.body)));
+					return new Response(JSON.stringify({}), { status: 500 });
+				}
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		const pieces: SincePiece[] = [
+			{ hunk: 0, line: 0, key: "g1", owns: null, old: [[1, 3]], new: [] },
+			{ hunk: 1, line: 0, key: "g2", owns: null, old: [[7, 8]], new: [] },
+		];
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const shown = (sinceMarks?: SinceMark[]) => (
+			<QueryClientProvider client={client}>
+				<GoneFile
+					index={3}
+					path="src/undone.ts"
+					revision="r2"
+					since={1}
+					pieces={pieces}
+					sinceMarks={sinceMarks}
+				/>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown());
+		const user = userEvent.setup();
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await vi.waitFor(() => expect(posts).toHaveLength(1));
+		const all: SinceMark["reviewed"] = {
+			old: [
+				[1, 3],
+				[7, 8],
+			],
+			new: [],
+		};
+		const none: SinceMark["reviewed"] = { old: [], new: [] };
+		expect(posts[0]?.changes).toEqual([
+			{
+				key: "since:1:src/undone.ts",
+				state: "reviewed",
+				sinceMark: {
+					since: 1,
+					path: "src/undone.ts",
+					reviewed: all,
+					crossed: none,
+				},
+			},
+		]);
+		await user.click(screen.getByRole("button", { name: "Cross off file" }));
+		await vi.waitFor(() => expect(posts).toHaveLength(2));
+		expect(posts[1]?.changes).toEqual([
+			{
+				key: "since:1:src/undone.ts",
+				state: "crossed-off",
+				sinceMark: {
+					since: 1,
+					path: "src/undone.ts",
+					reviewed: none,
+					crossed: all,
+				},
+			},
+		]);
+		// All reviewed: ✓ becomes its reset, ⊘ has nothing to do.
+		rerender(
+			shown([
+				{ since: 1, path: "src/undone.ts", reviewed: all, crossed: none },
+			]),
+		);
+		expect(
+			screen.getByRole("button", { name: "Unmark reviewed" }),
+		).toBeEnabled();
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toBeDisabled();
+	});
+
+	it("open, the mark of its last piece finishes it (onFinished); not before, nor from the closed header, nor while a move-on's marks wait (CAR-159)", async () => {
+		const posts: unknown[] = [];
+		const pieces: SincePiece[] = [
+			{ hunk: 0, line: 0, key: "g1", owns: null, old: [[1, 2]], new: [] },
+			{ hunk: 0, line: 2, key: "g2", owns: null, old: [[3, 4]], new: [] },
+		];
+		const twoHunks: FileHunks = {
+			newLineCount: 0,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 3,
+					newStart: 0,
+					newCount: 0,
+					lines: [
+						line("del", 1, undefined, "first gone", "g1"),
+						line("context", 2, undefined, "kept"),
+						line("del", 3, undefined, "second gone", "g2"),
+					],
+				},
+			],
+			pieces,
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = new URL(String(input), "http://test");
+				if (init?.method === "POST") {
+					posts.push(JSON.parse(String(init.body)));
+					// Refused for good (400): no retry adds a post.
+					return new Response(JSON.stringify({}), { status: 400 });
+				}
+				const body = url.pathname === "/api/files/3/hunks" ? twoHunks : {};
+				return new Response(JSON.stringify(body), { status: 200 });
+			}),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const onFinished = vi.fn();
+		const shown = (opts: {
+			expanded: boolean;
+			sinceMarks?: SinceMark[];
+			ignoreMarksUntil?: number;
+		}) => (
+			<QueryClientProvider client={client}>
+				<GoneFile
+					index={3}
+					path="src/undone.ts"
+					revision="r2"
+					since={1}
+					pieces={pieces}
+					expanded={opts.expanded}
+					sinceMarks={opts.sinceMarks}
+					ignoreMarksUntil={opts.ignoreMarksUntil}
+					onFinished={onFinished}
+				/>
+			</QueryClientProvider>
+		);
+		const user = userEvent.setup();
+		// Closed: the header's ✓ marks every piece, and doesn't move on.
+		const { rerender } = render(shown({ expanded: false }));
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await vi.waitFor(() => expect(posts).toHaveLength(1));
+		expect(onFinished).not.toHaveBeenCalled();
+		// Open: the first piece leaves the second.
+		rerender(shown({ expanded: true }));
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes).toHaveLength(2);
+		await user.click(boxes[0] as HTMLElement);
+		await vi.waitFor(() => expect(posts).toHaveLength(2));
+		expect(onFinished).not.toHaveBeenCalled();
+		// The first marked: the second is the last thing left.
+		const first: SinceMark = {
+			since: 1,
+			path: "src/undone.ts",
+			reviewed: { old: [[1, 2]], new: [] },
+			crossed: { old: [], new: [] },
+		};
+		// Opened by a move-on, its marks waiting: the click is ignored.
+		rerender(
+			shown({
+				expanded: true,
+				sinceMarks: [first],
+				ignoreMarksUntil: performance.now() + 60_000,
+			}),
+		);
+		await user.click(
+			screen.getAllByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			})[1] as HTMLElement,
+		);
+		expect(posts).toHaveLength(2);
+		expect(onFinished).not.toHaveBeenCalled();
+		rerender(shown({ expanded: true, sinceMarks: [first] }));
+		await user.click(
+			screen.getAllByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			})[1] as HTMLElement,
+		);
+		expect(onFinished).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(posts).toHaveLength(3));
+	});
+
+	it("an earlier patch set's gone file shows its header marks locked", () => {
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<GoneFile
+					index={3}
+					path="src/undone.ts"
+					revision="r2"
+					since={1}
+					readOnly
+					pieces={[{ hunk: 0, line: 0, owns: null, old: [[1, 3]], new: [] }]}
+				/>
+			</QueryClientProvider>,
+		);
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toBeDisabled();
+	});
+
+	it("a gone file without pieces has no header marks", () => {
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<GoneFile index={3} path="src/undone.ts" revision="r2" since={1} />
+			</QueryClientProvider>,
+		);
+		expect(
+			screen.queryByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: "Cross off file" })).toBeNull();
 	});
 });

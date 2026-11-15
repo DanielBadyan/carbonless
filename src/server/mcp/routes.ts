@@ -55,6 +55,14 @@ export function originOf(
 	return isSafeOrigin(origin) ? origin : deps.baseUrl();
 }
 
+/** The spawn secret's header (X-Crb-Spawn), when it is one string. */
+function spawnHeader(request: Pick<FastifyRequest, "headers">): {
+	spawn?: string;
+} {
+	const v = request.headers["x-crb-spawn"];
+	return typeof v === "string" && v ? { spawn: v } : {};
+}
+
 /** Fastify's headers set so far (the security headers), on a hijacked reply. */
 function carryHeaders(reply: FastifyReply): void {
 	for (const [name, value] of Object.entries(reply.getHeaders())) {
@@ -68,6 +76,7 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 			origin: originOf(request, deps),
 			key: deps.accessKey,
 			remote: request.ip,
+			...spawnHeader(request),
 		};
 		const server = createMcpServer(deps, ctx);
 		const transport = new StreamableHTTPServerTransport({
