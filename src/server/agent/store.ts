@@ -548,7 +548,10 @@ export class AgentThreadStore {
 		const events = await this.#events();
 		const k = this.#aiKeys.get(aiKey(origin, key));
 		if (!k) return undefined;
-		return { thread: this.#find(events, k.thread).id, opened: k.opened };
+		const thread = this.#find(events, k.thread).id;
+		// An opening folded into a conversation already on its GitHub thread
+		// (an alias) continued that one: not opened, as its first call said.
+		return { thread, opened: k.opened && thread === k.thread };
 	}
 
 	#find(events: readonly CrbEvent[], thread: string): AgentThreadFold {

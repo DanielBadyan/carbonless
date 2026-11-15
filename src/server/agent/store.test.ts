@@ -785,6 +785,45 @@ describe("origins: an agent message from a request", () => {
 		expect(human.id).not.toBe(t.id);
 	});
 
+	it("a keyed opening folded into the reviewer's conversation on that GitHub thread is not 'opened' on a retry (CAR-80 F)", async () => {
+		const origin = await request();
+		const ghAnchor: AgentAnchor = {
+			subject: "thread",
+			thread: "PRRT_9",
+			path: "src/lock.ts",
+			commit: "a".repeat(40),
+		};
+		const theirs = await store.open({
+			anchor: ghAnchor,
+			text: "Fixed?",
+			by: "human",
+			clientId: "h9",
+		});
+		const mine = await store.open({
+			anchor: ghAnchor,
+			text: "Such a case.",
+			by: "ai",
+			agent,
+			origin,
+			key: "k9",
+		});
+		expect(mine.id).toBe(theirs.id);
+		expect(await store.keyed(origin, "k9")).toEqual({
+			thread: theirs.id,
+			opened: false,
+		});
+		// Its own opening (nothing to fold into) stays "opened".
+		await store.open({
+			anchor: fileAnchor,
+			text: "Here.",
+			by: "ai",
+			agent,
+			origin,
+			key: "k10",
+		});
+		expect((await store.keyed(origin, "k10"))?.opened).toBe(true);
+	});
+
 	it("an origin message with a repeated key on a thread is written once", async () => {
 		const origin = await request();
 		const q = await ask("Is this safe?", "q1");
