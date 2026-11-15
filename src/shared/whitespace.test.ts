@@ -79,7 +79,7 @@ function split(
 describe("stripWhitespace", () => {
 	it("removes ASCII whitespace only, as git -w does", () => {
 		expect(stripWhitespace(" a\tb\r\v\fc ")).toBe("abc");
-		expect(stripWhitespace("a b")).toBe("a b");
+		expect(stripWhitespace("a\u00a0b")).toBe("a\u00a0b");
 		expect(whitespaceEqual("  x = 1;", "x=1;\r")).toBe(true);
 		expect(whitespaceEqual("x = 1;", "x = 2;")).toBe(false);
 	});
