@@ -3,8 +3,8 @@
 Status: draft, 2026-11-13, builder-checked; owner answers folded in. Calls the coordinator made (the owner may
 overrule) are marked **(call)**.
 
-Mockups (desktop and phone): the "Review conversation mockups" canvas
-linked from the report. Artboard "Not chosen · card on Overview" is the
+Mockups (desktop and phone, drawn over screenshots of the live UI): the
+"Review conversation mockups" canvas linked from the report. Artboard "Not chosen · card on Overview" is the
 rejected alternative, kept for the record.
 
 ## Why
@@ -123,8 +123,9 @@ Code ready · 1 unread" **(call: wording)**. Same chip on phone.
 
 ### The drawer
 
-- **Desktop**: a panel docked on the right, under the header, full height
-  of the viewport below it, ~480px wide (builder may tune: min 360, max
+- **Desktop**: a panel docked on the right edge, the viewport's full
+  height, ~480px wide; the whole page, header included, narrows beside it
+  (mockup 2) (builder may tune: min 360, max
   ~40% of the viewport). It **pushes** the page content narrower rather
   than covering it (the owner's "bars push, not cover" rule applied to a
   side panel), so the diff stays fully readable and clickable beside it.
