@@ -170,6 +170,12 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 		}
 	}
 	const out = [...threads.values()];
+	// A message `open` wrote answers nothing, even when its origin is dropped
+	// below (fail safe: a bad origin never makes a question look answered).
+	const fromOpen = new Set<string>();
+	for (const t of out) {
+		for (const m of t.messages) if (m.origin) fromOpen.add(m.id);
+	}
 	// An origin must name a human message of a folded thread; else it's dropped.
 	const human = new Set<string>();
 	for (const t of out) {
@@ -186,7 +192,7 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 		}
 	}
 	for (const t of out) {
-		t.waiting = isWaiting(t.messages);
+		t.waiting = isWaiting(t.messages, fromOpen);
 		// The seen mark furthest along; a message the fold doesn't hold counts for nothing.
 		let mark = -1;
 		for (const upTo of seenUpTo.get(t.id) ?? []) {
@@ -206,13 +212,17 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
  * Whether a human message waits for an answer: one after the last answer's
  * `replyTo` (the last human message its prompt included), or, for an answer
  * without it, after that answer. An ai message with an origin (the agent's
- * `open`) answers nothing and is skipped: it never stops a question waiting.
+ * `open`; `fromOpen`, so also one whose origin was dropped on read)
+ * answers nothing and is skipped: it never stops a question waiting.
  */
-function isWaiting(messages: readonly AgentMessage[]): boolean {
+function isWaiting(
+	messages: readonly AgentMessage[],
+	fromOpen: ReadonlySet<string>,
+): boolean {
 	let lastAi = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
-		if (m?.by === "ai" && !m.origin) {
+		if (m?.by === "ai" && !fromOpen.has(m.id)) {
 			lastAi = i;
 			break;
 		}

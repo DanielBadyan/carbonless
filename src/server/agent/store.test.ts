@@ -719,6 +719,21 @@ describe("origins: an agent message from a request", () => {
 		expect(byId.get(good.id)?.messages[0]?.origin).toEqual(origin);
 	});
 
+	it("an origin dropped on read still answers nothing: a waiting question stays waiting (fail safe)", async () => {
+		const q = await ask("Is this safe?", "q1");
+		const missing = "01k9e6m2q8x4v7c3n5b0h1j2zz";
+		const after = await store.message(q.id, {
+			by: "ai",
+			text: "Such a case.",
+			agent,
+			origin: { thread: missing, message: missing },
+		});
+		expect(after.messages[1]?.origin).toBeUndefined();
+		expect(after.waiting).toBe(true);
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		expect((await fresh.read())[0]?.waiting).toBe(true);
+	});
+
 	it("startedBy groups by request message, once per thread", async () => {
 		const first = await request();
 		const second = await ask("And the queues?", "r2");
