@@ -957,6 +957,21 @@ export class AgentHost {
 			thread: handed.thread,
 			message: handed.asked,
 		};
+		// One open at a time: the 25 cap and a thread's conversation are
+		// read and written in one step, so parallel calls can't pass either.
+		const run = this.#opens.then(() => this.#open(secret, r, origin));
+		this.#opens = run.catch(() => {});
+		return run;
+	}
+
+	/** Serialises the agent's `open` calls (sessionOpen). */
+	#opens: Promise<unknown> = Promise.resolve();
+
+	async #open(
+		secret: string,
+		r: OpenTarget & { text: string; key?: string },
+		origin: AgentOrigin,
+	): Promise<OpenResult> {
 		if (r.key !== undefined) {
 			const known = await this.store.keyed(origin, r.key);
 			if (known) {
@@ -983,8 +998,22 @@ export class AgentHost {
 		let anchor: AgentAnchor | undefined;
 		if (r.thread !== undefined) {
 			existing = await this.#openThreadTarget(r.thread, threads);
+			if (!existing) {
+				try {
+					anchor = await this.#threadAnchor(r.thread);
+				} catch (error) {
+					// The reviewer asked there meanwhile: one conversation per
+					// thread, so the agent's message continues theirs.
+					if (error instanceof AgentConflictError && error.thread) {
+						existing = await this.store.find(error.thread);
+					} else if (error instanceof AgentRequestError) {
+						throw new ThreadUnavailableError(
+							`${error.message}: use an id from review's threads`,
+						);
+					} else throw error;
+				}
+			}
 			if (existing?.id === origin.thread) throw new OwnThreadError();
-			if (!existing) anchor = await this.#threadAnchor(r.thread);
 		} else if (r.code) {
 			anchor = await this.#codeAnchor(r.code);
 		} else throw new BadAnchorError("Give code or thread, one of them");
@@ -1014,7 +1043,10 @@ export class AgentHost {
 					origin,
 					...key,
 				});
-		return { thread: t.id, created: !existing, cite: citeOf(t.id) };
+		// An opening that folded into a conversation the reviewer started
+		// meanwhile (one per GitHub thread) continued it.
+		const created = !existing && t.messages.length === 1;
+		return { thread: t.id, created, cite: citeOf(t.id) };
 	}
 
 	/** The joined (or spawned) session's identity, as its messages carry it. */

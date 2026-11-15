@@ -214,6 +214,8 @@ describe("AgentHost with a session joined through MCP", () => {
 	let ghThreads: ReviewThread[];
 	/** Reading GitHub's threads fails while set. */
 	let ghDown: boolean;
+	/** Runs (once) in place of the next single-thread read: a race's other side. */
+	let onThread: ((id: string) => Promise<ReviewThread | null>) | undefined;
 
 	const make = (now?: () => number) =>
 		buildAgentHost({
@@ -226,7 +228,12 @@ describe("AgentHost with a session joined through MCP", () => {
 					if (ghDown) throw new Error("gh: HTTP 502");
 					return ghThreads;
 				},
-				thread: async (id) => ghThreads.find((t) => t.id === id) ?? null,
+				thread: async (id) => {
+					const hook = onThread;
+					onThread = undefined;
+					if (hook) return hook(id);
+					return ghThreads.find((t) => t.id === id) ?? null;
+				},
 				patchsets: () => [],
 				base: () => "c".repeat(40),
 			},
@@ -270,6 +277,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		prFiles = ["a.txt"];
 		fileAt = {};
 		ghDown = false;
+		onThread = undefined;
 		head = "d".repeat(40);
 		ghThread = null;
 		ghThreads = [];
@@ -1302,6 +1310,65 @@ describe("AgentHost with a session joined through MCP", () => {
 				host.sessionOpen(token, { thread: "PRRT_9", text }),
 			).rejects.toBeInstanceOf(OwnThreadError);
 			expect((await store.read())[0]?.messages).toHaveLength(1);
+		});
+
+		it("parallel opens can't pass the 25 cap: exactly 25 land", async () => {
+			const { token } = await holding();
+			const results = await Promise.allSettled(
+				Array.from({ length: 27 }, (_, i) =>
+					host.sessionOpen(token, {
+						code: { path: "a.txt", line: 1 },
+						text: `case ${i}`,
+					}),
+				),
+			);
+			expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(25);
+			const refused = results.filter((r) => r.status === "rejected");
+			expect(refused).toHaveLength(2);
+			for (const r of refused) {
+				expect((r as PromiseRejectedResult).reason).toBeInstanceOf(
+					TooManyOpenedError,
+				);
+			}
+			expect(await store.read()).toHaveLength(26);
+		});
+
+		it("the reviewer asks on the thread while open is under way: the agent's message continues their conversation", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const { token, origin } = await holding();
+			let theirs: string | undefined;
+			// open's own read of the thread is where the reviewer's ask lands.
+			onThread = async (id) => {
+				const t = await host.open({
+					clientId: "q9",
+					text: "Is this fixed?",
+					thread: id,
+				});
+				theirs = t.id;
+				return ghThreads.find((g) => g.id === id) ?? null;
+			};
+			const r = await host.sessionOpen(token, { thread: "PRRT_9", text });
+			expect(r).toEqual({
+				thread: theirs,
+				created: false,
+				cite: `crb:c/${theirs}`,
+			});
+			const all = await store.read();
+			expect(all).toHaveLength(2);
+			const t = all.find((x) => x.id === theirs);
+			expect(t?.messages.map((m) => [m.by, m.origin])).toEqual([
+				["human", undefined],
+				["ai", origin],
+			]);
+		});
+
+		it("a thread GitHub stops listing during open is thread_unavailable, not a raw error", async () => {
+			ghThreads = [ghOn("PRRT_9")];
+			const { token } = await holding();
+			onThread = async () => null;
+			await expect(
+				host.sessionOpen(token, { thread: "PRRT_9", text }),
+			).rejects.toBeInstanceOf(ThreadUnavailableError);
 		});
 
 		it("refuses the 26th conversation from one request; continuing one it already started still goes", async () => {
