@@ -1250,6 +1250,9 @@ test("a move-on skips files with nothing left, and after the last the verdict ri
 	await fileAction(last, "Cross off file");
 	await expect(fileProgress(two)).toContainText("crossed off");
 	await expect(fileProgress(last)).toContainText("crossed off");
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
 
 	// Files with nothing left are skipped: two (crossed off) for long.
 	const one = await expand(page, "a/one.ts");

@@ -476,6 +476,13 @@ test("a new snapshot loaded from the overview shows the files from the top", asy
 		0,
 	);
 	await section.getByRole("button", { name: "Expand file" }).click();
+	// Read once its lines are in and a frame or two has passed: an empty
+	// table would clamp a kept offset to 0, and a restore would land after.
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await page.evaluate(
+		() =>
+			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+	);
 	expect(await diffScroller(section).evaluate((el) => el.scrollLeft)).toBe(0);
 	await expectPathsPinned(page);
 });
