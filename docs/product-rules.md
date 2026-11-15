@@ -619,6 +619,23 @@ question would be on someone else's behalf, or about a past moment.
   as review threads, except those asked on its own commit (asked there). Placements are for the viewed snapshot (a moved base
   asks again), retried on failure, computed and never stored: no drag, no
   storage change. Bubbles count unresolved agent threads only.
+- **The agent opens conversations only while answering, and they answer
+  nothing (spec 2026-11-15, CAR-80).** While it holds a question `next`
+  handed it, the agent may call MCP `open` to put a conversation on the
+  PR's code (a changed file, lines or a text range, at the head that
+  question showed) or on an open GitHub review thread (continuing its
+  conversation when it has one): the very object the reviewer's Ask agent
+  makes, never posted to GitHub. Its message records the request it came
+  from (`origin`) and shows a Re row pointing back; the request shows
+  Started N. `open` writes only that agent-thread event: no reviewed
+  state, no resolve, no GitHub write (principle 2), and an origin message
+  answers no question, so one waiting on that thread stays waiting
+  (principle 8). It is refused with no question held, past the question's
+  time limit, on code outside the PR or lines out of range, on a
+  resolved, deleted or unknown thread or while GitHub can't be read, on
+  the request's own thread, and past 25 from one request. A citation in
+  the agent's reply (`crb:c/<id>`) links only a conversation of this
+  review, labelled by crb, never with an href the agent wrote.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

@@ -30,6 +30,7 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
+import { usePendingLanding } from "../agent/conversationLinks";
 import {
 	agentWaiting,
 	shownAgentPlaceables,
@@ -921,6 +922,17 @@ export function FileDiff(props: {
 	);
 	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
+	// A link to a conversation held here (a whole file's, unplaced,
+	// outdated or gone): the header's agent threads open, so its card shows
+	// and takes the landing.
+	const landing = usePendingLanding();
+	const landsOn = agentLead.some((t) => t.id === landing?.conversation)
+		? landing
+		: null;
+	useEffect(() => {
+		// Each new landing here, even after the reviewer closed them.
+		if (landsOn) setAgentOpen(true);
+	}, [landsOn]);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
 		(c) => c.span.subject === "file" && c.span.path === file.path,

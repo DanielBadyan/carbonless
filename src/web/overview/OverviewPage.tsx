@@ -50,6 +50,7 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
+import { requestConversationOpen } from "../agent/conversationLinks";
 import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
@@ -249,6 +250,10 @@ function OverviewContent({
 	useEffect(() => {
 		if (!active || !search.thread) return;
 		showThread(search.thread);
+		// An agent conversation's link: its thread's panel opens.
+		if (search.conversation) {
+			requestConversationOpen(search.conversation, search.message);
+		}
 		void navigate({
 			to: "/r/$id",
 			params: { id: reviewId },
@@ -256,7 +261,15 @@ function OverviewContent({
 			replace: true,
 			resetScroll: false,
 		});
-	}, [active, search.thread, showThread, navigate, reviewId]);
+	}, [
+		active,
+		search.thread,
+		search.conversation,
+		search.message,
+		showThread,
+		navigate,
+		reviewId,
+	]);
 	return (
 		<div className="space-y-6">
 			{overview.isPending && <OverviewSkeleton />}

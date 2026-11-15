@@ -86,7 +86,9 @@ export function linkCodeRefs(
 	make: (ref: CodeRef, label: Node) => HTMLElement | null,
 ): void {
 	const doc = root.ownerDocument;
-	const inLink = (n: Node) => n.parentElement?.closest("a, pre") != null;
+	// A citation's mount (`[data-cite]`, its label drawn by React) is left alone too.
+	const inLink = (n: Node) =>
+		n.parentElement?.closest("a, pre, [data-cite]") != null;
 	for (const code of root.querySelectorAll("code")) {
 		if (inLink(code)) continue;
 		const found = findCodeRefs(code.textContent ?? "");
@@ -106,7 +108,9 @@ export function linkCodeRefs(
 	const texts: Text[] = [];
 	const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 	for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-		if (!n.parentElement?.closest("a, pre, code")) texts.push(n as Text);
+		if (!n.parentElement?.closest("a, pre, code, [data-cite]")) {
+			texts.push(n as Text);
+		}
 	}
 	for (const text of texts) {
 		const found = findCodeRefs(text.data);

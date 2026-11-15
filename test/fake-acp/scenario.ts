@@ -31,6 +31,14 @@ export interface AcpScenario {
 		chunks?: number;
 		/** A command (argv) run in the agent's cwd before it answers. */
 		run?: string[];
+		/**
+		 * With `mcp`: crb `open` calls made after `next` and before `reply`,
+		 * in order. `ghThread` is an index into `review`'s GitHub threads
+		 * (called once, when needed) in place of a `thread` id. The reply's
+		 * text may cite each by `{{cite:N}}` (N: its index here); a refused
+		 * open's cite is `{{cite:N}}` left as is.
+		 */
+		open?: AcpOpenStep[];
 	}>;
 	/** Permission requests made before answering, each also a tool_call update. */
 	requests?: Array<{ kind: ActivityKind; title: string; rawInput?: unknown }>;
@@ -70,6 +78,22 @@ export interface AcpScenario {
 		/** Report each crb tool call as a tool_call update first, as Claude Code does (`mcp__crb__<tool>`). */
 		report?: boolean;
 	};
+}
+
+/** One `open` call of the fake agent (AcpScenario.answers[].open). */
+export interface AcpOpenStep {
+	text: string;
+	key?: string;
+	code?: {
+		path: string;
+		side?: "LEFT" | "RIGHT";
+		line?: number;
+		startLine?: number;
+		startCol?: number;
+		endCol?: number;
+	};
+	thread?: string;
+	ghThread?: number;
 }
 
 /** Writes `<dir>/fake-acp-scenario.json` atomically; its path goes in CRB_FAKE_ACP. */

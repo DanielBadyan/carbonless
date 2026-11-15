@@ -6,19 +6,24 @@
  * stripped. Fenced code in a language the diff highlights is drawn as the
  * diff's code rows; a `diff` fence as added and deleted rows. `path:line`
  * refs to files of the PR become router links to Files changed at the
- * answer's `head` (codeLinks.ts).
+ * answer's `head` (codeLinks.ts), and `crb:c/<id>` citations of this
+ * review's agent conversations links that open them (conversationLinks.ts).
  */
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Marked, type Token, type Tokens, type TokensList } from "marked";
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { HunkLine } from "../../shared/diffHunk";
 import { reviewQuery, sessionQuery } from "../api";
 import { languageFor } from "../files/highlight";
 import { type FilesSearch, parseFilesSearch } from "../files/landing";
 import { GithubHtml } from "../GithubHtml";
 import { CodeRows } from "../threads/CommentBody";
+import { agentThreadsQuery } from "./api";
+import { Citation } from "./Citation";
 import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
+import { linkCitations } from "./conversationLinks";
 
 const md = new Marked({ gfm: true, breaks: false, async: false });
 
@@ -148,6 +153,46 @@ function useCodeLinks(
 	}, [root, router, files, patchsets, head, text]);
 }
 
+/**
+ * The agent's citations (`crb:c/<id>`) in the rendered prose, for ids among
+ * this review's agent threads (anything else stays text): each token makes
+ * way for an empty `span[data-cite]`, where AgentMarkdown mounts a
+ * Citation (a portal), which labels and links it as what the page knows
+ * changes. Runs again when the text or the threads change; spans already
+ * made are kept.
+ */
+function useCitationMounts(
+	root: React.RefObject<HTMLDivElement | null>,
+	text: string,
+): HTMLElement[] {
+	const router = useRouter({ warn: false });
+	const threads = useQuery({ ...agentThreadsQuery, enabled: false }).data
+		?.threads;
+	const [mounts, setMounts] = useState<HTMLElement[]>([]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `text` is what re-renders the prose.
+	useLayoutEffect(() => {
+		const el = root.current;
+		if (!el || !router || !threads?.length) return;
+		const known = new Set(threads.map((t) => t.id));
+		const doc = el.ownerDocument;
+		for (const prose of el.querySelectorAll<HTMLElement>(".markdown-body")) {
+			linkCitations(prose, (id) => {
+				if (!known.has(id)) return null;
+				const span = doc.createElement("span");
+				span.dataset.cite = id;
+				return span;
+			});
+		}
+		const found = [...el.querySelectorAll<HTMLElement>("span[data-cite]")];
+		setMounts((was) =>
+			was.length === found.length && was.every((m, i) => m === found[i])
+				? was
+				: found,
+		);
+	}, [root, router, threads, text]);
+	return mounts;
+}
+
 export function AgentMarkdown(props: {
 	text: string;
 	/** The commit the answer was written on: its code links open there. */
@@ -156,8 +201,16 @@ export function AgentMarkdown(props: {
 	const parts = useMemo(() => agentParts(props.text), [props.text]);
 	const root = useRef<HTMLDivElement>(null);
 	useCodeLinks(root, props.text, props.head);
+	const citations = useCitationMounts(root, props.text);
 	return (
 		<div ref={root} className="min-w-0">
+			{citations.map((span) =>
+				createPortal(
+					<Citation thread={span.dataset.cite ?? ""} />,
+					span,
+					span.dataset.cite,
+				),
+			)}
 			{parts.map((part, i) =>
 				part.kind === "html" ? (
 					// Parts keep their order while the text grows.

@@ -138,8 +138,9 @@ while reviewing".
 - A stricter leash level. The config key is there; `open` is the only
   level this slice implements (see "The leash" and "Later").
 - The agent opening threads itself. The storage accepts an agent-opened
-  thread so that comes later without a format change; nothing produces
-  one yet.
+  thread so that comes later without a format change. (Since 2026-11-15
+  the agent's MCP `open` produces one, while it answers a request: spec
+  2026-11-15, agent opens conversations.)
 - Standing instructions for the agent (todo: "Custom agent pre-review
   actions and instructions").
 

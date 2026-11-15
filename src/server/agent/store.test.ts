@@ -10,6 +10,7 @@ import {
 	type AgentAnchor,
 	MAX_ACTIVITY_BYTES,
 	MAX_AGENT_TEXT,
+	startedBy,
 } from "../../shared/agent.js";
 import { newEvent } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
@@ -610,9 +611,12 @@ describe("GitHub thread conversations", () => {
 			text: "Locks twice.",
 			by: "ai",
 			agent,
-			origin: { request: "Check the locking" },
+			origin: { thread: t.id, message: t.messages[0]?.id as string },
 		});
-		expect(flagged.origin).toEqual({ request: "Check the locking" });
+		expect(flagged.messages[0]?.origin).toEqual({
+			thread: t.id,
+			message: t.messages[0]?.id,
+		});
 		const fresh = await new AgentThreadStore(
 			new RefStore(repo),
 			REVIEW,
@@ -620,25 +624,228 @@ describe("GitHub thread conversations", () => {
 		).read();
 		expect(fresh[0]?.messages[0]?.view).toEqual(view);
 		expect(fresh[0]?.messages[2]).toMatchObject({ suggests: "resolve" });
-		expect(fresh[1]?.origin).toEqual({ request: "Check the locking" });
-		expect(fresh[0]?.origin).toBeUndefined();
-	});
-
-	it("open cuts an ai origin request to 200 characters", async () => {
-		const t = await store.open({
-			anchor: { subject: "file", path: "src/lock.ts", commit: "" },
-			text: "x",
-			by: "ai",
-			agent,
-			origin: { request: "y".repeat(500) },
+		expect(fresh[1]?.messages[0]?.origin).toEqual({
+			thread: t.id,
+			message: t.messages[0]?.id,
 		});
-		expect(t.origin?.request).toBe("y".repeat(200));
-		expect((await store.read())[0]?.origin?.request).toHaveLength(200);
+		expect(fresh[0]?.messages[0]?.origin).toBeUndefined();
 	});
 
 	it("agent-thread-resolved still folds for a thread anchor", async () => {
 		const t = await askOn("PRRT_1", "Why?", "c1");
 		expect((await store.setResolved(t.id, true)).resolved).toBe(true);
 		expect((await store.setResolved(t.id, false)).resolved).toBe(false);
+	});
+});
+
+describe("origins: an agent message from a request", () => {
+	const fileAnchor: AgentAnchor = {
+		subject: "file",
+		path: "src/lock.ts",
+		commit: "a".repeat(40),
+	};
+	const request = async () => {
+		const t = await ask("Show me every lock", "r1");
+		return { thread: t.id, message: t.messages[0]?.id as string };
+	};
+	const openFrom = (
+		origin: { thread: string; message: string },
+		text = "This is such a case.",
+		key?: string,
+	) =>
+		store.open({
+			anchor: fileAnchor,
+			text,
+			by: "ai",
+			agent,
+			origin,
+			...(key !== undefined ? { key } : {}),
+		});
+
+	it("an origin message doesn't answer a waiting question", async () => {
+		const origin = await request();
+		const q = await ask("Is this safe?", "q1");
+		expect(q.waiting).toBe(true);
+		const after = await store.message(q.id, {
+			by: "ai",
+			text: "This is such a case.",
+			agent,
+			origin,
+		});
+		expect(after.messages[1]?.origin).toEqual(origin);
+		expect(after.waiting).toBe(true);
+		// The request itself still waits until the agent replies there.
+		const [req] = await store.read();
+		expect(req?.waiting).toBe(true);
+		// After a real answer, the origin message after it doesn't make it wait again.
+		const answered = await answer(q.id, "Yes.");
+		expect(answered.waiting).toBe(false);
+		const again = await store.message(q.id, {
+			by: "ai",
+			text: "And here.",
+			agent,
+			origin,
+		});
+		expect(again.waiting).toBe(false);
+	});
+
+	it("an ai-opened thread waits only after the reviewer replies", async () => {
+		const origin = await request();
+		const t = await openFrom(origin);
+		expect(t).toMatchObject({ openedBy: "ai", waiting: false });
+		const replied = await store.message(t.id, {
+			by: "human",
+			text: "Why?",
+			clientId: "h1",
+		});
+		expect(replied.waiting).toBe(true);
+		expect((await answer(t.id, "Because.")).waiting).toBe(false);
+	});
+
+	it("an origin naming a missing thread or a non-human message is dropped on read", async () => {
+		const origin = await request();
+		const ans = await answer(origin.thread, "An answer.");
+		const aiMessage = ans.messages[1]?.id as string;
+		const missing = "01k9e6m2q8x4v7c3n5b0h1j2zz";
+		const a = await openFrom({ thread: missing, message: origin.message });
+		const b = await openFrom({ thread: origin.thread, message: aiMessage });
+		const c = await openFrom({ thread: origin.thread, message: missing });
+		const good = await openFrom(origin);
+		const threads = await store.read();
+		const byId = new Map(threads.map((t) => [t.id, t]));
+		expect(byId.get(a.id)?.messages[0]?.origin).toBeUndefined();
+		expect(byId.get(b.id)?.messages[0]?.origin).toBeUndefined();
+		expect(byId.get(c.id)?.messages[0]?.origin).toBeUndefined();
+		expect(byId.get(good.id)?.messages[0]?.origin).toEqual(origin);
+	});
+
+	it("an origin dropped on read still answers nothing: a waiting question stays waiting (fail safe)", async () => {
+		const q = await ask("Is this safe?", "q1");
+		const missing = "01k9e6m2q8x4v7c3n5b0h1j2zz";
+		const after = await store.message(q.id, {
+			by: "ai",
+			text: "Such a case.",
+			agent,
+			origin: { thread: missing, message: missing },
+		});
+		expect(after.messages[1]?.origin).toBeUndefined();
+		expect(after.waiting).toBe(true);
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		expect((await fresh.read())[0]?.waiting).toBe(true);
+	});
+
+	it("startedBy groups by request message, once per thread", async () => {
+		const first = await request();
+		const second = await ask("And the queues?", "r2");
+		const other = {
+			thread: second.id,
+			message: second.messages[0]?.id as string,
+		};
+		const a = await openFrom(first, "a");
+		const b = await openFrom(other, "b");
+		const c = await openFrom(first, "c");
+		// A second origin message on a, from the same request: a counts once.
+		await store.message(a.id, {
+			by: "ai",
+			text: "And again.",
+			agent,
+			origin: first,
+		});
+		const started = startedBy(await store.read());
+		expect(started.get(first.message)).toEqual([a.id, c.id]);
+		expect(started.get(other.message)).toEqual([b.id]);
+		expect(started.size).toBe(2);
+	});
+
+	it("an ai opening with a repeated key returns the same thread", async () => {
+		const origin = await request();
+		const t = await openFrom(origin, "Here.", "k1");
+		expect(await openFrom(origin, "Here.", "k1")).toEqual(t);
+		const [x, y] = await Promise.all([
+			openFrom(origin, "Twice.", "k2"),
+			openFrom(origin, "Twice.", "k2"),
+		]);
+		expect(x.id).toBe(y.id);
+		// A restarted server: the key is read back from the ref.
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		const again = await fresh.open({
+			anchor: fileAnchor,
+			text: "Here.",
+			by: "ai",
+			agent,
+			origin,
+			key: "k1",
+		});
+		expect(again.id).toBe(t.id);
+		const threads = await store.read();
+		expect(threads).toHaveLength(3);
+		expect(threads.find((th) => th.id === t.id)?.messages).toHaveLength(1);
+		// A human clientId equal to an ai key is a different thing.
+		const human = await ask("Mine", "k1");
+		expect(human.id).not.toBe(t.id);
+	});
+
+	it("a keyed opening folded into the reviewer's conversation on that GitHub thread is not 'opened' on a retry (CAR-80 F)", async () => {
+		const origin = await request();
+		const ghAnchor: AgentAnchor = {
+			subject: "thread",
+			thread: "PRRT_9",
+			path: "src/lock.ts",
+			commit: "a".repeat(40),
+		};
+		const theirs = await store.open({
+			anchor: ghAnchor,
+			text: "Fixed?",
+			by: "human",
+			clientId: "h9",
+		});
+		const mine = await store.open({
+			anchor: ghAnchor,
+			text: "Such a case.",
+			by: "ai",
+			agent,
+			origin,
+			key: "k9",
+		});
+		expect(mine.id).toBe(theirs.id);
+		expect(await store.keyed(origin, "k9")).toEqual({
+			thread: theirs.id,
+			opened: false,
+		});
+		// Its own opening (nothing to fold into) stays "opened".
+		await store.open({
+			anchor: fileAnchor,
+			text: "Here.",
+			by: "ai",
+			agent,
+			origin,
+			key: "k10",
+		});
+		expect((await store.keyed(origin, "k10"))?.opened).toBe(true);
+	});
+
+	it("an origin message with a repeated key on a thread is written once", async () => {
+		const origin = await request();
+		const q = await ask("Is this safe?", "q1");
+		const send = () =>
+			store.message(q.id, {
+				by: "ai",
+				text: "Such a case.",
+				agent,
+				origin,
+				key: "m1",
+			});
+		await send();
+		await send();
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		await fresh.message(q.id, {
+			by: "ai",
+			text: "Such a case.",
+			agent,
+			origin,
+			key: "m1",
+		});
+		const found = (await store.read()).find((t) => t.id === q.id);
+		expect(found?.messages).toHaveLength(2);
 	});
 });
