@@ -123,9 +123,14 @@ export function standingSuggestion(
 	if (!conversation || conversation.orphaned || thread.resolved) {
 		return undefined;
 	}
-	const latest = [...conversation.messages]
-		.reverse()
-		.find((m) => m.by === "ai" && m.stop !== "error" && m.stop !== "cancelled");
+	const latest = [...conversation.messages].reverse().find(
+		(m) =>
+			m.by === "ai" &&
+			// A message from `open` answers nothing: it never retracts one.
+			!m.origin &&
+			m.stop !== "error" &&
+			m.stop !== "cancelled",
+	);
 	return latest?.suggests === "resolve" ? latest : undefined;
 }
 
