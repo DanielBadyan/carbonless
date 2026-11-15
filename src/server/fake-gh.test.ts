@@ -9,7 +9,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { type AddressInfo, connect, createServer } from "node:net";
+import { type AddressInfo, connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,6 +31,7 @@ import {
 	MAX_REQUEST,
 	startFakeGhServer,
 } from "../../test/fake-gh/server.mjs";
+import { ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
@@ -288,6 +289,68 @@ describe("fake gh", () => {
 			.filter((l) => l.includes("node(id:"));
 		expect(pages).toHaveLength(4);
 		for (const l of pages) expect(l).not.toContain(short?.id ?? "-");
+	});
+
+	it("logs each call whole, its lines together, however many gh calls log at once", async () => {
+		// bash line-buffers its stdout: a call of many lines (a GraphQL
+		// query) went out a write() per line, and concurrent calls' lines
+		// interleaved, splitting calls in ghCallsOf. A server of the test's
+		// own asks every gh of a round to log at the same moment; without
+		// the log's lock about half the rounds split a call.
+		const n = 16;
+		const query = (i: number) =>
+			`query=query {\n${Array.from({ length: 1000 }, (_, j) => `  call${i}x${j}`).join("\n")}\n}`;
+		for (let round = 0; round < 10; round++) {
+			const log = join(tmp, `log${round}`);
+			const sockets: Socket[] = [];
+			const all = createServer((socket) => {
+				let said = "";
+				socket.on("data", (d) => {
+					said += d;
+					if (sockets.includes(socket)) {
+						// Its "k": logged.
+						socket.end("0 0 0\n");
+					} else if (said.endsWith("\0\0")) {
+						// The request, to its environment's empty end.
+						sockets.push(socket);
+						if (sockets.length === n) {
+							for (const s of sockets) s.write(`log ${log}\n`);
+						}
+					}
+				});
+			});
+			const port = await new Promise<number>((resolve) =>
+				all.listen(0, "127.0.0.1", () =>
+					resolve((all.address() as AddressInfo).port),
+				),
+			);
+			try {
+				const codes = await Promise.all(
+					Array.from(
+						{ length: n },
+						(_, i) =>
+							new Promise((resolve) =>
+								spawn("gh", ["api", "graphql", "-f", query(i)], {
+									env: {
+										...process.env,
+										CRB_FAKE_GH_SERVER: `127.0.0.1:${port}:${"a".repeat(32)}`,
+									},
+									stdio: "ignore",
+								}).on("exit", resolve),
+							),
+					),
+				);
+				expect(codes).toEqual(Array(n).fill(0));
+			} finally {
+				all.close();
+			}
+			const calls = ghCallsOf(readFileSync(log, "utf8").replace(/\n$/, ""));
+			expect(calls).toHaveLength(n);
+			for (const call of calls) {
+				const i = /call(\d+)x0/.exec(call)?.[1];
+				expect(call).toBe(`api graphql -f ${query(Number(i))}`);
+			}
+		}
 	});
 
 	it("reports a missing PR the way gh does", async () => {
