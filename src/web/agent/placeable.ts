@@ -135,6 +135,17 @@ export const AgentPlacingProvider = AgentPlacingContext.Provider;
 export const useAgentPlacing = () => useContext(AgentPlacingContext);
 
 /**
+ * The agent threads whose place the tracer is asked for (GET
+ * /agent/placements): every thread on code; the review conversation has
+ * none, so it is never sent.
+ */
+export function agentPlacementIds(
+	threads: readonly AgentThread[] | undefined,
+): string[] {
+	return (threads ?? []).filter(isSpanThread).map((t) => t.id);
+}
+
+/**
  * The agent threads Files changed shows in the viewed head (span threads
  * only; a GitHub thread's conversation is its card's): on an earlier
  * patch set only those asked before the next one started (as review

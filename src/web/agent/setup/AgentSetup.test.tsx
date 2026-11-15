@@ -983,6 +983,40 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		expect(count).toHaveAttribute("title", "2 threads waiting for the agent");
 	});
 
+	it("answering the review conversation shows 'Whole review' and the question, no link", async () => {
+		current = status({
+			state: "busy",
+			spawned: true,
+			agent: { name: "A", version: "1" },
+			answering: { thread: "R1", text: "", activity: [] },
+			waiting: 1,
+		});
+		threads = [
+			{
+				...thread("R1", "x", 1),
+				anchor: { subject: "review" },
+				messages: [
+					{
+						id: "R1m",
+						by: "human",
+						at: SINCE,
+						text: "Were all comments resolved?",
+					},
+				],
+			},
+		];
+		const { dialog } = await opened();
+		expect(
+			await within(dialog).findByTestId("agent-answering-review"),
+		).toHaveTextContent(/^Whole review$/);
+		expect(
+			within(dialog).getByTestId("agent-answering-question"),
+		).toHaveTextContent(/^“Were all comments resolved\?”$/);
+		expect(
+			within(dialog).queryByRole("status", { name: "Loading the thread" }),
+		).toBeNull();
+	});
+
 	it("the thread link names path:line and the question, and closes the modal", async () => {
 		current = status({
 			state: "busy",

@@ -5,6 +5,7 @@ import { placeThreads } from "../files/threadPlacement";
 import {
 	agentOutside,
 	agentPlaceable,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 	tracedAgentPlaceables,
@@ -150,6 +151,24 @@ describe("tracedAgentPlaceables", () => {
 });
 
 describe("shownAgentPlaceables", () => {
+	it("the review conversation has no code: never a placeable, never waiting for a place", () => {
+		const span = asked("S", 3);
+		const whole: AgentThread = {
+			...asked("R", 3),
+			anchor: { subject: "review" },
+			waiting: true,
+		};
+		expect(
+			shownAgentPlaceables([whole, span], H1, {
+				placements: null,
+				until: null,
+			}).map((p) => p.id),
+		).toEqual(["S"]);
+		expect(
+			agentWaiting([whole, span], H2, { until: null }).map((p) => p.id),
+		).toEqual(["S"]);
+	});
+
 	it("a live thread conversation is never a span placeable (it is its GitHub thread's)", () => {
 		const span = asked("S", 3);
 		const onThread: AgentThread = {
@@ -260,5 +279,23 @@ describe("shownAgentPlaceables while the placements load", () => {
 		expect(
 			agentWaiting([earlier, here], H2, { until: null }).map((p) => p.id),
 		).toEqual(["E"]);
+	});
+});
+
+describe("agentPlacementIds", () => {
+	it("asks /agent/placements for every thread on code, never the review conversation", () => {
+		const whole: AgentThread = {
+			...asked("R", 3),
+			anchor: { subject: "review" },
+		};
+		const onThread: AgentThread = {
+			...asked("C", 3),
+			anchor: { subject: "thread", thread: "RT1", path: "a.ts", commit: H1 },
+		};
+		expect(agentPlacementIds([asked("S", 3), whole, onThread])).toEqual([
+			"S",
+			"C",
+		]);
+		expect(agentPlacementIds(undefined)).toEqual([]);
 	});
 });

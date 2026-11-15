@@ -50,8 +50,10 @@ export function AgentOverviewRow() {
 		return null;
 	}
 	const list = threads.data?.threads;
-	const open = list?.filter((t) => !t.resolved).length ?? 0;
-	const waiting = list?.filter((t) => !t.resolved && t.waiting).length ?? 0;
+	// The review conversation is the chip's, never counted here.
+	const spans = list?.filter(isSpanThread);
+	const open = spans?.filter((t) => !t.resolved).length ?? 0;
+	const waiting = spans?.filter((t) => !t.resolved && t.waiting).length ?? 0;
 	const s = status.data;
 	return (
 		<div className="space-y-2">

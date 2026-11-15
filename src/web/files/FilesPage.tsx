@@ -27,6 +27,7 @@ import {
 import {
 	AgentPlacingProvider,
 	agentOutside,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
@@ -1134,8 +1135,9 @@ export function FilesPage() {
 	}).data?.threads;
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
+	// The review conversation has no code to place: never asked about.
 	const agentIds = useMemo(
-		() => (agentThreads ?? []).map((t) => t.id),
+		() => agentPlacementIds(agentThreads),
 		[agentThreads],
 	);
 	const agentPlacingState = useAgentPlacementsFor({

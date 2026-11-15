@@ -352,6 +352,14 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 								Responding to{" "}
 								{thread && isSpanThread(thread) ? (
 									<ThreadLink thread={thread} onClose={onClose} />
+								) : thread ? (
+									// The review conversation: no line to link to.
+									<span
+										data-testid="agent-answering-review"
+										className="font-medium text-ink"
+									>
+										Whole review
+									</span>
 								) : threads.isError ? (
 									<span className="text-bad">{threads.error.message}</span>
 								) : (
