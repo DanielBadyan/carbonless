@@ -4,6 +4,7 @@ import {
 	type AgentActivity,
 	type AgentAnchor,
 	type AgentIdentity,
+	type AgentOrigin,
 	type AgentStop,
 	type AgentView,
 	type AgentViewFrom,
@@ -11,7 +12,6 @@ import {
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
-	MAX_ORIGIN_REQUEST,
 } from "../../shared/agent.js";
 import { type LineRanges, parseRanges } from "../../shared/lineRanges.js";
 import type {
@@ -230,8 +230,8 @@ export interface AgentThreadOpenedEvent extends EventBase {
 	truncated?: boolean;
 	/** Required when by === "ai". */
 	agent?: AgentIdentity;
-	/** ai only: why the agent opened it (≤ MAX_ORIGIN_REQUEST characters). */
-	origin?: { request: string };
+	/** ai only: the request the agent opened it from (its text is the first message). */
+	origin?: AgentOrigin;
 	/** human only: the comparison on screen. */
 	view?: AgentView;
 }
@@ -257,6 +257,8 @@ export interface AgentMessageEvent extends EventBase {
 	head?: string;
 	/** ai only: the answer suggests resolving the thread. */
 	suggests?: "resolve";
+	/** ai only: the request this message came from; it answers nothing. */
+	origin?: AgentOrigin;
 }
 
 /** The reviewer has seen the thread up to a message (a lowercase ULID). */
@@ -873,6 +875,15 @@ function parseView(raw: unknown): AgentView | null {
 	return { target: t, from: f, left, right };
 }
 
+/** Two lowercase ULIDs; anything else (the old `{request}` shape too) is null. */
+function parseOrigin(raw: unknown): AgentOrigin | null {
+	if (!isObj(raw)) return null;
+	const { thread, message } = raw;
+	if (typeof thread !== "string" || !LOWER_ULID.test(thread)) return null;
+	if (typeof message !== "string" || !LOWER_ULID.test(message)) return null;
+	return { thread, message };
+}
+
 function parseIdentity(raw: unknown): AgentIdentity | null {
 	if (!isObj(raw)) return null;
 	const { name, version, via, machine } = raw;
@@ -944,17 +955,11 @@ function parseAgentEvent(
 			if (base.by === "ai" && !extras.agent) return null;
 			const { origin, view } = raw;
 			// Fail safe: an origin is the agent's, a view the human's.
-			let parsedOrigin: { request: string } | undefined;
+			let parsedOrigin: AgentOrigin | undefined;
 			if (origin !== undefined) {
-				if (
-					base.by !== "ai" ||
-					!isObj(origin) ||
-					typeof origin.request !== "string" ||
-					origin.request.length > MAX_ORIGIN_REQUEST
-				) {
-					return null;
-				}
-				parsedOrigin = { request: origin.request };
+				const o = base.by === "ai" ? parseOrigin(origin) : null;
+				if (!o) return null;
+				parsedOrigin = o;
 			}
 			let parsedView: AgentView | undefined;
 			if (view !== undefined) {
@@ -1005,7 +1010,13 @@ function parseAgentEvent(
 			) {
 				return null;
 			}
-			const { view, head, suggests } = raw;
+			const { view, head, suggests, origin } = raw;
+			let parsedOrigin: AgentOrigin | undefined;
+			if (origin !== undefined) {
+				const o = base.by === "ai" ? parseOrigin(origin) : null;
+				if (!o) return null;
+				parsedOrigin = o;
+			}
 			let parsedView: AgentView | undefined;
 			if (view !== undefined) {
 				const v = base.by === "human" ? parseView(view) : null;
@@ -1034,6 +1045,7 @@ function parseAgentEvent(
 				...(parsedView ? { view: parsedView } : {}),
 				...(head !== undefined ? { head } : {}),
 				...(suggests !== undefined ? { suggests: "resolve" as const } : {}),
+				...(parsedOrigin ? { origin: parsedOrigin } : {}),
 			};
 		}
 		case "agent-thread-resolved": {

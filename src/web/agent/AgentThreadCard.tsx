@@ -54,9 +54,6 @@ import {
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
 
-/** The longest request the origin chip shows. */
-const MAX_ORIGIN = 200;
-
 const plural = (n: number, one: string, many: string) =>
 	`${n} ${n === 1 ? one : many}`;
 
@@ -231,29 +228,6 @@ function ViewChip(props: { view: AgentView }) {
 }
 
 /** Over an agent-opened conversation's first message: the request behind it. */
-function OriginChip(props: { request: string }) {
-	const text =
-		props.request.length > MAX_ORIGIN
-			? `${props.request.slice(0, MAX_ORIGIN - 1)}…`
-			: props.request;
-	return (
-		<Tooltip content={props.request} describe={false}>
-			{(trigger) => (
-				<span
-					{...trigger}
-					data-testid="agent-origin-chip"
-					// Focusable so keyboard and touch users get the full request.
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className="inline-flex max-w-full self-start rounded-full border border-agent-edge bg-agent px-2 py-0.5 text-xs break-words text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					↳ {text}
-				</span>
-			)}
-		</Tooltip>
-	);
-}
-
 function TruncatedChip() {
 	return (
 		<span data-testid="agent-truncated-chip">
@@ -659,11 +633,8 @@ export function AgentMessageItems(props: {
 		thread !== undefined && agentThreadState(thread, answering) === "waiting";
 	return (
 		<>
-			{thread?.messages.map((m, i) => (
+			{thread?.messages.map((m) => (
 				<Fragment key={m.id}>
-					{i === 0 && thread.origin && (
-						<OriginChip request={thread.origin.request} />
-					)}
 					{m.id === props.divider && <NewDivider />}
 					{m.by === "human" ? (
 						<HumanMessage message={m} viewer={viewer} />

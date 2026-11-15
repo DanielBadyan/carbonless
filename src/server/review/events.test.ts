@@ -773,17 +773,26 @@ describe("agent events", () => {
 		expect(parseEventLines(msg(bad))).toEqual([]);
 	});
 
-	it("drops origin on a human opening and cuts nothing: an origin over 200 chars is dropped", () => {
-		const aiOpened = { ...opened, by: "ai", agent };
-		const ok = { ...aiOpened, origin: { request: "x".repeat(200) } };
-		expect(parseEventLines(msg([ok]))).toEqual([ok]);
+	it("parses an origin of two lowercase ULIDs on ai events, drops it on human ones, bad ids and the old {request} shape", () => {
+		const origin = { thread, message: reply.id };
+		const aiOpened = { ...opened, by: "ai", agent, origin };
+		const aiMsg = { ...reply, origin };
+		expect(parseEventLines(msg([aiOpened, aiMsg]))).toEqual([aiOpened, aiMsg]);
+		expect(() => validateForWrite(aiMsg as typeof reply)).not.toThrow();
+		const humanMsg = newEvent("agent-message", "dan", { thread, text: "q" });
 		expect(
 			parseEventLines(
 				msg([
-					{ ...opened, origin: { request: "why" } },
-					{ ...aiOpened, origin: { request: "x".repeat(201) } },
-					{ ...aiOpened, origin: { request: 7 } },
-					{ ...aiOpened, origin: "why" },
+					{ ...opened, origin },
+					{ ...humanMsg, origin },
+					{ ...aiOpened, origin: { request: "why" } },
+					{ ...aiOpened, origin: { thread, message: "NOT-A-ULID" } },
+					{
+						...aiMsg,
+						origin: { thread: thread.toUpperCase(), message: reply.id },
+					},
+					{ ...aiMsg, origin: { thread } },
+					{ ...aiMsg, origin: "why" },
 				]),
 			),
 		).toEqual([]);

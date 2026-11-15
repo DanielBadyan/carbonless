@@ -97,6 +97,16 @@ export interface AgentView {
 	right: string;
 }
 
+/**
+ * The request an agent message came from: the reviewer's message (a human
+ * one) in an agent thread, both lowercase ULIDs. The agent opened a
+ * conversation, or added this message to one, while answering it.
+ */
+export interface AgentOrigin {
+	thread: string;
+	message: string;
+}
+
 export interface AgentMessage {
 	id: string;
 	by: "human" | "ai";
@@ -116,6 +126,12 @@ export interface AgentMessage {
 	head?: string;
 	/** ai only: the answer suggests resolving the thread. */
 	suggests?: "resolve";
+	/**
+	 * ai only: the request this message came from (the agent's `open`). It
+	 * answers no question. Dropped on read unless it names a human message
+	 * of a thread in the same ref.
+	 */
+	origin?: AgentOrigin;
 }
 
 export interface AgentThread {
@@ -130,8 +146,6 @@ export interface AgentThread {
 	 * or one came after the last answer's `replyTo`.
 	 */
 	waiting: boolean;
-	/** The agent opened it, saying why (ai-opened threads only). */
-	origin?: { request: string };
 	/** An ai message the reviewer has not seen. */
 	unread: boolean;
 	/** The id of the last message the reviewer has seen. */
@@ -209,8 +223,28 @@ export interface AgentSeenRequest {
 	upTo: string;
 }
 
-/** An agent-opened thread's reason, in characters. */
-export const MAX_ORIGIN_REQUEST = 200;
+/**
+ * Each request message's started conversations: the request's message id →
+ * the ids of the threads holding an ai message from it, in the order those
+ * threads were opened (`threads` is the fold's order). A thread counts once.
+ */
+export function startedBy(
+	threads: readonly Pick<AgentThread, "id" | "messages">[],
+): Map<string, string[]> {
+	const out = new Map<string, string[]>();
+	for (const t of threads) {
+		for (const m of t.messages) {
+			if (m.by !== "ai" || !m.origin) continue;
+			const list = out.get(m.origin.message) ?? [];
+			if (!list.includes(t.id)) list.push(t.id);
+			out.set(m.origin.message, list);
+		}
+	}
+	return out;
+}
+
+/** At most this many conversations open from one request (`open`). */
+export const MAX_OPENED_PER_REQUEST = 25;
 
 export interface AgentResolvedRequest {
 	resolved: boolean;
