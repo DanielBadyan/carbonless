@@ -87,15 +87,25 @@ session's work; nothing here may block it.
 ### The header chip
 
 Today's chip (`src/web/agent/AgentChip.tsx`) is a fixed 28px icon-only
-circle (`CHIP_BOX`), name in the tooltip only, with the plug badge on its
-corner for a joined session. It keeps its sparkle, the plug badge, its status
+circle (`CHIP_BOX`) between the logo and the PR title, name in the tooltip
+only, with the plug badge on its corner for a joined session.
+
+**It moves to the right of the PR title**, after the `#number`, so it is
+more noticeable (owner, 2026-11-15: "Let's move the chip to be on the right
+of the PR instead of on the left, so it's more noticable"). The logo is
+followed directly by the title. When the title wraps (narrow desktop,
+phone) the chip follows the `#number` on its last line, inline. In the
+compact header shown once the page scrolls (logo, tabs, title pill), it
+sits right after the title pill **(call)**. It keeps its sparkle, the plug badge, its status
 colour (`agentDot`/`agentInk`: grey off/elsewhere, yellow starting/busy,
 green ready, red failing) and its tooltip (`agentTip`). It gains:
 
-- the review conversation's **message count** (`agent-ink`), once it has
-  any messages. The chip grows from a circle into a pill to fit it (and
-  the header's reserved place, `useAgentChipPlace` and the
-  `agent-chip-pending` placeholder, grows with it, so nothing jumps); the
+- the review conversation's **message count** (`agent-ink`), styled like
+  the agent count pill on file rows, once it has
+  any messages. The chip grows from a circle into a pill to fit it (the
+  header's reserved place, `useAgentChipPlace` and the
+  `agent-chip-pending` placeholder, move with the chip to after the title
+  and grow with it, so nothing jumps); the
   tap target is at least 40px in both shapes. No name text is added: the
   name stays in the tooltip **(call)**;
 - an **unread dot** (`accent`) while the conversation has an agent message
