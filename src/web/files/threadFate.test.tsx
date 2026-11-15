@@ -398,6 +398,41 @@ describe("UnplacedRow", () => {
 		expect(top.className).toContain("truncate");
 	});
 
+	it.each<[Fate | null, string]>([
+		["deleted", "Commented line has been deleted since the review"],
+		["rewritten", "Commented line has been rewritten since the review"],
+		["outdated", "GitHub marks the commented line outdated"],
+		["untraced", "Couldn't trace the commented line here"],
+		["reverted", "The commented change has been reverted since the review"],
+		[
+			"base-changed",
+			"The base changed under the commented line since the review",
+		],
+		["file-gone", "Commented file has been deleted since the review"],
+		[null, "Couldn't work out where this thread is now"],
+	])(
+		"resolved, its quiet line keeps the fate %s's sentence (CAR-158)",
+		(fate, sentence) => {
+			render(
+				wrap(
+					info(),
+					<UnplacedRow
+						thread={thread({ resolved: true, author: "rev1" })}
+						readId="r1"
+						fate={fate}
+					/>,
+				),
+			);
+			const line = screen.getByTestId("unplaced-collapsed");
+			expect(line.textContent).toBe(`${sentence} · rev1`);
+			expect(line).toHaveAccessibleName(
+				`Resolved thread by rev1: ${sentence}. Expand`,
+			);
+			// One line on a phone: truncated, never wrapped.
+			expect(line.querySelector(".truncate")).toBeTruthy();
+		},
+	);
+
 	it("moved? names where the line may have gone, as text", () => {
 		render(
 			wrap(
@@ -415,6 +450,25 @@ describe("UnplacedRow", () => {
 			`Commented line may have moved to lib/${HOSTILE}.ts`,
 		);
 		expect(top.querySelector("img")).toBeNull();
+	});
+
+	it("resolved, moved? still names where the line may have gone (CAR-158)", () => {
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({ resolved: true, author: "rev1" })}
+					readId="r1"
+					fate="moved"
+					movedTo={`lib/${HOSTILE}.ts`}
+				/>,
+			),
+		);
+		const line = screen.getByTestId("unplaced-collapsed");
+		expect(line.textContent).toBe(
+			`Commented line may have moved to lib/${HOSTILE}.ts · rev1`,
+		);
+		expect(line.querySelector("img")).toBeNull();
 	});
 
 	it("the original code sits in a titled box: Original Reviewed Change, then where it was", () => {
@@ -546,10 +600,12 @@ describe("a resolved unplaced thread", () => {
 		const quiet = rows[1] as HTMLElement;
 		expect(quiet).toHaveAttribute("data-resolved", "true");
 		const line = within(quiet).getByTestId("unplaced-collapsed");
-		expect(line.textContent).toBe("File deleted · a.ts · rev1");
+		expect(line.textContent).toBe(
+			"Commented file has been deleted since the review · a.ts · rev1",
+		);
 		// Its name says what it shows, the path too.
 		expect(line).toHaveAccessibleName(
-			"Resolved thread by rev1: File deleted · a.ts. Expand",
+			"Resolved thread by rev1: Commented file has been deleted since the review · a.ts. Expand",
 		);
 		expect(line).toHaveAttribute("aria-expanded", "false");
 		expect(line.className).toContain("text-muted");
@@ -585,7 +641,7 @@ describe("a resolved unplaced thread", () => {
 			),
 		);
 		expect(screen.getByTestId("unplaced-collapsed").textContent).toContain(
-			"Line deleted",
+			"Commented line has been deleted since the review",
 		);
 		expect(screen.queryByTestId("original-code")).toBeNull();
 		rerender(

@@ -109,10 +109,11 @@ export const FATES: Record<
 		icon: Icon;
 		tone: "red" | "yellow";
 		tip: string;
-		/** An unplaced row's top line (owner, 2026-11-08). */
+		/**
+		 * An unplaced row's top line (owner, 2026-11-08), and its quiet line
+		 * once resolved: one wording for both (CAR-158).
+		 */
 		sentence: string;
-		/** A resolved row's quiet line: the sentence shortened. */
-		short: string;
 	}
 > = {
 	deleted: {
@@ -121,7 +122,6 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its lines were deleted",
 		sentence: "Commented line has been deleted since the review",
-		short: "Line deleted",
 	},
 	rewritten: {
 		label: "rewritten",
@@ -129,7 +129,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
 		sentence: "Commented line has been rewritten since the review",
-		short: "Line rewritten",
 	},
 	outdated: {
 		label: "outdated",
@@ -138,7 +137,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Outdated on GitHub; its own commit can't be traced",
 		sentence: "GitHub marks the commented line outdated",
-		short: "Outdated",
 	},
 	untraced: {
 		label: "untraced",
@@ -146,7 +144,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Couldn't trace the commented line here",
 		sentence: "Couldn't trace the commented line here",
-		short: "Line untraced",
 	},
 	"file-gone": {
 		label: "file deleted",
@@ -154,7 +151,6 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its file was deleted",
 		sentence: "Commented file has been deleted since the review",
-		short: "File deleted",
 	},
 	moved: {
 		label: "moved?",
@@ -162,7 +158,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Its file was renamed and its lines didn't follow: maybe moved",
 		sentence: "Commented line may have moved",
-		short: "Line may have moved",
 	},
 	reverted: {
 		label: "reverted",
@@ -170,7 +165,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The PR no longer changes this place",
 		sentence: "The commented change has been reverted since the review",
-		short: "Change reverted",
 	},
 	"base-changed": {
 		label: "base changed",
@@ -178,7 +172,6 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
-		short: "Base changed",
 	},
 };
 
@@ -189,7 +182,6 @@ const UNKNOWN_FATE = {
 	tone: "red" as const,
 	tip: "Where this thread sits now couldn't be computed",
 	sentence: "Couldn't work out where this thread is now",
-	short: "Place unknown",
 };
 
 /** "PS2", or nothing without a patch set. */
@@ -484,7 +476,7 @@ export function UnplacedRow(props: {
  * thread and an agent thread (only the body differs): its fate in a
  * sentence on the top line, the code it was written on in the "Original
  * Reviewed Change" box, then `children`. Resolved, one quiet line (the
- * resolved icon, the fate shortened, `who`) until expanded; resolving it
+ * resolved icon, the same fate sentence, `who`) until expanded; resolving it
  * collapses it again (owner, 2026-11-08).
  */
 export function UnplacedShell(props: {
@@ -527,14 +519,14 @@ export function UnplacedShell(props: {
 				<button
 					type="button"
 					aria-expanded={false}
-					aria-label={`Resolved thread by ${props.who}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
+					aria-label={`Resolved thread by ${props.who}: ${sentence}${props.path ? ` · ${props.path}` : ""}. Expand`}
 					data-testid="unplaced-collapsed"
 					onClick={() => setExpanded(true)}
 					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
 					<span className="truncate">
-						{fate.short}
+						{sentence}
 						{props.path && (
 							<>
 								{" · "}

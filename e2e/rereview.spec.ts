@@ -1531,7 +1531,7 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	await page.getByRole("button", { name: "Refresh" }).first().click();
 	await expect(group.getByTestId("unplaced-collapsed")).toBeVisible(GIT_WAIT);
 	await expect(group.getByTestId("unplaced-collapsed")).toHaveText(
-		"File deleted · src/legacy.ts · rev1",
+		"Commented file has been deleted since the review · src/legacy.ts · rev1",
 	);
 	await expect(group).not.toContainText("1 thread");
 	await expect(group.getByTestId("original-code")).toHaveCount(0);
@@ -1654,7 +1654,9 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 		await expect(toggle).toBeVisible(GIT_WAIT);
 		if ((await toggle.getAttribute("aria-label")) === "Expand file")
 			await toggle.click();
-		const row = unplacedRows(coreS).filter({ hasText: /core 30|Line deleted/ });
+		const row = unplacedRows(coreS).filter({
+			hasText: /core 30|Commented line has been deleted/,
+		});
 		await expect(row).toHaveCount(1, GIT_WAIT);
 		return row;
 	};
@@ -1665,7 +1667,9 @@ test("resolving an unplaced thread from its row folds it into one quiet line, ke
 	// One quiet line: no code, no comment.
 	const quiet = row.getByTestId("unplaced-collapsed");
 	await expect(quiet).toBeVisible();
-	await expect(quiet).toHaveText("Line deleted · rev1");
+	await expect(quiet).toHaveText(
+		"Commented line has been deleted since the review · rev1",
+	);
 	await expect(row.getByTestId("original-code")).toHaveCount(0);
 	await expect(row.getByTestId("unplaced-opener")).toHaveCount(0);
 	await expectNoPageOverflow(page);
@@ -1783,7 +1787,9 @@ test("when the placements fail every thread stays listed with the error and a re
 	const quiet = rows.nth(1);
 	await expect(quiet).toHaveAttribute("data-resolved", "true");
 	const line = quiet.getByTestId("unplaced-collapsed");
-	await expect(line).toHaveText("Place unknown · src/core.ts · rev1");
+	await expect(line).toHaveText(
+		"Couldn't work out where this thread is now · src/core.ts · rev1",
+	);
 	await expect(line).toHaveClass(/text-muted/);
 	await expect(failed).toContainText("1 thread");
 	await expect(failed).not.toContainText("2 threads");
