@@ -124,6 +124,17 @@ the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
 
+## Why are lines in a different order, or marked where GitHub shows none?
+
+When a cluster has more removed lines than added ones (or the reverse),
+GitHub marks nothing: its unified view pairs no lines, and its split view
+only lines the rows up by position. carbonless pairs the lines
+that are clearly similar instead, and marks the words that changed in each
+pair. Unified shows a pair together, the removed line right above its
+added one; side by side puts it on one row. Unpaired lines keep today's
+layout, nothing is hidden, and each side stays in its own order. This is
+the first place carbonless deliberately differs from GitHub.
+
 ## Why doesn't Find in PR find a line I know is in the file?
 
 Only what the diff can show is searched: file paths, changed lines and the
@@ -234,6 +245,11 @@ setup modal, whose Spawn tab has three steps:
    | OpenCode | `opencode acp` | |
    | Copilot CLI | `copilot --acp` | |
    | Other | any command speaking ACP | |
+
+   Once a Spawn has started on this machine, this step shows folded and
+   grayed, with the harness in effect named in its header; tap it to open.
+   Where that's kept and how to reset it: "Joining a review from a
+   session", below.
 
 2. **Select leash:** Open (the only one so far).
 3. **Configure:** command and arguments, then **Spawn**. Spawn runs the
@@ -366,7 +382,11 @@ claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<ke
 it, `claude mcp add` writes to the *local* scope, seen only by sessions
 started in the directory it ran in. A session that's already running
 picks it up with `/reload-plugins` (below); the info icon next to the line
-says so.
+says so. Once you've approved a join on this crb, this step shows folded
+and grayed (tap it to open); Spawn's folds on its own, after a Spawn.
+Both are kept by the crb server, not the browser, as marker files in
+`$XDG_STATE_HOME/carbonless/agent-setup/` (`~/.local/state/carbonless/…`
+by default): delete that folder to unfold both.
 
 **Then, in the session:** "join the carbonless review at
 `http://<host>:4747/r/<id>`" (step 2 of the tab shows that line too), or "join my

@@ -1,5 +1,5 @@
-import { InfoIcon } from "@primer/octicons-react";
-import { type ReactNode, useRef, useState } from "react";
+import { ChevronDownIcon, InfoIcon } from "@primer/octicons-react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { type Copied, CopyMark, copyInto, copyWord } from "../../CopyMark";
 import { Tooltip } from "../../Tooltip";
 
@@ -31,20 +31,80 @@ export function Field(props: { label: string; children: ReactNode }) {
 	);
 }
 
-/** A numbered step: the number in a circle and its title (an h3), then its body. */
-export function Step(props: { n: number; title: string; children: ReactNode }) {
+/**
+ * A numbered step: the number in a circle and its title (an h3), then its
+ * body. A `done` step (a one-time setup already behind this machine)
+ * starts folded and muted: its header alone, with `summary` after the
+ * title, a button that opens it (and folds it again). Opening it never
+ * undoes `done`.
+ */
+export function Step(props: {
+	n: number;
+	title: string;
+	children: ReactNode;
+	done?: boolean;
+	summary?: string;
+}) {
+	const [opened, setOpened] = useState(false);
+	const bodyId = useId();
+	const number = (
+		<span
+			aria-hidden
+			className={`flex size-[22px] shrink-0 items-center justify-center rounded-full bg-overlay text-xs font-bold ${
+				props.done ? "text-muted" : "text-agent-ink"
+			}`}
+		>
+			{props.n}
+		</span>
+	);
+	if (!props.done) {
+		return (
+			<section className="flex min-w-0 flex-col gap-2.5">
+				<div className="flex items-center gap-2.5">
+					{number}
+					<h3 className="text-sm font-semibold text-ink">{props.title}</h3>
+				</div>
+				{props.children}
+			</section>
+		);
+	}
 	return (
-		<section className="flex min-w-0 flex-col gap-2.5">
-			<div className="flex items-center gap-2.5">
-				<span
-					aria-hidden
-					className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-overlay text-xs font-bold text-agent-ink"
+		<section
+			data-folded={!opened || undefined}
+			className="flex min-w-0 flex-col gap-2.5"
+		>
+			<h3 className="m-0 min-w-0">
+				<button
+					type="button"
+					aria-label={
+						props.summary ? `${props.title} · ${props.summary}` : props.title
+					}
+					aria-expanded={opened}
+					aria-controls={bodyId}
+					onClick={() => setOpened((o) => !o)}
+					className="-mx-1.5 flex min-h-10 w-[calc(100%+0.75rem)] min-w-0 items-center gap-2.5 rounded-md px-1.5 text-left text-sm font-semibold text-muted hover:bg-overlay hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
 				>
-					{props.n}
-				</span>
-				<h3 className="text-sm font-semibold text-ink">{props.title}</h3>
-			</div>
-			{props.children}
+					{number}
+					<span className="min-w-0 truncate">
+						{props.title}
+						{props.summary && (
+							<span className="font-normal">{` · ${props.summary}`}</span>
+						)}
+					</span>
+					<ChevronDownIcon
+						size={16}
+						aria-hidden
+						className={`ml-auto shrink-0 transition-transform motion-reduce:transition-none ${
+							opened ? "rotate-180" : ""
+						}`}
+					/>
+				</button>
+			</h3>
+			{opened && (
+				<div id={bodyId} className="flex min-w-0 flex-col gap-2.5">
+					{props.children}
+				</div>
+			)}
 		</section>
 	);
 }

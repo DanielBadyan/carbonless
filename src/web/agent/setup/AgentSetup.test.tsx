@@ -14,6 +14,7 @@ import { expectLoadingThen, heldJson } from "../../../../test/loading";
 import type {
 	AgentCheck,
 	AgentConfig,
+	AgentSetupDone,
 	AgentStatus,
 	AgentThread,
 } from "../../../shared/agent";
@@ -116,6 +117,8 @@ let current: AgentStatus;
 let heldStatus: Promise<Response> | null;
 let stored: { agent: AgentConfig | null; problems: string[] };
 let threads: AgentThread[];
+let setupDone: AgentSetupDone;
+let heldSetupDone: Promise<Response> | null;
 beforeEach(() => {
 	writes.log = [];
 	writes.check = {
@@ -127,6 +130,8 @@ beforeEach(() => {
 	heldStatus = null;
 	stored = { agent: null, problems: [] };
 	threads = [];
+	setupDone = { invite: false, spawn: false };
+	heldSetupDone = null;
 	try {
 		localStorage.clear();
 	} catch {}
@@ -135,6 +140,8 @@ beforeEach(() => {
 		vi.fn(async (url: string) => {
 			if (url === "/api/agent") return heldStatus ?? json(200, current);
 			if (url === "/api/config/agent") return json(200, stored);
+			if (url === "/api/config/agent/setup")
+				return heldSetupDone ?? json(200, setupDone);
 			if (url === "/api/mcp/setup") return json(200, { key: "k3y" });
 			if (url === "/api/agent/threads") return json(200, { threads });
 			return json(404, { error: "no" });
@@ -590,6 +597,160 @@ describe("AgentSetup: Spawn", () => {
 		]);
 		await waitFor(() => expect(line).toHaveFocus());
 		copied.ok = true;
+	});
+});
+
+describe("AgentSetup: the one-time setup folds once done (CAR-160)", () => {
+	const setupReads = () =>
+		vi.mocked(fetch).mock.calls.filter(([u]) => u === "/api/config/agent/setup")
+			.length;
+	/** Step 1's fold button (only a done step has one). */
+	const fold = (dialog: HTMLElement) =>
+		within(dialog).queryByRole("button", { name: /^One-time setup/ });
+	const toTab = async (
+		user: ReturnType<typeof userEvent.setup>,
+		dialog: HTMLElement,
+		name: "Invite" | "Spawn",
+	) => user.click(within(dialog).getByRole("tab", { name }));
+
+	it("fresh: step 1 is open on both tabs, with no fold button", async () => {
+		const { user, dialog } = await opened(openInviteSetup);
+		expect(
+			await within(dialog).findByRole("button", { name: "Codex" }),
+		).toBeTruthy();
+		await waitFor(() => expect(setupReads()).toBe(1));
+		expect(fold(dialog)).toBeNull();
+		await toTab(user, dialog, "Spawn");
+		expect(
+			await within(dialog).findByRole("radiogroup", { name: "Harness" }),
+		).toBeTruthy();
+		expect(fold(dialog)).toBeNull();
+	});
+
+	it("after an approved join: Invite's step 1 is folded and opens on a click, intact; Spawn's stays open", async () => {
+		setupDone = { invite: true, spawn: false };
+		const { user, dialog } = await opened(openInviteSetup);
+		const button = await waitFor(() => {
+			const b = fold(dialog);
+			expect(b).toBeTruthy();
+			return b as HTMLElement;
+		});
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		expect(button).toHaveAccessibleName("One-time setup");
+		expect(within(dialog).queryByRole("button", { name: "Codex" })).toBeNull();
+		expect(within(dialog).queryByTestId("join-setup-line")).toBeNull();
+		// Step 3 as before.
+		expect(within(dialog).getByTestId("join-request-none")).toBeTruthy();
+		await user.click(button);
+		expect(button).toHaveAttribute("aria-expanded", "true");
+		const line = await within(dialog).findByTestId("join-setup-line");
+		const origin = window.location.origin;
+		expect(line).toHaveValue(mcpLine("claude-code", origin, "k3y"));
+		await user.click(within(dialog).getByRole("button", { name: "Codex" }));
+		expect(line).toHaveValue(mcpLine("codex", origin, "k3y"));
+		// Folds again; still done.
+		await user.click(button);
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		expect(within(dialog).queryByTestId("join-setup-line")).toBeNull();
+		await toTab(user, dialog, "Spawn");
+		expect(
+			await within(dialog).findByRole("radiogroup", { name: "Harness" }),
+		).toBeTruthy();
+		expect(fold(dialog)).toBeNull();
+	});
+
+	it("after a spawn: Spawn's step 1 is folded, naming the harness in effect, which Spawn still uses; Invite's stays open", async () => {
+		setupDone = { invite: false, spawn: true };
+		const { user, dialog } = await opened(openSpawnSetup);
+		const button = await waitFor(() => {
+			const b = fold(dialog);
+			expect(b).toBeTruthy();
+			return b as HTMLElement;
+		});
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		expect(button).toHaveAccessibleName("One-time setup · Claude Code");
+		expect(
+			within(dialog).queryByRole("radiogroup", { name: "Harness" }),
+		).toBeNull();
+		expect(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+		).toHaveValue("claude-agent-acp");
+		await user.click(button);
+		const other = await within(dialog).findByRole("radio", { name: "Other" });
+		expect(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		).toBeChecked();
+		// A pick made while open applies once folded again.
+		await user.click(other);
+		await user.click(button);
+		expect(button).toHaveAccessibleName("One-time setup · Other");
+		await user.type(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+			"my-acp",
+		);
+		await user.click(within(dialog).getByRole("button", { name: "Spawn" }));
+		await waitFor(() =>
+			expect(writes.log).toContainEqual([
+				"checkAgentConfig",
+				[expect.objectContaining({ command: "my-acp" })],
+			]),
+		);
+		await toTab(user, dialog, "Invite");
+		expect(
+			await within(dialog).findByRole("button", { name: "Codex" }),
+		).toBeTruthy();
+		expect(fold(dialog)).toBeNull();
+	});
+
+	it("an Approve in the modal reads it again: Invite's step 1 folds", async () => {
+		current = status({
+			joinRequest: { id: "req1", name: "s", machine: "m", at: SINCE },
+		});
+		const { user, dialog } = await opened(openInviteSetup);
+		const card = await within(dialog).findByTestId("join-request-card");
+		expect(within(dialog).getByRole("button", { name: "Codex" })).toBeTruthy();
+		setupDone = { invite: true, spawn: false };
+		await user.click(within(card).getByRole("button", { name: "Approve" }));
+		await waitFor(() => expect(fold(dialog)).toBeTruthy());
+		expect(within(dialog).queryByRole("button", { name: "Codex" })).toBeNull();
+	});
+
+	it("a Decline doesn't read it again", async () => {
+		current = status({
+			joinRequest: { id: "req1", name: "s", machine: "m", at: SINCE },
+		});
+		const { user, dialog } = await opened(openInviteSetup);
+		const card = await within(dialog).findByTestId("join-request-card");
+		await waitFor(() => expect(setupReads()).toBe(1));
+		await user.click(within(card).getByRole("button", { name: "Decline" }));
+		await within(dialog).findByText("No agent requesting to join");
+		expect(setupReads()).toBe(1);
+		expect(fold(dialog)).toBeNull();
+	});
+
+	it("a started Spawn reads it again: Spawn's step 1 folds", async () => {
+		const { user, dialog } = await opened(openSpawnSetup);
+		await within(dialog).findByRole("radiogroup", { name: "Harness" });
+		setupDone = { invite: false, spawn: true };
+		await user.click(within(dialog).getByRole("button", { name: "Spawn" }));
+		await waitFor(() => expect(fold(dialog)).toBeTruthy());
+		expect(
+			within(dialog).queryByRole("radiogroup", { name: "Harness" }),
+		).toBeNull();
+	});
+
+	it("while it's read, step 1 is open (never folded as if done)", async () => {
+		setupDone = { invite: true, spawn: true };
+		const held = heldJson();
+		heldSetupDone = held.response;
+		const { dialog } = await opened(openInviteSetup);
+		expect(
+			await within(dialog).findByRole("button", { name: "Codex" }),
+		).toBeTruthy();
+		expect(fold(dialog)).toBeNull();
+		heldSetupDone = null;
+		held.release(setupDone);
+		await waitFor(() => expect(fold(dialog)).toBeTruthy());
 	});
 });
 

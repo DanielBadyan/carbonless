@@ -15,6 +15,7 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import type { AgentThread } from "../../shared/agent";
+import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
 import { AgentNotInComparison } from "../agent/AgentNotInComparison";
@@ -56,7 +57,7 @@ import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree } from "./FileTree";
-import { nextFile } from "./fileFinish";
+import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { FindBar } from "./find/FindBar";
@@ -856,7 +857,29 @@ export function FilesPage() {
 	 * With none left it closes and the verdict at the end rises into view.
 	 */
 	const finished = (index: number) => {
-		const next = nextFile(files, index);
+		// In the since view a file's since-only pieces are left in it too,
+		// and the gone files after the tree's (no clusters: all pieces) are
+		// files to move on to like any other.
+		const candidates = [
+			...files,
+			...gone.map((g) => ({ index: g.index, path: g.path, clusters: [] })),
+		];
+		const next = nextFile(candidates, index, (f) =>
+			fileLeft(
+				f.clusters,
+				since === null || !sinceAnswer
+					? undefined
+					: {
+							marks: data?.sinceMarks,
+							since,
+							path: f.path,
+							pieces: sinceOnlyPieces(
+								piecesByFile.get(f.index) ?? [],
+								new Set(f.clusters.map((c) => c.key)),
+							),
+						},
+			),
+		);
 		if (!next) {
 			// The verdict rises where the click landed: a double click's
 			// second click must not send a verdict (Approve posts at once).
@@ -1599,6 +1622,12 @@ export function FilesPage() {
 														}
 														pathFind={find.pathOf(file.index)}
 														find={find.diffOf(file.index)}
+														onFinished={() => finished(file.index)}
+														ignoreMarksUntil={
+															movedOn?.key === keyOf(file.index)
+																? movedOn.until
+																: undefined
+														}
 													/>
 												))}
 												{/* Threads whose file isn't in this comparison at all. */}

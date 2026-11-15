@@ -135,7 +135,7 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
+import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
 import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
@@ -1048,7 +1048,7 @@ interface RowProps {
 	composers?: RowComposers;
 	find?: DiffFind;
 	agent?: AgentRows;
-	/** The hunk's paired lines' word marks (wordWork.ts hunkWords), by line. */
+	/** The hunk's paired lines' word marks (wordWork.ts hunkWords of hunkView's pairs), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
 	hidden?: ReadonlySet<DiffLine>;
@@ -3571,31 +3571,31 @@ function HunkRows(props: {
 		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
-	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
-	// over the whole hunk): not again on a toggle, a landing, a thread
-	// opening or a context load. Side by side, the rows laid out as pairs
-	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose.
-	const hunkRuns = useMemo(
-		() =>
-			viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
-				...run,
-				side: view === "side-by-side" ? layoutRows(run.rows) : null,
-			})),
-		[hunk, ignoreWhitespace, view],
-	);
-	// The word marks of the hunk's pairs, over all its runs' rows (a block
-	// may span two clusters): those done before and those the render budget
-	// allows now; the rest are marked off the render path and come in with
-	// `marked`, chunk by chunk (wordWork.ts, CAR-135). Their lines show a
-	// spinner meanwhile, or a warning if marking them failed. Unmounted, the
-	// hunk stops waiting, and work nobody waits for is dropped.
+	// The hunk's runs and their rows (hunkView, cached per hunk: the
+	// matching is O(n·m) over the whole hunk), not again on a toggle, a
+	// landing, a thread opening or a context load. Rows never leave their
+	// run: unified, a run's rows are already in hunkView's order (a
+	// similarity pair reads together); side by side, they're laid out as
+	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
+	// whitespace and pairing compose. A pair whose lines sit in two runs
+	// gets its marks only: neither row moves.
+	const { hunkRuns, pairs } = useMemo(() => {
+		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const runs = shown.runs.map((run) => ({
+			...run,
+			side:
+				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
+		}));
+		return { hunkRuns: runs, pairs: shown.pairs };
+	}, [hunk, ignoreWhitespace, view]);
+	// The word marks of the hunk's pairs: those done before and those the
+	// render budget allows now; the rest are marked off the render path and
+	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
+	// lines show a spinner meanwhile, or a warning if marking them failed.
+	// Unmounted, the hunk stops waiting, and work nobody waits for is dropped.
 	const [marked, setMarked] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
-	const hunkMarks = useMemo(
-		() => hunkWords(hunkRuns.flatMap((run) => run.rows)),
-		[hunkRuns, marked],
-	);
+	const hunkMarks = useMemo(() => hunkWords(pairs), [pairs, marked]);
 	const words = hunkMarks.marks;
 	useEffect(() => {
 		if (hunkMarks.later.length === 0) return;
@@ -3612,8 +3612,9 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+						pairs,
 					),
-		[showHidden, hunkRuns, words, props.tabWidth],
+		[showHidden, hunkRuns, words, pairs, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
