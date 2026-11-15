@@ -1,7 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import type { AgentStatus } from "../../shared/agent";
-import { agentStatusQuery, answerJoin, type JoinAnswer } from "./api";
+import {
+	agentSetupDoneQuery,
+	agentStatusQuery,
+	answerJoin,
+	type JoinAnswer,
+} from "./api";
 
 type JoinRequest = NonNullable<AgentStatus["joinRequest"]>;
 
@@ -36,6 +41,11 @@ export function useAnswerJoin() {
 						: result.error,
 				});
 			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
+			// An approve folds Invite's one-time setup (CAR-160).
+			if (result.ok && v.approve)
+				void client.invalidateQueries({
+					queryKey: agentSetupDoneQuery.queryKey,
+				});
 		},
 	});
 	const press = (request: JoinRequest, approve: boolean) => {

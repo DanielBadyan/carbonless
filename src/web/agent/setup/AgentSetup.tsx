@@ -11,7 +11,7 @@ import {
 import { Spinner } from "../../Spinner";
 import { Tooltip, TooltipLayer } from "../../Tooltip";
 import { NOT_PHONE, useMedia } from "../../useMedia";
-import { agentStatusQuery } from "../api";
+import { agentSetupDoneQuery, agentStatusQuery } from "../api";
 import {
 	closeAgentSetup,
 	type SetupTab,
@@ -54,6 +54,8 @@ export function AgentSetup(props: {
 	const wide = useMedia(NOT_PHONE);
 	const status = useQuery({ ...agentStatusQuery, enabled: open });
 	const view = agentView(status.data);
+	// Read beside the status: each tab's one-time setup folds once done.
+	const done = useQuery({ ...agentSetupDoneQuery, enabled: open }).data;
 	const dialog = useRef<HTMLDialogElement | null>(null);
 	const [layer, setLayer] = useState<HTMLDialogElement | null>(null);
 	const setDialog = useCallback((el: HTMLDialogElement | null) => {
@@ -234,9 +236,9 @@ export function AgentSetup(props: {
 							className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pt-4 pb-5 sm:px-5"
 						>
 							{tab === "invite" ? (
-								<InviteTab status={status.data} />
+								<InviteTab status={status.data} setupDone={done?.invite} />
 							) : (
-								<SpawnTab />
+								<SpawnTab setupDone={done?.spawn} />
 							)}
 						</div>
 						<Footer>
