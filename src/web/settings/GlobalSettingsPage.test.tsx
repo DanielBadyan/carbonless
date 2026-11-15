@@ -291,7 +291,7 @@ describe("GlobalSettingsPage", () => {
 		const install = await screen.findByTestId("version-install");
 		await waitFor(() =>
 			expect(install).toHaveTextContent(
-				/pnpm global\s*No auto-update: systemd \(crb\.service\) won't restart crb/,
+				/pnpm global\s*No auto-update: systemd won't restart crb/,
 			),
 		);
 		expect(

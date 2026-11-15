@@ -72,8 +72,9 @@ export interface DetectOptions {
 	exists?: (file: string) => boolean;
 	writable?: (dir: string) => boolean;
 	/**
-	 * The real paths of the crb packages a pnpm global dir links to (its
-	 * `<entry>/node_modules/carbonless-review`; default: read from disk).
+	 * The real paths of the crb packages a pnpm global dir holds (its
+	 * `node_modules/carbonless-review` and each entry's; default: read
+	 * from disk).
 	 */
 	globalLinks?: (globalDir: string) => string[];
 	/** How crb was started: `process.argv[1]`, unresolved (pnpm's shim path). */
@@ -82,24 +83,28 @@ export interface DetectOptions {
 	env?: NodeJS.ProcessEnv;
 }
 
-/** The real paths of the crb packages `globalDir`'s entries link to. */
+/**
+ * The real paths of the crb packages a pnpm global dir holds: its own
+ * `node_modules/carbonless-review` (pnpm 8-10), and each entry's (11+).
+ */
 function readGlobalLinks(globalDir: string): string[] {
-	let entries: string[];
-	try {
-		entries = readdirSync(globalDir);
-	} catch {
-		return [];
-	}
 	const found: string[] = [];
-	for (const e of entries) {
+	const add = (pkg: string) => {
 		try {
-			found.push(
-				realpathSync(path.join(globalDir, e, "node_modules", PACKAGE)),
-			);
+			found.push(realpathSync(pkg));
 		} catch {
 			// Not an install of crb.
 		}
+	};
+	add(path.join(globalDir, "node_modules", PACKAGE));
+	let entries: string[] = [];
+	try {
+		entries = readdirSync(globalDir);
+	} catch {
+		// No global dir.
 	}
+	for (const e of entries)
+		add(path.join(globalDir, e, "node_modules", PACKAGE));
 	return found;
 }
 
@@ -177,6 +182,13 @@ export function detectInstall(
 	const dlxAt = parts.indexOf("dlx");
 	if (dlxAt > 0 && parts[dlxAt - 1] === "pnpm") return null;
 
+	// Whether pnpm's global dir holds this very package: a project's
+	// dependency can lie at a global install's path (the global virtual
+	// store), or in a dir shaped like one.
+	const same = (a: string) =>
+		platform === "win32" ? a.toLowerCase() === root.toLowerCase() : a === root;
+	const holds = (globalDir: string) =>
+		(opts.globalLinks ?? readGlobalLinks)(globalDir).some(same);
 	const pnpm = (home: string, globalDir: string, dirs: string[]): Install => ({
 		pm: "pnpm",
 		root,
@@ -220,15 +232,9 @@ export function detectInstall(
 		if (parts[n - 9] === "store") {
 			homes.push({ home: join(parts.slice(0, n - 9)), version: storeVersion });
 		}
-		const same = (a: string) =>
-			platform === "win32"
-				? a.toLowerCase() === root.toLowerCase()
-				: a === root;
 		for (const { home, version } of homes) {
 			const globalDir = p.join(home, "global", version);
-			if (!(opts.globalLinks ?? readGlobalLinks)(globalDir).some(same)) {
-				continue;
-			}
+			if (!holds(globalDir)) continue;
 			// A new dir per install, the store's files and links, the shim.
 			return pnpm(home, globalDir, [globalDir, storeDir, p.join(home, "bin")]);
 		}
@@ -236,7 +242,8 @@ export function detectInstall(
 	}
 
 	// pnpm's `.pnpm` layouts, `.pnpm` exactly where a global install puts
-	// it (a project under some `global/2` is not one).
+	// it, and the global dir holding this package (a project under some
+	// `global/2` is not one).
 	const pnpmAt = parts.lastIndexOf(".pnpm");
 	if (pnpmAt >= 0) {
 		const tail = n - 1 - pnpmAt;
@@ -246,19 +253,27 @@ export function detectInstall(
 			i >= 1 && parts[i] === "global" && version.test(parts[i + 1] ?? "")
 				? i
 				: undefined;
-		const nm = parts[pnpmAt - 1] === "node_modules";
-		const globalAt =
-			// pnpm 8-10: global/5/.pnpm
-			at(pnpmAt - 2, /^\d+$/) ??
-			// global/5/node_modules/.pnpm
-			(nm ? at(pnpmAt - 3, /^\d+$/) : undefined) ??
-			// pnpm 11+, its global virtual store off:
-			// global/v11/<dir>/node_modules/.pnpm
-			(nm ? at(pnpmAt - 4, /^v\d+$/) : undefined);
+		const legacy = at(pnpmAt - 2, /^\d+$/); // pnpm 8-10: global/5/.pnpm
+		// pnpm 11+, its global virtual store off: global/v11/<dir>/node_modules/.pnpm
+		// (`<dir>` is pnpm's hex name, `88719-18e7`: a project "app" is not one).
+		const v11 =
+			parts[pnpmAt - 1] === "node_modules" &&
+			/^[0-9a-f]+(-[0-9a-f]+)*$/.test(parts[pnpmAt - 2] ?? "")
+				? at(pnpmAt - 4, /^v\d+$/)
+				: undefined;
+		const globalAt = legacy ?? v11;
 		if (!shaped || globalAt === undefined) return null;
 		const home = join(parts.slice(0, globalAt));
 		const globalDir = p.join(home, "global", parts[globalAt + 1] as string);
-		return pnpm(home, globalDir, [globalDir]);
+		if (!holds(globalDir)) return null;
+		// What an install writes: the global dir, the shim (8-10: in
+		// PNPM_HOME; 11+: its bin), and the store when it's there.
+		const store = p.join(home, "store");
+		return pnpm(home, globalDir, [
+			globalDir,
+			legacy !== undefined ? home : p.join(home, "bin"),
+			...(exists(store) ? [store] : []),
+		]);
 	}
 
 	// One node_modules only: a dependency of a project isn't a global install.

@@ -241,7 +241,8 @@ crb](releasing.md#updating-an-installed-crb).
 crb recognises a global install by npm (`npm install -g`, npm 9 to 12) or
 pnpm (`pnpm add -g`, pnpm 8 to 12, with or without its global virtual
 store) from where its files lie. Anything else gets the command: yarn,
-bun, Volta (update it with `volta install carbonless-review`), npx's or
+bun, Volta (update it with `volta install carbonless-review@<version>`,
+the version the toast shows, or `@rc` to stay on RCs), npx's or
 pnpm dlx's cache, or crb as a dependency of a project. Reinstall it with
 npm or pnpm, as your own user:
 
@@ -296,9 +297,10 @@ unit's `PATH` must reach node and the package manager; the [full
 example](releasing.md#updating-an-installed-crb) uses pnpm.
 
 Other service managers: pm2 works as is. launchd, a Windows service
-wrapper (NSSM, WinSW) or a container's restart policy: set `CRB_SERVICE=1`
-in crb's environment, which tells crb that whatever runs it starts it
-again on any exit.
+wrapper (NSSM, WinSW) or a container's restart policy: make it start crb
+again whenever it exits (launchd: `KeepAlive`; NSSM, WinSW: restart on
+exit), then set `CRB_SERVICE=1` in crb's environment, which tells crb
+that it will be started again.
 
 ### crb is a container's PID 1
 

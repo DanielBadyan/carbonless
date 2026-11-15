@@ -13,8 +13,8 @@ import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
-import type { Page } from "@playwright/test";
-import { expectNoPageOverflow } from "./files-ui";
+import type { Locator, Page } from "@playwright/test";
+import { expectNoPageOverflow, tapHeight } from "./files-ui";
 import {
 	expect,
 	OWNER_REPO,
@@ -569,6 +569,18 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 
 const FAQ = "https://github.com/Gilthans/carbonless/blob/master/docs/faq.md";
 
+/** All of an element's text shows: nothing cut off or scrolled away. */
+async function expectWhole(el: Locator) {
+	const { scroll, client } = await el.evaluate((node) => ({
+		scroll: node.scrollWidth,
+		client: node.clientWidth,
+	}));
+	expect(scroll).toBeLessThanOrEqual(client);
+	expect(
+		await el.evaluate((node) => getComputedStyle(node).textOverflow),
+	).not.toBe("ellipsis");
+}
+
 it("by hand (a folder crb can't write): the toast says why with the FAQ's section, the command stays; Global settings says the same", async ({
 	page,
 	pr,
@@ -616,9 +628,8 @@ it("by hand (a folder crb can't write): the toast says why with the FAQ's sectio
 			expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
 			expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 		}
-		// One line: the reason's row is no taller than its help link.
-		const row = await why.boundingBox();
-		expect(row?.height ?? 0).toBeLessThanOrEqual(44);
+		// The whole reason shows: wrapped where narrow, never cut off.
+		await expectWhole(why.getByTestId("update-by-hand-text"));
 		await shot(page, "update-by-hand-not-writable", isMobile);
 
 		if (isMobile) {
@@ -656,7 +667,7 @@ it("by hand (a folder crb can't write): the toast says why with the FAQ's sectio
 			[
 				"service",
 				"systemd (crb.service)",
-				"systemd (crb.service) won't restart crb",
+				"systemd won't restart crb",
 				"systemd-wont-restart-crb",
 			],
 			[
@@ -667,22 +678,42 @@ it("by hand (a folder crb can't write): the toast says why with the FAQ's sectio
 			],
 		] as const) {
 			await page.route("**/api/update", async (r) => {
-				const res = await r.fetch();
-				r.fulfill({
-					response: res,
-					json: {
-						...(await res.json()),
-						byHandReason: reason,
-						byHandManager: manager,
-					},
-				});
+				try {
+					const res = await r.fetch();
+					await r.fulfill({
+						response: res,
+						json: {
+							...(await res.json()),
+							byHandReason: reason,
+							byHandManager: manager,
+						},
+					});
+				} catch {
+					// A poll cut off by the reload: nothing to answer.
+				}
 			});
 			await page.reload();
 			await expect(why).toContainText(`No auto-update: ${text}`);
 			await expect(help).toHaveAttribute("href", `${FAQ}#${anchor}`);
+			await expectWhole(why.getByTestId("update-by-hand-text"));
 			await expectNoPageOverflow(page);
+			if (manager?.startsWith("systemd")) {
+				// The unit's name: in the tip a tap or a key opens, from a
+				// target of 40px.
+				const reasonText = why.getByTestId("update-by-hand-text");
+				expect(await tapHeight(reasonText)).toBeGreaterThanOrEqual(40);
+				if (isMobile) await reasonText.tap();
+				else await reasonText.focus();
+				await expect(
+					page.locator('[role="tooltip"]', { hasText: "crb.service" }),
+				).toBeVisible();
+				await expect(
+					page.locator('[role="tooltip"]', { hasText: "crb.service" }),
+				).toHaveText("No auto-update: systemd (crb.service) won't restart crb");
+				await reasonText.blur();
+			}
 			await shot(page, `update-by-hand-${anchor}`, isMobile);
-			await page.unroute("**/api/update");
+			await page.unrouteAll({ behavior: "ignoreErrors" });
 		}
 
 		// Global settings: the same words and link.
@@ -691,6 +722,7 @@ it("by hand (a folder crb can't write): the toast says why with the FAQ's sectio
 		await expect(install).toContainText(
 			"No auto-update: installed in a folder crb can't write",
 		);
+		await expectWhole(install.getByTestId("update-by-hand-text"));
 		const settingsHelp = install.getByRole("link", {
 			name: "How to set up updates",
 		});

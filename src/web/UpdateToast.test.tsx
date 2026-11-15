@@ -193,7 +193,7 @@ describe("UpdateToast", () => {
 			],
 			[
 				{ byHandReason: "service", byHandManager: "systemd (crb.service)" },
-				"No auto-update: systemd (crb.service) won't restart crb",
+				"No auto-update: systemd won't restart crb",
 				"systemd-wont-restart-crb",
 			],
 			[

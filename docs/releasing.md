@@ -377,8 +377,13 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   - pnpm 8-10: `<PNPM_HOME>/global/5/.pnpm/.../carbonless-review` (10 with
     `enableGlobalVirtualStore`: `.pnpm/@/carbonless-review/<v>/<hash>/...`);
     pnpm 11+ with the global virtual store off:
-    `<PNPM_HOME>/global/v11/<dir>/node_modules/.pnpm/...`. `.pnpm` must sit
-    exactly there: a project under some `global/2/` isn't a global install.
+    `<PNPM_HOME>/global/v11/<dir>/node_modules/.pnpm/...` (`<dir>` in
+    pnpm's hex, `88719-18e7`). `.pnpm` must sit exactly there, and the
+    global dir must hold this very package (its
+    `node_modules/carbonless-review`, or an entry's, resolves to it): a
+    project under some `global/2/` isn't a global install. One click needs
+    the global dir, the shim's dir (8-10: PNPM_HOME; 11+: its `bin`) and
+    `<PNPM_HOME>/store`, when there, writable.
   - pnpm 11 and 12 by default, on every OS (global installs use the global
     virtual store): `<storeDir>/v11/links/@/carbonless-review/<v>/<hash>/node_modules/carbonless-review`,
     which an entry of `<PNPM_HOME>/global/v11` links to. A project's
@@ -398,7 +403,10 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
     otherwise), run in PNPM_HOME: not crb's cwd, where corepack would
     follow a project's `packageManager` to another pnpm major (another
     global dir). A corepack or Homebrew pnpm is PATH's, so a service's
-    `PATH` must reach it.
+    `PATH` must reach it. Open: corepack still reads a `packageManager` in
+    a `package.json` above PNPM_HOME (`~/package.json`), nothing checks
+    that the pnpm found matches the store's major, and npm's install runs
+    in crb's cwd (a project's `.npmrc` there applies).
   - Anything else (yarn, bun, Volta, a project's dependency, npx's cache,
     pnpm dlx), or a global dir crb can't write (a system node's
     `/usr/lib/node_modules`): the toast shows the command to copy instead

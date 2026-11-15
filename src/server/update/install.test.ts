@@ -138,7 +138,11 @@ describe("detectInstall", () => {
 			detectInstall(root, {
 				platform: "linux",
 				exists: none,
-				writable: (d) => d === "/home/me/.local/share/pnpm/global/v11",
+				writable: (d) =>
+					d === "/home/me/.local/share/pnpm/global/v11" ||
+					d === "/home/me/.local/share/pnpm/bin",
+				globalLinks: (d) =>
+					d === "/home/me/.local/share/pnpm/global/v11" ? [root] : [],
 			}),
 		).toEqual({
 			pm: "pnpm",
@@ -154,9 +158,15 @@ describe("detectInstall", () => {
 
 	it("pnpm global on Windows, in a profile with a space", () => {
 		const root =
-			"C:\\Users\\Jane Doe\\AppData\\Local\\pnpm\\global\\5\\node_modules\\.pnpm\\carbonless-review@0.2.0\\node_modules\\carbonless-review";
+			"C:\\Users\\Jane Doe\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\carbonless-review@0.2.0\\node_modules\\carbonless-review";
 		expect(
-			detectInstall(root, { platform: "win32", exists: none, writable: all }),
+			detectInstall(root, {
+				platform: "win32",
+				exists: none,
+				writable: all,
+				// Junctions resolve with another drive letter case.
+				globalLinks: () => [root.toLowerCase()],
+			}),
 		).toMatchObject({
 			pm: "pnpm",
 			home: "C:\\Users\\Jane Doe\\AppData\\Local\\pnpm",
@@ -395,20 +405,67 @@ describe("detectInstall: the layouts of supported npm and pnpm", () => {
 			],
 		];
 		for (const [platform, root, home, globalDir] of cases) {
+			const sep = platform === "win32" ? "\\" : "/";
 			const asked: string[] = [];
+			const opts = {
+				...base,
+				platform,
+				globalLinks: (d: string) => (d === globalDir ? [root] : []),
+				writable: (d: string) => {
+					asked.push(d);
+					return true;
+				},
+			};
+			expect(detectInstall(root, opts), root).toMatchObject({
+				pm: "pnpm",
+				home,
+				writable: true,
+				scan: [globalDir],
+			});
+			// The global dir, the shim's dir (8-10: PNPM_HOME; 11+: its
+			// bin), and the store, when it's there.
+			const shims = globalDir.endsWith("v11") ? `${home}${sep}bin` : home;
+			expect(asked, root).toEqual([globalDir, shims, `${home}${sep}store`]);
+			asked.length = 0;
+			detectInstall(root, { ...opts, exists: () => false });
+			expect(asked, root).toEqual([globalDir, shims]);
+			// The global dir holds another crb, or none: not this install.
+			expect(
+				detectInstall(root, { ...opts, globalLinks: () => [] }),
+				root,
+			).toBeNull();
+		}
+	});
+
+	it("a project in a dir shaped like pnpm's global one: by hand, whatever it holds", () => {
+		const cases = [
+			// A project "app" under ~/global/v1, under ~/global/2.
+			`/home/u/global/v1/app/node_modules/.pnpm/${P}@1.0.0/node_modules/${P}`,
+			`/home/u/global/2/app/node_modules/.pnpm/${P}@1.0.0/node_modules/${P}`,
+			// A project whose root is ~/global/5.
+			`/home/u/global/5/node_modules/.pnpm/${P}@1.0.0/node_modules/${P}`,
+		];
+		for (const root of cases) {
+			// Even when the "global dir" seems to hold it (a real project's
+			// `app/node_modules/carbonless-review` resolves to it): pnpm
+			// names a global install's dir in hex, never "app".
 			expect(
 				detectInstall(root, {
 					...base,
-					platform,
-					writable: (d) => {
-						asked.push(d);
-						return true;
-					},
+					platform: "linux",
+					globalLinks: () => [root],
 				}),
 				root,
-			).toMatchObject({ pm: "pnpm", home, writable: true, scan: [globalDir] });
-			expect(asked, root).toEqual([globalDir]);
+			).toBeNull();
 		}
+		// Shaped like pnpm 8-10's, but its global dir doesn't hold it.
+		expect(
+			detectInstall(`/home/u/global/5/.pnpm/${P}@1.0.0/node_modules/${P}`, {
+				...base,
+				platform: "linux",
+				globalLinks: () => ["/elsewhere"],
+			}),
+		).toBeNull();
 	});
 
 	it("pnpm 11 and 12 by default (the global virtual store), on every OS: home from crb's start, $PNPM_HOME or the store's place, confirmed by the global dir's link", () => {
