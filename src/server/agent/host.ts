@@ -17,8 +17,8 @@ import {
 	JOINED_THREAD_PREAMBLE,
 	MAX_OPENED_PER_REQUEST,
 	type OpenAgentThreadRequest,
-	startedBy,
 	REVIEW_PREAMBLE,
+	startedBy,
 } from "../../shared/agent.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {

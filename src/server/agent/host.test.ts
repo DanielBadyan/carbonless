@@ -10,6 +10,7 @@ import {
 } from "../../../test/git-fixture.js";
 import {
 	type AgentAnchor,
+	type AgentSpanAnchor,
 	type AgentStatus,
 	JOIN,
 	JOINED_PREAMBLE,
@@ -198,6 +199,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			files: prFiles,
 		}),
 		anchored: async (a) => {
+			if (a.subject === "review") return null;
 			const key = `${a.commit}:${a.path}`;
 			return key in fileAt ? (fileAt[key] ?? null) : { text: "hello\n" };
 		},
@@ -333,7 +335,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		const o = await h.join.outcome(request, 0);
 		return (o as { token: string }).token;
 	}
-	const span: AgentAnchor = {
+	const span: AgentSpanAnchor = {
 		subject: "file",
 		path: "a.txt",
 		commit: "a".repeat(40),

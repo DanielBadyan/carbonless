@@ -53,11 +53,13 @@ export function ReRow(props: {
 	const go = linkState(request, facts, message.id).state;
 	const reachable = go === "ready";
 	const goTip =
-		go === "none"
-			? "Not in this review's files"
-			: go === "error"
-				? LINK_ERROR
-				: "Go to your request";
+		request.anchor.subject === "review"
+			? "In the review conversation"
+			: go === "none"
+				? "Not in this review's files"
+				: go === "error"
+					? LINK_ERROR
+					: "Go to your request";
 	return (
 		<div data-testid="agent-re" className="min-w-0 space-y-1">
 			<div className="flex min-w-0 items-center gap-1">

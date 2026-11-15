@@ -35,6 +35,7 @@ export function conversationLabel(
 	authorOf?: (githubThread: string) => string | undefined,
 ): string {
 	const a = thread.anchor;
+	if (a.subject === "review") return "Review";
 	if (a.subject === "thread" && !thread.orphaned) {
 		return `Thread · ${authorOf?.(a.thread) ?? a.path}`;
 	}
@@ -55,7 +56,8 @@ export type ConversationTarget =
  * goes: a live GitHub thread's conversation to the Overview's card; one on
  * code (an orphan's last known lines too) to Files changed at its lines, in
  * the comparison its anchor names (the patch set holding its commit, else
- * that commit). Null when its file isn't one of this review's.
+ * that commit). Null when its file isn't one of this review's, and for
+ * the review conversation (no place in a page).
  */
 export function conversationSearch(
 	thread: AgentThread,
@@ -68,6 +70,8 @@ export function conversationSearch(
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
 	};
 	const a = thread.anchor;
+	// The review conversation has no place in a page: its drawer shows it.
+	if (a.subject === "review") return null;
 	if (a.subject === "thread" && !thread.orphaned) {
 		return { to: "/r/$id", search: { thread: a.thread, ...land } };
 	}
