@@ -576,6 +576,54 @@ describe("AgentHost with a session joined through MCP", () => {
 			noReviewData(q);
 		});
 
+		/**
+		 * A spawned agent answers a span question (it has seen the head),
+		 * then the head moves and the reviewer asks the review conversation.
+		 */
+		const spawnedAfterHeadMoved = async (): Promise<{
+			token: string;
+			t: { id: string };
+		}> => {
+			listGh(false);
+			const x = await host.open({ clientId: "c0", text: "Why?", span });
+			const secret = "S".repeat(43);
+			const { request } = host.join.admit(
+				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },
+				secret,
+			);
+			const o = await host.join.outcome(request, 0, secret);
+			const token = (o as { token: string }).token;
+			const first = await host.sessionNext(token);
+			expect(first?.thread).toBe(x.id);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: first?.replyTo as string,
+				text: "Because.",
+			});
+			head = "e".repeat(40);
+			const t = await host.open({ clientId: "c1", text: "q", review: true });
+			return { token, t };
+		};
+
+		it("a spawned review question after the head moved: no head-moved notice, no commit", async () => {
+			const { token, t } = await spawnedAfterHeadMoved();
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(t.id);
+			expect(q?.envelope.kind).toBe("review_conversation");
+			expect(q?.envelope).not.toHaveProperty("notice");
+			noReviewData(q);
+		});
+
+		it("a spawned review question with a refused tool call pending: that reason is its only notice", async () => {
+			const REFUSED = "carbonless keeps the session out of plan mode";
+			const { token, t } = await spawnedAfterHeadMoved();
+			runner.takeNotice = (thread) => (thread === t.id ? REFUSED : undefined);
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(t.id);
+			expect(q?.envelope.notice).toBe(REFUSED);
+			noReviewData(q);
+		});
+
 		it("reply answers the review question", async () => {
 			const t = await host.open({ clientId: "c1", text: "q", review: true });
 			const token = await approve();

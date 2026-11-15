@@ -529,7 +529,20 @@ describe("/mcp", () => {
 			hunk: null,
 		});
 		const json = JSON.stringify(n.value);
-		for (const leak of ["Add widget cache", "a.txt", pr.head()]) {
+		const facts = a.review as {
+			base: { commit: string };
+			mergeBase: string;
+		};
+		expect(facts.base.commit).toMatch(/^[0-9a-f]{40}$/);
+		for (const leak of [
+			"Add widget cache",
+			"Caches widgets",
+			"a.txt",
+			pr.head(),
+			facts.base.commit,
+			facts.mergeBase,
+			pr.mergeBase,
+		]) {
 			expect(json).not.toContain(leak);
 		}
 		const r = await call(client, "reply", {
