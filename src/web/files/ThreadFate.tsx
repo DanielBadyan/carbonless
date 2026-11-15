@@ -35,10 +35,7 @@ import type {
 	ReviewThread,
 	ThreadAnchorRef,
 } from "../../shared/types";
-import {
-	AGENT_TAB_GUTTER,
-	ThreadAgentButton,
-} from "../agent/ThreadAgentButton";
+import { AgentHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -55,6 +52,7 @@ import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
+	AgentHandleRow,
 	COMMENT_SURFACE,
 	commentSurface,
 	ThreadActions,
@@ -456,16 +454,6 @@ export function UnplacedRow(props: {
 				movedTo={props.movedTo}
 				link={props.link}
 				handle={props.handle}
-				agent={
-					agent && (
-						<ThreadAgentButton
-							thread={thread}
-							conversation={agent.conversation}
-							open={agent.open}
-							onToggle={agent.toggle}
-						/>
-					)
-				}
 			>
 				<UnplacedReplies
 					thread={thread}
@@ -497,8 +485,6 @@ export function UnplacedShell(props: {
 	movedTo?: string;
 	link?: ReactNode;
 	handle?: ReactNode;
-	/** The thread's agent tab, on the row's right edge (kept free for it). */
-	agent?: ReactNode;
 	testId?: string;
 	children: ReactNode;
 }) {
@@ -576,9 +562,8 @@ export function UnplacedShell(props: {
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
 			data-resolved={thread.resolved || undefined}
-			className={`relative min-w-0 space-y-1.5 rounded-md border border-line bg-surface ${props.agent ? `py-2 pl-2 ${AGENT_TAB_GUTTER}` : "p-2"}`}
+			className="min-w-0 space-y-1.5 rounded-md border border-line bg-surface p-2"
 		>
-			{props.agent}
 			<div className="flex min-h-10 min-w-0 items-center gap-2">
 				{props.handle}
 				<fate.icon
@@ -652,6 +637,8 @@ function UnplacedReplies({
 	const replies = useReplyCount(thread, readId);
 	const canAct = useCanAct(thread);
 	const readable = thread.unavailable === undefined && thread.id !== "";
+	const actions = (open || asking) && readable;
+	const more = readable && (replies.n > 0 || canAct);
 	return (
 		<>
 			<AgentCover>
@@ -666,9 +653,10 @@ function UnplacedReplies({
 					</div>
 				)}
 			</AgentCover>
-			{(open || asking) && readable && <ThreadActions thread={thread} />}
-			{readable && (replies.n > 0 || canAct) && (
-				<div className="flex justify-center">
+			{actions && <ThreadActions thread={thread} />}
+			{more ? (
+				// The agent's handle at the row's right end while the actions row is closed.
+				<div className="relative flex justify-center">
 					<MoreToggle
 						open={open}
 						onClick={() => setOpen((o) => !o)}
@@ -676,7 +664,10 @@ function UnplacedReplies({
 						replies={replies}
 						kind="more"
 					/>
+					{!actions && <AgentHandle className="absolute right-0 bottom-0" />}
 				</div>
+			) : (
+				!actions && <AgentHandleRow />
 			)}
 		</>
 	);

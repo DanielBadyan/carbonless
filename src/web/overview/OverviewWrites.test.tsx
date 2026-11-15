@@ -425,7 +425,15 @@ describe("replying from an Overview card", () => {
 		const row = within(card).getByTestId("thread-more-row");
 		expect(row).toHaveClass("flex", "justify-center");
 		expect(row).toContainElement(more);
-		expect(row.children).toHaveLength(1);
+		// The toggle alone in its flow (the agent's handle pinned at its right end).
+		expect(
+			[...row.children].filter(
+				(c) =>
+					!["thread-agent-button", "thread-agent-loading"].includes(
+						c.getAttribute("data-testid") ?? "",
+					),
+			),
+		).toHaveLength(1);
 		expect(more).toHaveTextContent(/^Reply$/);
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 		await user.click(more);

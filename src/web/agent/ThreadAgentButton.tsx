@@ -1,4 +1,5 @@
 import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
+import type { MouseEvent } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
@@ -13,53 +14,45 @@ import {
 } from "./threadAgent";
 
 /**
- * The room a card keeps free on its right for the agent tab: the tab
- * (32px; 40px on a phone and under a finger) and an 8px gap. The card's
- * box that holds the tab is `relative` and has this right padding.
+ * The handle: a drawer pull at the right end of the thread's bottom row
+ * (beside Resolve), where the conversation slides in from; its right
+ * side a thick edge, the side the drawer comes out of. As tall as
+ * Resolve: 40px, and at least 40px wide.
  */
-export const AGENT_TAB_GUTTER = "pr-10 max-sm:pr-12 pointer-coarse:pr-12";
+const HANDLE =
+	"flex h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-l-lg rounded-r-sm border border-r-4 px-2";
 
 /**
- * The tab placed from a box that ends where the gutter starts (the
- * Overview's comment column): out over the gutter to the card's edge,
- * its top at the box's top, where the panel opens.
+ * A press leaves the focus where it is: beside the composer, taking it
+ * would fold the box (it closes on blur) and move the handle out from
+ * under the pointer before the click lands. The toggle then puts the
+ * focus where it belongs (the composer, or the handle).
  */
-export const AGENT_TAB_FROM_COLUMN =
-	"top-0 -right-10 max-sm:-right-12 pointer-coarse:-right-12";
+const keepFocus = (e: MouseEvent) => e.preventDefault();
 
 /**
- * The tab: a drawer opener on the card's right edge, flush with its
- * border (rounded on the side facing the card only), near the top, where
- * the conversation slides in from. At least 48px tall.
- */
-const TAB =
-	"absolute flex min-h-12 w-8 shrink-0 flex-col items-center justify-center gap-0.5 rounded-l-lg border border-r-0 py-1.5 max-sm:w-10 pointer-coarse:w-10";
-
-/**
- * A thread card's agent tab, a drawer opener on the card's right edge
- * (the caller keeps AGENT_TAB_GUTTER free for it): the teal tab with the
- * sparkle and the number of messages in the thread's agent conversation,
- * an `accent` dot while one of the agent's is unseen; a dashed sparkle
- * ("Ask agent") before there is one. Pressed while the conversation is
- * open, the panel's handle at its right edge. A spinner in its place
- * while the agent threads load (never "Ask agent" that would then turn
- * into a count); an alert in `bad` when they couldn't be read, still
- * pressable (it opens the panel and reads them again). Absent on a
- * thread with no id, a deleted one, and where the session doesn't write.
+ * A thread card's agent handle, at the right end of its bottom row
+ * (ThreadActions, beside Resolve; the Show more row where that row is
+ * closed): the teal handle with the sparkle and the number of messages
+ * in the thread's agent conversation, an `accent` dot while one of the
+ * agent's is unseen; a dashed sparkle on a light wash ("Ask agent")
+ * before there is one. Pressed while the conversation is open: the
+ * panel's handle. A spinner in its place while the agent threads load
+ * (never "Ask agent" that would then turn into a count); an alert in
+ * `bad` when they couldn't be read, still pressable (it opens the panel
+ * and reads them again). Absent on a thread with no id, a deleted one,
+ * and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
 	thread: ReviewThread;
 	conversation: AgentThread | undefined;
 	open: boolean;
 	onToggle: () => void;
-	/**
-	 * Where it sits in its `relative` box (default: its top right, in the
-	 * gutter); its top level with the panel's.
-	 */
-	place?: string;
+	/** Its positioning (default `relative`; e.g. pinned to the right of the Show more row). */
+	className?: string;
 }) {
 	const { conversation, open } = props;
-	const tab = `${TAB} ${props.place ?? "top-2 right-0"}`;
+	const tab = `${HANDLE} ${props.className ?? "relative"}`;
 	const on = useAgentOn();
 	const loading = useAgentThreadsLoading();
 	const { failed, retry } = useAgentThreadsFailed();
@@ -92,11 +85,12 @@ export function ThreadAgentButton(props: {
 						data-failed="true"
 						aria-label={failedName}
 						aria-pressed={open}
+						onMouseDown={keepFocus}
 						onClick={() => {
 							retry();
 							props.onToggle();
 						}}
-						className={`${tab} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent`}
+						className={`${tab} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent`}
 					>
 						<AlertIcon size={14} aria-hidden />
 					</button>
@@ -120,8 +114,9 @@ export function ThreadAgentButton(props: {
 					data-testid="thread-agent-button"
 					aria-label={name}
 					aria-pressed={open}
+					onMouseDown={keepFocus}
 					onClick={props.onToggle}
-					className={`${tab} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
+					className={`${tab} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:outline-accent ${
 						conversation
 							? open
 								? "border-agent-ink bg-agent shadow-[inset_0_0_0_1px_var(--color-agent-ink)]"
@@ -145,5 +140,23 @@ export function ThreadAgentButton(props: {
 				</button>
 			)}
 		</Tooltip>
+	);
+}
+
+/**
+ * The thread's agent handle from its ThreadAgentContext (the card's
+ * bottom row); nothing without an agent.
+ */
+export function AgentHandle(props: { className?: string }) {
+	const agent = useThreadAgentContext();
+	if (!agent) return null;
+	return (
+		<ThreadAgentButton
+			thread={agent.thread}
+			conversation={agent.conversation}
+			open={agent.open}
+			onToggle={agent.toggle}
+			className={props.className}
+		/>
 	);
 }

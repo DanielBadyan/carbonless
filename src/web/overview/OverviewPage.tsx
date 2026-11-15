@@ -50,11 +50,7 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
-import {
-	AGENT_TAB_FROM_COLUMN,
-	AGENT_TAB_GUTTER,
-	ThreadAgentButton,
-} from "../agent/ThreadAgentButton";
+import { AgentHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -91,6 +87,7 @@ import {
 	useCommentWrite,
 } from "../threads/CommentEdit";
 import {
+	AgentHandleRow,
 	COMMENT_SURFACE,
 	commentSurface,
 	ThreadActions,
@@ -1666,25 +1663,16 @@ function ThreadItem({
 		) : null;
 	// With an agent, its conversation slides over the comments alone (the
 	// opener and the replies, in the comment column), never the code pane.
-	// The agent's drawer opener on the card's right edge, its top level
-	// with the comment column's, where the panel opens.
 	const comments = agent ? (
-		<div className="relative min-w-0">
-			<ThreadAgentButton
-				thread={thread}
-				conversation={agent.conversation}
-				open={agent.open}
-				onToggle={agent.toggle}
-				place={AGENT_TAB_FROM_COLUMN}
-			/>
-			<AgentCover>
-				{commentCell}
-				{repliesEl}
-			</AgentCover>
-		</div>
+		<AgentCover>
+			{commentCell}
+			{repliesEl}
+		</AgentCover>
 	) : (
 		commentCell
 	);
+	// The composer row: never under the agent's panel.
+	const actions = (open || agent?.open === true) && !thread.unavailable;
 	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
@@ -1796,9 +1784,7 @@ function ThreadItem({
 						{thread.code && <SnapshotChip code={thread.code} />}
 					</div>
 				</div>
-				<div
-					className={`relative space-y-2 pt-1 pb-3 pl-3 ${agent ? AGENT_TAB_GUTTER : "pr-3"}`}
-				>
+				<div className="space-y-2 px-3 pt-1 pb-3">
 					<ThreadPlace thread={thread} line={line} target={target} />
 					<ThreadFateLine thread={thread} />
 					{thread.code?.source === "pending" ? (
@@ -1834,15 +1820,15 @@ function ThreadItem({
 					)}
 					{/* No agent: the replies under the whole card, as they were. */}
 					{!agent && repliesEl}
-					{/* The composer row: never under the agent's panel. */}
-					{(open || agent?.open) && !thread.unavailable && (
-						<ThreadActions thread={thread} onToggle={onToggle} />
-					)}
+					{actions && <ThreadActions thread={thread} onToggle={onToggle} />}
+					{/* The agent's handle at the bottom, while the actions row is closed. */}
+					{agent && !actions && !more && <AgentHandleRow />}
 					{more && (
-						// Its own row, centred under the card (out over the agent's gutter).
+						// Its own row, centred under the card; the agent's handle at its
+						// right end while the actions row is closed.
 						<div
 							data-testid="thread-more-row"
-							className={`flex justify-center ${agent ? "-mr-7 max-sm:-mr-9 pointer-coarse:-mr-9" : ""}`}
+							className="relative flex justify-center"
 						>
 							<MoreToggle
 								open={open}
@@ -1857,6 +1843,9 @@ function ThreadItem({
 								replies={replies}
 								kind={kind}
 							/>
+							{!actions && (
+								<AgentHandle className="absolute right-0 bottom-0" />
+							)}
 						</div>
 					)}
 				</div>

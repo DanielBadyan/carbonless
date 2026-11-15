@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread } from "../../shared/types";
@@ -94,12 +100,13 @@ describe("ThreadAgentButton", () => {
 		expect(screen.queryByRole("status")).toBeNull();
 	});
 
-	it("a drawer tab on the card's right edge in every state, never a header pill", async () => {
+	it("a drawer handle (its right edge the drawer's side), Resolve's height, in every state; never a header pill", async () => {
 		const tab = (el: HTMLElement) => {
-			expect(el.className).toContain("absolute");
-			expect(el.className).toContain("right-0");
+			expect(el.className).toContain("h-10");
+			expect(el.className).toContain("min-w-10");
 			expect(el.className).toContain("rounded-l-lg");
-			expect(el.className).toContain("border-r-0");
+			expect(el.className).toContain("border-r-4");
+			expect(el.className).not.toContain("absolute");
 			expect(el.className).not.toContain("rounded-full");
 		};
 		show({});
@@ -124,6 +131,13 @@ describe("ThreadAgentButton", () => {
 				name: "Agent messages couldn't load",
 			}),
 		);
+	});
+
+	it("a press keeps the focus where it is (the composer beside it would fold and move it away)", () => {
+		show({ conversation: conversation() });
+		const button = screen.getByRole("button", { name: "4 agent messages" });
+		// fireEvent returns false when the default (taking the focus) was prevented.
+		expect(fireEvent.mouseDown(button)).toBe(false);
 	});
 
 	it("pressed state when open", () => {

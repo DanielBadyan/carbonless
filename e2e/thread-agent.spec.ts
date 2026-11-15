@@ -15,7 +15,7 @@ test.use({ crbServer: "own" });
 
 /**
  * The thread agent (CAR-120): a private agent conversation per GitHub
- * thread, behind the agent tab on the thread card's right edge (CAR-162),
+ * thread, behind the agent handle at the thread card's bottom right (CAR-162),
  * sliding over the thread's comments. Against the fake ACP agent and the fake gh,
  * on the Overview and in Files changed, desktop and phone. One GitHub
  * thread by rev1 on src/calc.ts's line 3, open, no reply.
@@ -486,7 +486,7 @@ test("no horizontal page scroll at 360px with the panel open", async ({
 		"A long line",
 	);
 	await expectNoPageOverflow(page);
-	// The agent tab and the header's comment counter: 40px tall at this width.
+	// The agent handle and the header's comment counter: 40px tall at this width.
 	for (const el of [agentButton(card), card.getByTestId("thread-counter")]) {
 		expect((await el.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
 	}
@@ -501,46 +501,69 @@ test("no horizontal page scroll at 360px with the panel open", async ({
 	expect((await strip.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
 });
 
-/** Asserts the agent opener is a tab on the card's right edge, level with the panel's top, in sight with the card's top, covering nothing. */
-async function expectDrawerTab(card: Locator, page: Page) {
+/** A box's edges. */
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) =>
+	a.x < b.x + b.width &&
+	b.x < a.x + a.width &&
+	a.y < b.y + b.height &&
+	b.y < a.y + a.height;
+
+/**
+ * Asserts the agent opener is the card's bottom handle: at the right end of
+ * the actions row beside Resolve (at the card's bottom when that row is
+ * closed), a finger's size, covering nothing, and the thread keeping its
+ * full width (no gutter kept for it).
+ */
+async function expectBottomHandle(card: Locator, page: Page) {
 	const tab = agentButton(card);
-	// The card's top in view: the tab is in sight without scrolling further.
-	await card.evaluate((el) => el.scrollIntoView({ block: "start" }));
+	await tab.scrollIntoViewIfNeeded();
 	await expect(tab).toBeInViewport();
 	const t = await tab.boundingBox();
 	const c = await card.boundingBox();
 	if (!t || !c) throw new Error("no boxes");
-	// Flush with the card's right edge (inside its 1px border).
-	expect(Math.abs(t.x + t.width - (c.x + c.width))).toBeLessThanOrEqual(2);
-	// Level with the top of the comments the panel slides over: the handle
-	// of the drawer it opens.
-	const cover = await card.getByTestId("agent-cover").boundingBox();
-	if (!cover) throw new Error("no agent cover");
-	expect(Math.abs(t.y - cover.y)).toBeLessThanOrEqual(2);
+	const resolve = card.getByTestId("thread-actions").getByRole("button", {
+		name: /^(Resolve|Unresolve)/,
+	});
+	if (await resolve.isVisible()) {
+		// On Resolve's row, just right of it.
+		const r = await resolve.boundingBox();
+		if (!r) throw new Error("no Resolve box");
+		expect(
+			Math.abs(t.y + t.height / 2 - (r.y + r.height / 2)),
+		).toBeLessThanOrEqual(4);
+		expect(t.x).toBeGreaterThanOrEqual(r.x + r.width - 1);
+		expect(t.x - (r.x + r.width)).toBeLessThanOrEqual(16);
+	} else {
+		// The actions row closed: at the card's bottom.
+		expect(c.y + c.height - (t.y + t.height)).toBeLessThanOrEqual(20);
+	}
+	// At the right end of the card's content.
+	expect(c.x + c.width - (t.x + t.width)).toBeLessThanOrEqual(16);
 	// A finger's target: 40px each way on a phone.
 	const phone = (page.viewportSize()?.width ?? 1000) < 640;
 	expect(t.height).toBeGreaterThanOrEqual(40);
 	if (phone) expect(t.width).toBeGreaterThanOrEqual(40);
-	// It covers no comment, no reply box, no header button.
+	// No width kept for it: the comments reach the card's right as without an agent.
+	const cover = await card.getByTestId("agent-cover").boundingBox();
+	if (!cover) throw new Error("no agent cover");
+	expect(c.x + c.width - (cover.x + cover.width)).toBeLessThanOrEqual(16);
+	// It covers no comment, reply box or other button.
 	const others = card.locator(
-		"[data-testid=thread-comment-body], [data-testid=thread-actions], [data-testid=thread-counter], button:not([data-testid=thread-agent-button])",
+		"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",
 	);
 	for (const o of await others.all()) {
 		if (!(await o.isVisible())) continue;
 		const b = await o.boundingBox();
 		if (!b) continue;
-		const overlaps =
-			b.x < t.x + t.width &&
-			t.x < b.x + b.width &&
-			b.y < t.y + t.height &&
-			t.y < b.y + b.height;
-		expect(overlaps, await o.evaluate((n) => n.outerHTML.slice(0, 80))).toBe(
-			false,
-		);
+		expect(
+			overlaps(t, b),
+			await o.evaluate((n) => n.outerHTML.slice(0, 80)),
+		).toBe(false);
 	}
 }
 
-test("the agent opener is a drawer tab on the card's right edge, the panel's handle while open", async ({
+test("the agent opener is a handle at the card's bottom beside Resolve, the panel's handle while open", async ({
 	page,
 	pr,
 	agentCrb,
@@ -557,18 +580,20 @@ test("the agent opener is a drawer tab on the card's right edge, the panel's han
 	await holdSeen(page);
 	await page.goto(s.url);
 	const card = overviewCard(page);
-	// Ask agent: the dashed tab, on the edge.
+	// Ask agent: the dashed handle, at the card's bottom.
 	await expect(agentButton(card)).toHaveAccessibleName("Ask agent");
-	await expectDrawerTab(card, page);
+	await expectBottomHandle(card, page);
 	await openPanel(card);
 	await sendToAgent(card, "Take your time");
 	await expect(panel(card).getByTestId("agent-answering")).toBeVisible();
-	// Open: the tab stays at the panel's right edge, pressed.
+	// Open: beside Resolve, under the panel's right edge, pressed.
+	await expectBottomHandle(card, page);
 	const tabBox = await agentButton(card).boundingBox();
 	const panelBox = await panel(card).boundingBox();
 	if (!tabBox || !panelBox) throw new Error("no boxes");
-	expect(tabBox.x).toBeGreaterThanOrEqual(panelBox.x + panelBox.width - 1);
-	expect(tabBox.x - (panelBox.x + panelBox.width)).toBeLessThanOrEqual(12);
+	expect(
+		Math.abs(tabBox.x + tabBox.width - (panelBox.x + panelBox.width)),
+	).toBeLessThanOrEqual(2);
 	await agentButton(card).click();
 	await expectClosed(card);
 	releaseAcp(acpScenario, "prompt");
@@ -578,11 +603,11 @@ test("the agent opener is a drawer tab on the card's right edge, the panel's han
 		"2 agent messages, 1 new",
 	);
 	await expect(agentButton(card)).toHaveText("2");
-	await expectDrawerTab(card, page);
+	await expectBottomHandle(card, page);
 	// In Files changed too.
 	const thread = await filesThread(page, s.url);
 	await expect(thread.getByTestId("agent-unread-dot")).toBeVisible();
-	await expectDrawerTab(thread, page);
+	await expectBottomHandle(thread, page);
 	await agentButton(thread).click();
 	await expect(panel(thread)).toHaveAttribute("data-open", "true");
 	await expectNoPageOverflow(page);

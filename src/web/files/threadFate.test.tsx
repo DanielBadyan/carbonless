@@ -541,7 +541,7 @@ describe("UnplacedRow", () => {
 		},
 	);
 
-	it("its agent tab sits on the row's right edge, in a gutter kept free for it; none without an agent", () => {
+	it("its agent handle sits in the row's bottom line, no width kept for it; none without an agent", () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(() => new Promise(() => {})),
@@ -560,13 +560,18 @@ describe("UnplacedRow", () => {
 		);
 		const row = screen.getByTestId("unplaced-thread");
 		const tab = screen.getByRole("button", { name: "Ask agent" });
-		// A direct child of the row (not in its top line), the row `relative`.
-		expect(tab.parentElement).toBe(row);
-		expect(tab.className).toContain("right-0");
-		expect(row.className).toContain("relative");
-		expect(row.className).toContain("pr-10");
+		// In the row's last line, never its top line.
+		expect(row.lastElementChild?.contains(tab)).toBe(true);
+		expect(
+			screen
+				.getByTestId("unplaced-fate")
+				.parentElement?.parentElement?.contains(tab),
+		).toBe(false);
+		// The row as without an agent: its own padding, no gutter.
+		expect(row.className).toContain("p-2");
+		expect(row.className).not.toMatch(/\bpr-\d/);
 		cleanup();
-		// No agent (no writes): no tab, no gutter.
+		// No agent (no writes): no handle.
 		render(
 			wrap(
 				info(),
@@ -574,9 +579,6 @@ describe("UnplacedRow", () => {
 			),
 		);
 		expect(screen.queryByRole("button", { name: "Ask agent" })).toBeNull();
-		expect(screen.getByTestId("unplaced-thread").className).not.toContain(
-			"pr-10",
-		);
 	});
 
 	it("moved? names where the line may have gone, as text", () => {
