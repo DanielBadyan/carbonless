@@ -37,6 +37,19 @@ long lists in stages (what's visible plus one "load more" page first). Caching
 for reloads is secondary.
 The skeletons and spinners follow "Loading never looks empty" below.
 
+Fewer GitHub calls never at the cost of the first paint (the owner,
+2026-11-13: "If you can merge queries in a way that keeps the faster
+first-load that's fine"). Only reads the first paint waits for together
+share a query (the overview's one query: the PR, its description, comments,
+reviews and checks, `overviewQuery` in `src/server/gh.ts`). The threads and
+the timeline stay their own calls: GitHub answers a merged query about as
+slowly as the sum of its heavy parts (threads and timeline together: 1.4 s
+more on a real PR; the threads' first and last pages together: 0.24 s
+more), so merging them would make the thread list later. The gh login is kept
+per server for 10 minutes (`src/server/viewerCache.ts`), and the page's
+first head check answers from the open's read when it is under 10 s old
+(`HEAD_REUSE_MS`).
+
 ## Loading never looks empty
 
 Design principle 8 (`CLAUDE.md`). The owner: "Whenever something is

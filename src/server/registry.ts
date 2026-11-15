@@ -3,6 +3,7 @@ import { cacheDir } from "./paths.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { findReviewById } from "./review/reviews.js";
 import { Session, SessionClosedError } from "./session.js";
+import { ViewerCache } from "./viewerCache.js";
 
 /** What opens a review: today's `crb <pr>` arguments. */
 export interface OpenRequest {
@@ -84,9 +85,19 @@ export class SessionRegistry {
 	 */
 	readonly #closing = new Map<Promise<void>, string>();
 
-	constructor(options: { idleMs?: number; now?: () => number } = {}) {
+	/** The gh login every open reads (the server's, shared with Home). */
+	readonly viewers: ViewerCache;
+
+	constructor(
+		options: {
+			idleMs?: number;
+			now?: () => number;
+			viewers?: ViewerCache;
+		} = {},
+	) {
 		this.#idleMs = options.idleMs ?? IDLE_MS;
 		this.#now = options.now ?? Date.now;
+		this.viewers = options.viewers ?? new ViewerCache();
 		this.#timer = setInterval(
 			() => void this.sweep(),
 			Math.min(this.#idleMs, 60_000),
@@ -130,7 +141,13 @@ export class SessionRegistry {
 				req.pr,
 				req.cwd ?? process.cwd(),
 				progress,
-				{ head: req.head, asOf: req.asOf, viewer: req.viewer },
+				{
+					head: req.head,
+					asOf: req.asOf,
+					viewer: req.viewer,
+					viewers: this.viewers,
+					reuseOpenHead: true,
+				},
 			).catch((error: unknown) => {
 				throw asRefusal(error);
 			});
@@ -303,6 +320,8 @@ export class SessionRegistry {
 	): Promise<{ closed: number; pending: string[] }> {
 		this.#generation++;
 		this.#resetting++;
+		// A fresh process knows no login either (the next test's may differ).
+		this.viewers.forget();
 		try {
 			return await this.#reset(Date.now() + timeoutMs);
 		} finally {

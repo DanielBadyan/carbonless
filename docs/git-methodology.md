@@ -63,7 +63,9 @@ history.
   reports that fetch's merge base: the same head under a base that took in
   some of the PR's own commits gets the new merge base, so those commits
   stop showing as the PR's (as on GitHub). An open or a Refresh counts as
-  that triple's fetch.
+  that triple's fetch. The page's first `GET /head` after an open answers
+  from the open's read when it is under 10 s old (`HEAD_REUSE_MS`); every
+  later check, and a Refresh, asks GitHub.
 - **Thread code** (`src/server/threadCode.ts`). A line comment's code pane is
   the PR's diff of its file at the commit the comment was made on, from the
   clone (a commit a force-push dropped is fetched by OID): its old side is
