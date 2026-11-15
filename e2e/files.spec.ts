@@ -1226,12 +1226,37 @@ test("marking a file's last cluster opens the next file with something left", as
 	await expect(last.getByTestId("diff-line")).toHaveCount(0);
 	await expect(one.getByTestId("diff-line").first()).toBeVisible();
 	await expectAtTop(page, one);
+	await expect
+		.poll(() => arrivals(page))
+		.toEqual(["a/two.ts", "b/long.ts", "a/one.ts"]);
+});
+
+// Its own test, not the end of the one above: together they took about
+// half the test's timeout on a quiet machine, and a loaded one ran out of
+// it (CAR-171).
+test("a move-on skips files with nothing left, and after the last the verdict rises into view", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await recordArrivals(page);
+	// Closed files crossed off from their headers: nothing moves on.
+	const two = fileSection(page, "a/two.ts");
+	const last = fileSection(page, "c/last.ts");
+	await fileAction(two, "Cross off file");
+	await fileAction(last, "Cross off file");
+	await expect(fileProgress(two)).toContainText("crossed off");
+	await expect(fileProgress(last)).toContainText("crossed off");
 
 	// Files with nothing left are skipped: two (crossed off) for long.
-	await marksReady(page, one);
+	const one = await expand(page, "a/one.ts");
 	await one.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
 	await expect(one.getByTestId("diff-line")).toHaveCount(0);
 	await expect(two.getByTestId("diff-line")).toHaveCount(0);
+	const long = fileSection(page, "b/long.ts");
 	await expect(long.getByTestId("diff-line").first()).toBeVisible();
 	await expectAtTop(page, long);
 
@@ -1246,13 +1271,7 @@ test("marking a file's last cluster opens the next file with something left", as
 	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 clusters reviewed/);
 	await expect
 		.poll(() => arrivals(page))
-		.toEqual([
-			"a/two.ts",
-			"b/long.ts",
-			"a/one.ts",
-			"b/long.ts",
-			"files-verdict",
-		]);
+		.toEqual(["b/long.ts", "files-verdict"]);
 });
 
 test("with reduced motion, a move-on is instant", async ({
