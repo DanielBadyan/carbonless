@@ -32,7 +32,6 @@ import { agentThreadsQuery } from "./api";
 import {
 	conversationLabel,
 	conversationSearch,
-	LANDING_TTL_MS,
 	requestConversationOpen,
 	resetConversationLanding,
 	usePendingLanding,
@@ -510,33 +509,34 @@ describe("while the review's files load (CAR-80 fix 2)", () => {
 	});
 });
 
-describe("a landing no card takes", () => {
-	it("is dropped after LANDING_TTL_MS, so it never opens a card later (CAR-80 nit 9)", () => {
+describe("a landing no card takes (CAR-80 B)", () => {
+	afterEach(() => window.history.replaceState(null, "", "/"));
+
+	it("waits however long the page takes to place it: no timer drops it", () => {
 		vi.useFakeTimers();
 		try {
 			const { result } = renderHook(() => usePendingLanding());
 			act(() => requestConversationOpen(A));
+			// Placements or GitHub's threads slow on a loaded machine.
+			act(() => vi.advanceTimersByTime(5 * 60_000));
 			expect(result.current?.conversation).toBe(A);
-			act(() => vi.advanceTimersByTime(LANDING_TTL_MS - 1));
-			expect(result.current?.conversation).toBe(A);
-			act(() => vi.advanceTimersByTime(1));
-			expect(result.current).toBeNull();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it("a newer landing isn't dropped by the older one's timer", () => {
-		vi.useFakeTimers();
-		try {
-			const { result } = renderHook(() => usePendingLanding());
-			act(() => requestConversationOpen(A));
-			act(() => vi.advanceTimersByTime(LANDING_TTL_MS - 10));
-			act(() => requestConversationOpen(B));
-			act(() => vi.advanceTimersByTime(10));
-			expect(result.current?.conversation).toBe(B);
-		} finally {
-			vi.useRealTimers();
-		}
+	it("is dropped once the reviewer moves to another page, and coming back doesn't bring it back", async () => {
+		window.history.replaceState(null, "", "/r/RV1/files");
+		const { result, rerender } = renderHook(() => usePendingLanding());
+		act(() => requestConversationOpen(A));
+		expect(result.current?.conversation).toBe(A);
+		window.history.pushState(null, "", "/r/RV1");
+		rerender();
+		expect(result.current).toBeNull();
+		// The drop lands just after the render that saw the move.
+		await act(async () => {});
+		window.history.pushState(null, "", "/r/RV1/files");
+		rerender();
+		expect(result.current).toBeNull();
 	});
 });

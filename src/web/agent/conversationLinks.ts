@@ -115,32 +115,47 @@ const emit = () => {
 	for (const l of listeners) l();
 };
 
-/**
- * How long a landing waits to be taken. One no card takes (its
- * conversation isn't placed in this comparison) is dropped then, so it
- * never opens that card later, out of the blue.
- */
-export const LANDING_TTL_MS = 30_000;
+/** The path the landing was asked on: it is dropped once the reviewer goes elsewhere. */
+let landingPath: string | null = null;
+const currentPath = () =>
+	typeof window === "undefined" ? "" : window.location.pathname;
 
-/** A page landed on a conversation link: the conversation opens where it shows. */
+/**
+ * A page landed on a conversation link: the conversation opens where it
+ * shows. One no card takes (not placed in this comparison) is dropped on
+ * the next move to another page, so it never opens a card later, out of
+ * the blue. It waits as long as the page takes to place it (placements,
+ * GitHub's threads), however slow: no timer.
+ */
 export function requestConversationOpen(
 	conversation: string,
 	message?: string,
 ): void {
 	if (!ULID.test(conversation)) return;
 	seq += 1;
-	const mine = seq;
 	landing = {
 		conversation,
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
 		seq,
 	};
+	landingPath = currentPath();
 	emit();
-	setTimeout(() => {
-		if (landing?.seq !== mine) return;
-		landing = null;
-		emit();
-	}, LANDING_TTL_MS);
+}
+
+/** The landing still pending here, or null (dropped once the path changed). */
+function pending(snapshot: ConversationLanding | null) {
+	if (!snapshot) return null;
+	if (landingPath !== currentPath()) {
+		// Read during render: dropped just after it, so coming back to that
+		// page never brings it back.
+		queueMicrotask(() => {
+			if (landing !== snapshot || landingPath === currentPath()) return;
+			landing = null;
+			emit();
+		});
+		return null;
+	}
+	return snapshot;
 }
 
 /** The landing for conversation `id`, until it is taken (`done`). */
@@ -162,7 +177,7 @@ export function useConversationLanding(id: string | undefined): {
 	}, []);
 	return {
 		landing:
-			active && id !== undefined && current?.conversation === id
+			active && id !== undefined && pending(current)?.conversation === id
 				? current
 				: null,
 		done,
@@ -176,12 +191,13 @@ export function usePendingLanding(): ConversationLanding | null {
 		() => landing,
 		() => landing,
 	);
-	return usePageActive() ? current : null;
+	return usePageActive() ? pending(current) : null;
 }
 
 /** Forgets a pending landing (tests). */
 export function resetConversationLanding(): void {
 	landing = null;
+	landingPath = null;
 	emit();
 }
 
