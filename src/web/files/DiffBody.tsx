@@ -7,7 +7,6 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	type CSSProperties,
-	createContext,
 	Fragment,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -119,7 +118,12 @@ import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
-import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
+import {
+	CONTROLS,
+	SLOT,
+	StackControls,
+	useStickyControls,
+} from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import {
 	AgentThreadRow,
@@ -531,10 +535,14 @@ const SIGN_MR = "mr-2 group-data-[tight]/diff:mr-1";
  * it (a thread's card, a composer, a bubble row, "No newline"), so the
  * cross-off reaches only into its own cluster's empty controls cells.
  * Elsewhere they sit side by side (the column is 80px: TABLE_VARS). Decided from
- * the run's rows when they render (StackControls), never by measuring.
+ * the run's rows when they first render (StackControls), never by measuring,
+ * and kept (DiffBody's latch): a comment box, a thread or the agent turning
+ * up under those rows later never flips it, which would move every line
+ * sideways mid-review; those rows keep clear of the controls column instead
+ * (TailRow, BubbleRow). Chosen again only on a re-layout the reviewer asks
+ * for: a view setting, another revision or since view.
  */
 const STACK_ROWS = 4;
-const StackControls = createContext(false);
 /**
  * Room under a cluster's first row for its side-by-side touch targets,
  * which reach 10px below it: a thread's card or a phone's bubble row right
@@ -542,6 +550,8 @@ const StackControls = createContext(false);
  */
 const UNDER_CONTROLS =
 	"pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5";
+/** A bubble row's cell in a stacking run: its bubbles start past the controls column. */
+const CLEAR_OF_CONTROLS = "pointer-coarse:pl-[calc(var(--controls-w)+0.5rem)]";
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -1758,6 +1768,8 @@ function BubbleRow(props: {
 	state?: ClusterView["state"];
 }) {
 	const { left, right } = props;
+	// In a run whose touch controls stack, clear of the controls column.
+	const clear = useContext(StackControls);
 	const has = (b: Bubbles) => Boolean(b.lead || b.bubble || b.agent);
 	if (!has(left) && !has(right)) return null;
 	const group = (side: DiffSide, b: Bubbles) => (
@@ -1771,9 +1783,16 @@ function BubbleRow(props: {
 		</div>
 	);
 	return (
-		<tr data-testid="bubble-row" className="select-none">
+		<tr
+			data-testid="bubble-row"
+			data-clear-of-controls={clear || undefined}
+			className="select-none"
+		>
 			<Rail state={props.state} />
-			<td colSpan={columnsOf("side-by-side") - 1} className="px-2 py-0">
+			<td
+				colSpan={columnsOf("side-by-side") - 1}
+				className={`px-2 py-0 ${clear ? CLEAR_OF_CONTROLS : ""}`}
+			>
 				<div className={`grid grid-cols-2 ${UNDER_CONTROLS}`}>
 					{group("LEFT", left)}
 					{group("RIGHT", right)}
@@ -2238,6 +2257,23 @@ export function DiffBody(props: {
 	// not the full diff's): kept apart from the full diff's; the search
 	// reads the comparison's own.
 	const rangesKey = rangesKeyOf(revision, props.from);
+	// Each cluster run's touch-controls stacking, chosen when its rows first
+	// render and kept (STACK_ROWS): what opens or arrives under them later
+	// never flips it. A re-layout the reviewer asks for (a view setting,
+	// another revision or since view, the phone/desktop shape) chooses again.
+	const layout = `${view}|${shape.split}|${ignoreWs}|${revision}|${props.from ?? ""}`;
+	const stackLatch = useRef({ layout, runs: new Map<string, boolean>() });
+	if (stackLatch.current.layout !== layout) {
+		stackLatch.current = { layout, runs: new Map() };
+	}
+	const stackOf = (runKey: string, choose: () => boolean) => {
+		const runs = stackLatch.current.runs;
+		const kept = runs.get(runKey);
+		if (kept !== undefined) return kept;
+		const chosen = choose();
+		runs.set(runKey, chosen);
+		return chosen;
+	};
 	const ranges = contextRanges.use(rangesKey, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
@@ -3057,6 +3093,7 @@ export function DiffBody(props: {
 			{gapRows(gapAt(index), takeLead)}
 			<HunkRows
 				hunk={hunk}
+				stackOf={stackOf}
 				// Once per hunk: not here when its hidden-lines row has it.
 				heading={headedOnGap.has(index) ? undefined : hunk.heading}
 				clusters={clusters}
@@ -3695,6 +3732,8 @@ function LandingHint({ hint }: { hint: Hint }) {
 /** A hunk's header and lines: context runs, and each cluster's run with its rail. */
 function HunkRows(props: {
 	hunk: DisplayHunk;
+	/** A run's stacking, by its key: chosen once, then kept (DiffBody's latch). */
+	stackOf: (runKey: string, choose: () => boolean) => boolean;
 	/** The heading on its @@ row (none when the row above has it). */
 	heading?: string;
 	clusters: Map<string, ClusterView>;
@@ -3892,17 +3931,21 @@ function HunkRows(props: {
 								: tailed(r.del) || tailed(r.add),
 						)
 					: rows.map((r) => tailed(rowLine(r)));
-				const stack =
-					rowTails.length >= STACK_ROWS &&
-					!rowTails.slice(0, STACK_ROWS - 1).some(Boolean);
-				const stacked = (controls?: ReactNode) =>
-					controls && (
-						<StackControls.Provider value={stack}>
-							{controls}
-						</StackControls.Provider>
-					);
+				const stack = props.stackOf(
+					runKey,
+					() =>
+						rowTails.length >= STACK_ROWS &&
+						!rowTails.slice(0, STACK_ROWS - 1).some(Boolean),
+				);
 				/** The run's rows, the cluster's controls on the first when given. */
-				const runRows = (controls?: ReactNode) =>
+				const runRows = (controls?: ReactNode) => (
+					// Rows without controls here (a whitespace cluster's, under its
+					// own row) don't stack.
+					<StackControls.Provider value={controls ? stack : false}>
+						{lineRows(controls)}
+					</StackControls.Provider>
+				);
+				const lineRows = (controls?: ReactNode) =>
 					run.side
 						? run.side.map((r, i) => {
 								const old = r.kind === "context" ? r.line.oldNo : r.del?.oldNo;
@@ -3911,7 +3954,7 @@ function HunkRows(props: {
 									<PairRow
 										key={`${r.kind}${old ?? ""}:${nu ?? ""}`}
 										row={r}
-										checkbox={i === 0 ? stacked(controls) : undefined}
+										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
 										state={pairState(r, lineState, state)}
 									/>
@@ -3926,7 +3969,7 @@ function HunkRows(props: {
 										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
 										line={line}
 										order={shown ? orderOf(shown) : undefined}
-										checkbox={i === 0 ? stacked(controls) : undefined}
+										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
 										state={rowState(r, lineState, state)}
 									/>

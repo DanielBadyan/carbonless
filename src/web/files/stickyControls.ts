@@ -1,5 +1,19 @@
-import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import {
+	createContext,
+	type RefObject,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+} from "react";
 import { usePageActive } from "../pageActive";
+
+/**
+ * Whether the cluster run around it stacks its touch controls (DiffBody's
+ * STACK_ROWS): its controls stack, and the rows that open under its lines
+ * later (a card, a composer, a phone's bubble row) keep clear of the
+ * controls column, where the stacked cross-off hangs.
+ */
+export const StackControls = createContext(false);
 
 /** Marks the slot a cluster's controls sit in (first row of the cluster). */
 export const SLOT = "data-sticky-slot";

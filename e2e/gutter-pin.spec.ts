@@ -745,6 +745,155 @@ test("touch: a one-line cluster lays its controls side by side, each whole", asy
 	await expect(cross).toHaveAttribute("aria-pressed", "true");
 });
 
+/** The points across the element's box where a tap lands on a cluster's controls instead. */
+const underControls = (l: Locator) =>
+	l.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		const out: string[] = [];
+		for (let y = r.top + 1; y < r.bottom - 0.5; y += 3) {
+			for (let x = r.left + 1; x < r.right - 0.5; x += 3) {
+				if (
+					document.elementFromPoint(x, y)?.closest("[data-sticky-controls]")
+				) {
+					out.push(`${Math.round(x)},${Math.round(y)}`);
+				}
+			}
+		}
+		return out;
+	});
+
+/** The code's x on each given row: what a column flip would move. */
+const codeXs = (rows: Locator[]) =>
+	Promise.all(rows.map((r) => x(r.getByTestId("code"))));
+
+/** A stacked pair's cross-off and what opened under its rows keep clear of each other. */
+async function expectClear(cross: Locator, under: Locator) {
+	const c = await cross.boundingBox();
+	if (!c) throw new Error("not rendered");
+	expect(await uncovered(cross)).toEqual([]);
+	// What opened starts right of the controls column, where the cross-off hangs.
+	const left = await under.evaluate((tr) => {
+		const box = tr.querySelector("td > div, td")?.getBoundingClientRect();
+		const content = tr.querySelector(
+			"textarea, [role=textbox], article, [data-testid=thread-card], td > div",
+		);
+		return Math.min(
+			box?.right ?? Number.POSITIVE_INFINITY,
+			content?.getBoundingClientRect().left ?? Number.POSITIVE_INFINITY,
+		);
+	});
+	expect(left).toBeGreaterThanOrEqual(c.x + c.width - 0.5);
+}
+
+test("touch: a comment box opened on a stacked cluster's first row moves no line; it and the cross-off keep clear", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	await pr(tallFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const line = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const first = line(3);
+	const slot = first.locator("[data-sticky-slot]");
+	await expect(slot).toHaveAttribute("data-stacked", "true");
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const rows = [first, line(4), line(20)];
+	const before = await codeXs(rows);
+	// Pick the first row by its number, then Comment.
+	await first.getByTestId("new").tap();
+	await expect(first).toHaveAttribute("data-picked", "true");
+	await page
+		.getByRole("toolbar", { name: "Selection actions" })
+		.getByRole("button", { name: "Comment" })
+		.tap();
+	const box = section.getByTestId("new-thread-row");
+	await expect(box).toBeVisible();
+	// Nothing moved sideways, and the pair still stacks.
+	expect(await codeXs(rows)).toEqual(before);
+	await expect(slot).toHaveAttribute("data-stacked", "true");
+	const cross = first.getByRole("button", { name: "Cross off cluster" });
+	await expectClear(cross, box);
+	// The box's own controls take their taps: no point of them is under
+	// the cluster's controls.
+	const cancel = box.getByRole("button", { name: "Cancel" });
+	for (const target of [box.getByRole("textbox").first(), cancel]) {
+		expect(await underControls(target)).toEqual([]);
+	}
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/gutter-${testInfo.project.name}-composer.png`,
+		});
+	}
+	// The cross-off works with the box open.
+	const c = await cross.boundingBox();
+	if (!c) throw new Error("not rendered");
+	await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height - 3);
+	await expect(cross).toHaveAttribute("aria-pressed", "true");
+	await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height - 3);
+	await expect(cross).toHaveAttribute("aria-pressed", "false");
+	// Cancelled: still nothing moves.
+	await cancel.tap();
+	await expect(box).toHaveCount(0);
+	expect(await codeXs(rows)).toEqual(before);
+	await expect(slot).toHaveAttribute("data-stacked", "true");
+});
+
+test("touch: a thread that arrives on a stacked cluster's first row, opened, moves no line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	const p = await pr(tallFixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const line = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const first = line(3);
+	const slot = first.locator("[data-sticky-slot]");
+	await expect(slot).toHaveAttribute("data-stacked", "true");
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const rows = [first, line(4), line(20)];
+	const before = await codeXs(rows);
+	// Someone comments on the first row; a Refresh brings it in.
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: TALL, line: 3, subjectType: "LINE" }, [
+				threadComment({
+					login: "ann",
+					text: "Late?",
+					commit: head,
+					diffHunk: "",
+				}),
+			]),
+		];
+	});
+	await page.getByRole("button", { name: "Refresh" }).first().tap();
+	const bubble = first.getByRole("button", { name: /1 comment on/ });
+	await expect(bubble).toBeVisible();
+	await bubble.tap();
+	const card = section.getByTestId("thread-row");
+	await expect(card).toBeVisible();
+	expect(await codeXs(rows)).toEqual(before);
+	await expect(slot).toHaveAttribute("data-stacked", "true");
+	await expectClear(
+		first.getByRole("button", { name: "Cross off cluster" }),
+		card,
+	);
+});
+
 test("touch: floating near its cluster's end, a stacked pair stays inside the cluster", async ({
 	page,
 	pr,
