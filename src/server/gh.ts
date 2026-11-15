@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
 import { GhError, WriteRefusedError } from "./errors.js";
@@ -130,6 +130,9 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
+		children.set(child, args);
+		child.on("close", () => children.delete(child));
+		child.on("error", () => children.delete(child));
 		// Nothing to read but a write's body: gh sees its end at once.
 		child.stdin.on("error", () => {});
 		child.stdin.end(run.input ?? "");
@@ -194,6 +197,22 @@ function problemLine(text: string): string {
 	const lines = text.split("\n").map((line) => line.trim());
 	const fatal = lines.filter((line) => /^(fatal|error):/.test(line)).at(-1);
 	return fatal ?? lines[0] ?? "";
+}
+
+/** gh processes started and not yet exited (a killed one until it is gone). */
+const children = new Map<ChildProcess, readonly string[]>();
+
+/**
+ * gh calls still running and gh processes not yet exited (the test hook's
+ * leak check), each as `gh <args>`.
+ */
+export function ghRunning(): { calls: string[]; children: string[] } {
+	const show = (args: readonly string[]) =>
+		`gh ${args.join(" ")}`.slice(0, 160);
+	return {
+		calls: [...inFlight].map((c) => show(c.args)),
+		children: [...children.values()].map(show),
+	};
 }
 
 /** gh calls (runGh, runWrite) started and not yet finished: their args. */
@@ -512,8 +531,9 @@ const COMMENT_TIMES = "createdAt publishedAt state";
 const COMMENT_PAGE = "pageInfo { hasNextPage endCursor }";
 const SUMMARY_COMMENT = `id ${COMMENT_AUTHOR} ${COMMENT_TIMES}`;
 // What the viewer may do to it (reply, resolve, unresolve), and the
-// opener's REST id, which a reply is posted to.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
+// opener's REST id, which a reply is posted to. `headOf`: the PR's head in
+// the same answer, the commit its `line` counts on (thread placement).
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide headOf: pullRequest { headRefOid } viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
 /**
  * Each comment's text, and GitHub's diff hunk (the opening one's shows the
  * code); when it was last edited, what the viewer may do to it (only to
