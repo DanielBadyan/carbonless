@@ -139,10 +139,10 @@ const CARD =
  * side-by-side row (which never scrolls sideways): the rail and controls
  * cells, then the card over that side's number and code columns and a
  * blank over the other side's, in the blank side's tone. Text wraps to the
- * card's width; wide code in a comment scrolls in the comment. Across the
- * table the card sits at z 5 (DiffBody's OVER_CONTROLS): a touch cluster's
- * cross-off, reaching down from the line above, never covers the card's
- * corner or takes its taps.
+ * card's width; wide code in a comment scrolls in the comment. Right under
+ * a cluster's first row on touch, it starts 10px lower: below that row's
+ * side-by-side controls' 40px targets (DiffBody's UNDER_CONTROLS), so
+ * neither covers the other.
  */
 export function TailRow(props: {
 	testId: string;
@@ -158,7 +158,7 @@ export function TailRow(props: {
 			<tr data-testid={props.testId} id={props.id}>
 				<td colSpan={place.columns} className="p-0">
 					<div
-						className={`sticky left-0 z-[5] w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 ${CARD}`}
+						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${CARD}`}
 					>
 						{props.rail && (
 							<span

@@ -63,6 +63,13 @@ describe("placeControls, sideways", () => {
 		expect(placeControls({ ...row, slotLeft: 102 })).toEqual({
 			mode: "static",
 		});
+		// Right at the edge: nothing is hidden yet, so nothing floats.
+		expect(placeControls({ ...row, slotLeft: 101 })).toEqual({
+			mode: "static",
+		});
+		expect(placeControls({ ...row, slotLeft: 100 })).toEqual({
+			mode: "static",
+		});
 	});
 
 	it("floats them at the diff's visible left edge once the slot passes it", () => {
@@ -71,10 +78,10 @@ describe("placeControls, sideways", () => {
 			mode: "shift",
 			x: 114,
 		});
-		// Partly hidden: it moves only as far as the edge needs.
-		expect(placeControls({ ...row, slotLeft: 101 })).toEqual({
+		// Partly hidden (10px behind the edge): moved just clear of it.
+		expect(placeControls({ ...row, slotLeft: 90 })).toEqual({
 			mode: "shift",
-			x: 1,
+			x: 12,
 		});
 	});
 

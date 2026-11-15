@@ -7,6 +7,7 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	type CSSProperties,
+	createContext,
 	Fragment,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -14,6 +15,7 @@ import {
 	type ReactNode,
 	type RefObject,
 	useCallback,
+	useContext,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -287,7 +289,9 @@ function FileLabel(props: { children: ReactNode; bubble?: ReactNode }) {
 		<div
 			ref={box}
 			data-testid="file-label"
-			className="sticky left-0 z-[4] flex w-[calc(var(--diff-w,100%)-var(--lead-l,0px)-0.5rem)] items-start gap-2"
+			// Sticky right of where the row's controls float while the diff is
+			// scrolled sideways (stickyControls.ts), so they never cover it.
+			className="sticky left-[calc(var(--pair-w)+0.25rem)] z-[4] flex w-[calc(var(--diff-w,100%)-var(--lead-l,0px)-0.5rem)] items-start gap-2"
 		>
 			<span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
 				{props.children}
@@ -491,7 +495,9 @@ export function numberDigits(data: FileHunks | undefined): number {
  * The leading columns' widths, as CSS variables on the table (TABLE_VARS):
  * a number column is its digits and padding (`--num-w`, from numberDigits
  * and `--num-pad`), the controls column `--controls-w`, and `--gutter` the
- * rail and the controls together (a gap row's arrows span them). Roomy when
+ * rail and the controls together (a gap row's arrows span them), and
+ * `--pair-w` the cluster's two controls side by side (where a file label
+ * sticks right of them). Roomy when
  * the diff has room; cramped (`data-tight`, useTight: the diff's box under
  * TIGHT_BELOW, or a touch screen) with half the number padding, the
  * controls column at its content, and the sign closer to the code. On
@@ -502,7 +508,7 @@ export function numberDigits(data: FileHunks | undefined): number {
  * wish, and the number pair's 40px tap target counts on them.
  */
 const TABLE_VARS =
-	"[--num-pad:1rem] [--controls-w:2.75rem] data-[tight]:[--num-pad:0.5rem] data-[tight]:pointer-fine:[--controls-w:2.375rem] pointer-coarse:[--controls-w:2.5rem] [--gutter:calc(0.25rem+var(--controls-w))]";
+	"[--num-pad:1rem] [--controls-w:2.75rem] data-[tight]:[--num-pad:0.5rem] data-[tight]:pointer-fine:[--controls-w:2.375rem] pointer-coarse:[--controls-w:2.5rem] [--gutter:calc(0.25rem+var(--controls-w))] [--pair-w:2.25rem] pointer-coarse:[--pair-w:5rem]";
 /** The diff's box narrower than this is cramped (useTight). */
 const TIGHT_BELOW = 640;
 const NUMBER_W = "w-[var(--num-w,3rem)] min-w-[var(--num-w,3rem)]";
@@ -514,12 +520,24 @@ const CONTROLS_PAD =
 const SIGN_MR = "mr-2 group-data-[tight]/diff:mr-1";
 
 /**
- * Above a touch cluster's cross-off (z 5, ClusterControls), which reaches
- * from its row into the rows below: a gap's arrows and a phone's bubble row
- * there sit over it (later in the table, at the same level), and so does a
- * thread's card (TailRow). Floating controls rise above them (z 6).
+ * On touch a cluster's two 40px targets stack in the 40px controls column
+ * (the box over the cluster's first row, the cross-off under it, reaching
+ * 70px down from the row's top) only where nothing else is there: the run
+ * has at least four rows and none of its first three has anything under
+ * it (a thread's card, a composer, a bubble row, "No newline"), so the
+ * cross-off reaches only into its own cluster's empty controls cells.
+ * Elsewhere they sit side by side (the column grows to 80px). Decided from
+ * the run's rows when they render (StackControls), never by measuring.
  */
-const OVER_CONTROLS = "z-[5]";
+const STACK_ROWS = 4;
+const StackControls = createContext(false);
+/**
+ * Room under a cluster's first row for its side-by-side touch targets,
+ * which reach 10px below it: a thread's card or a phone's bubble row right
+ * under that row starts below them, so neither covers the other.
+ */
+const UNDER_CONTROLS =
+	"pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5";
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -1741,7 +1759,7 @@ function BubbleRow(props: {
 	const group = (side: DiffSide, b: Bubbles) => (
 		<div
 			data-bubbles={side}
-			className={`relative ${OVER_CONTROLS} flex ${side === "RIGHT" ? "justify-end" : ""}`}
+			className={`flex ${side === "RIGHT" ? "justify-end" : ""}`}
 		>
 			{b.lead}
 			{b.bubble}
@@ -1752,7 +1770,7 @@ function BubbleRow(props: {
 		<tr data-testid="bubble-row" className="select-none">
 			<Rail state={props.state} />
 			<td colSpan={columnsOf("side-by-side") - 1} className="px-2 py-0">
-				<div className="grid grid-cols-2">
+				<div className={`grid grid-cols-2 ${UNDER_CONTROLS}`}>
 					{group("LEFT", left)}
 					{group("RIGHT", right)}
 				</div>
@@ -1782,18 +1800,20 @@ function ClusterControls(props: {
 	const partly = partlyMarked(props.cluster);
 	const reviewed = props.cluster.state === "reviewed";
 	const readOnly = props.readOnly === true;
-	// On touch each control gets its own 40×40 target, the two stacked in a
-	// 40px column (the box over the row, the cross-off under it, reaching
-	// into the rows below, above their cells at z 5) and out of the flow, so
-	// the row keeps its height and the column its width. A mis-tap can't
-	// reach the other one. With a mouse they stay compact.
+	// On touch each control gets its own 40×40 target, out of the row's
+	// height (it reaches into the rows around it, above them at z 6), so a
+	// mis-tap can't reach the other one: stacked in a 40px column where the
+	// cluster's own rows have room for it (StackControls), else side by side.
+	// With a mouse they stay compact.
+	const stack = useContext(StackControls);
 	const target =
 		"flex items-center justify-center pointer-coarse:h-10 pointer-coarse:w-10";
+	const reach = stack ? "" : "pointer-coarse:-my-2.5";
 	const box = (trigger: Partial<TooltipTriggerProps> = {}) => (
 		<label
 			{...trigger}
 			data-testid="cluster-box-target"
-			className={`${target} pointer-coarse:-mt-2.5 ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
+			className={`${target} ${stack ? "pointer-coarse:-mt-2.5" : reach} ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
 		>
 			<input
 				type="checkbox"
@@ -1817,11 +1837,12 @@ function ClusterControls(props: {
 		// The slot keeps its size while the controls float (stickyControls.ts).
 		<span
 			{...{ [SLOT]: "" }}
-			className="block pointer-coarse:relative pointer-coarse:h-5 pointer-coarse:w-10"
+			data-stacked={stack || undefined}
+			className={`block ${stack ? "pointer-coarse:relative pointer-coarse:h-5 pointer-coarse:w-10" : ""}`}
 		>
 			<span
 				{...{ [CONTROLS]: "" }}
-				className="relative z-[5] flex w-fit items-center gap-1 rounded-md data-[stuck=end]:z-[6] data-[stuck=fixed]:z-[6] pointer-coarse:absolute pointer-coarse:top-0 pointer-coarse:left-0 pointer-coarse:flex-col pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
+				className={`relative z-[5] flex w-fit items-center gap-1 rounded-md data-[stuck=end]:z-[6] data-[stuck=fixed]:z-[6] pointer-coarse:z-[6] pointer-coarse:gap-0 ${stack ? "pointer-coarse:absolute pointer-coarse:top-0 pointer-coarse:left-0 pointer-coarse:flex-col" : ""} data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong`}
 			>
 				{readOnly ? (
 					<Tooltip content={READ_ONLY_TIP} describe={false} lazy>
@@ -1866,7 +1887,7 @@ function ClusterControls(props: {
 								onClick={() => props.onCrossOff(props.cluster)}
 								// Stacked under the box on touch, its glyph at the top of its
 								// target: on the cluster's second row, not two rows down.
-								className={`${target} group/x rounded pointer-coarse:items-start focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
+								className={`${target} ${stack ? "pointer-coarse:items-start" : reach} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 							>
 								<span
 									aria-hidden
@@ -2821,10 +2842,7 @@ export function DiffBody(props: {
 					// Not code: a selection across it leaves it out.
 					className="group/gap bg-hunk text-hunk-ink select-none"
 				>
-					<td
-						colSpan={2}
-						className={`relative ${OVER_CONTROLS} px-1 pointer-coarse:px-0.5`}
-					>
+					<td colSpan={2} className="px-1 pointer-coarse:px-0.5">
 						<div
 							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
 						>
@@ -3850,6 +3868,35 @@ function HunkRows(props: {
 					pendingWords: hunkMarks.pending,
 					failedWords: hunkMarks.failed,
 				};
+				/** Whether anything renders under a line's row (RowTail, BubbleRow, NoNewlineRow): its threads, the agent's, composers, no newline. */
+				const tailed = (line?: RowLine) => {
+					if (!line) return false;
+					if (line.noNewline) return true;
+					const keys = rowKeys(line);
+					return keys.some(
+						(k) =>
+							threads?.placement.end.has(k) ||
+							props.agent?.placement.end.has(k) ||
+							(props.agent?.composersAt([k]).length ?? 0) > 0 ||
+							(props.composers?.at([k]).length ?? 0) > 0,
+					);
+				};
+				const rowTails = run.side
+					? run.side.map((r) =>
+							r.kind === "context"
+								? tailed(r.line)
+								: tailed(r.del) || tailed(r.add),
+						)
+					: rows.map((r) => tailed(rowLine(r)));
+				const stack =
+					rowTails.length >= STACK_ROWS &&
+					!rowTails.slice(0, STACK_ROWS - 1).some(Boolean);
+				const stacked = (controls?: ReactNode) =>
+					controls && (
+						<StackControls.Provider value={stack}>
+							{controls}
+						</StackControls.Provider>
+					);
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>
 					run.side
@@ -3860,7 +3907,7 @@ function HunkRows(props: {
 									<PairRow
 										key={`${r.kind}${old ?? ""}:${nu ?? ""}`}
 										row={r}
-										checkbox={i === 0 ? controls : undefined}
+										checkbox={i === 0 ? stacked(controls) : undefined}
 										{...rowProps}
 										state={pairState(r, lineState, state)}
 									/>
@@ -3875,7 +3922,7 @@ function HunkRows(props: {
 										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
 										line={line}
 										order={shown ? orderOf(shown) : undefined}
-										checkbox={i === 0 ? controls : undefined}
+										checkbox={i === 0 ? stacked(controls) : undefined}
 										{...rowProps}
 										state={rowState(r, lineState, state)}
 									/>

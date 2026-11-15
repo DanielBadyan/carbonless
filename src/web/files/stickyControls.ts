@@ -15,11 +15,7 @@ const THREAD_ROW = '[data-testid="thread-row"]';
  */
 const END_GAP = 2;
 
-/**
- * How far right of the diff's visible left edge floating controls sit, in
- * px (their ring shows; less than the slot's own inset, so an unscrolled
- * slot never counts as hidden).
- */
+/** How far right of the diff's visible left edge floating controls sit, in px (their ring shows). */
 const SIDE_GAP = 2;
 
 export type Placement =
@@ -49,8 +45,9 @@ export function placeControls(m: {
 	edge: number;
 }): Placement {
 	const { top, slotTop, clusterBottom, above, below, height } = m;
-	// Scrolled sideways past the slot: moved right just as far as the edge.
-	const x = Math.max(0, m.edge + SIDE_GAP - m.slotLeft);
+	// Scrolled sideways past the slot (partly hidden behind the edge): moved
+	// just clear of the edge. Not before: a slot still in view stays put.
+	const x = m.slotLeft < m.edge ? m.edge + SIDE_GAP - m.slotLeft : 0;
 	const sideways: Placement = x > 0 ? { mode: "shift", x } : { mode: "static" };
 	// Its targets would slip under the stack: float them just below it.
 	if (slotTop - above >= top) return sideways;
@@ -81,7 +78,11 @@ export function runEnd(
 	return next.length ? Math.min(clusterBottom, ...next) : clusterBottom;
 }
 
+/** Each floating controls' last placement written: unchanged ones aren't written again. */
+const written = new WeakMap<HTMLElement, string>();
+
 function reset(slot: HTMLElement, controls: HTMLElement) {
+	written.delete(controls);
 	if (!controls.hasAttribute("data-stuck")) return;
 	controls.removeAttribute("data-stuck");
 	controls.style.position = "";
@@ -150,7 +151,7 @@ export function useStickyControls(
 					minTop = Math.min(minTop, r.top);
 					maxBottom = Math.max(maxBottom, r.bottom);
 				}
-				const place = placeControls({
+				const placed = placeControls({
 					top,
 					slotTop: s.top,
 					clusterBottom,
@@ -160,6 +161,14 @@ export function useStickyControls(
 					slotLeft: s.left,
 					edge,
 				});
+				// Sideways only, a cluster whose controls' targets are off
+				// screen needn't float (nor be written every frame): it does
+				// once a scroll brings it in.
+				const offScreen =
+					s.bottom + (maxBottom - c.bottom) < 0 ||
+					s.top - (c.top - minTop) > window.innerHeight;
+				const place: Placement =
+					placed.mode === "shift" && offScreen ? { mode: "static" } : placed;
 				return { slot, controls, place, width: s.width, height: s.height };
 			});
 			for (const plan of plans) {
@@ -169,6 +178,9 @@ export function useStickyControls(
 					reset(slot, controls);
 					continue;
 				}
+				const key = JSON.stringify(place);
+				if (written.get(controls) === key) continue;
+				written.set(controls, key);
 				if (!controls.hasAttribute("data-stuck")) {
 					slot.style.width = `${plan.width}px`;
 					slot.style.height = `${plan.height}px`;

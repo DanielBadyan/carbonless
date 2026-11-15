@@ -110,9 +110,10 @@ const tallFixture: PrOptions = {
 				[TALL]: text([
 					...tallBase.slice(0, 2),
 					...Array.from({ length: 40 }, (_, i) => `added ${i + 1}`),
-					...tallBase.slice(2, -1),
+					...tallBase.slice(2, 8),
 					// A second cluster: marking the first doesn't finish the file.
-					"tall 12 changed",
+					// Four lines, so on touch its controls stack too.
+					...tallBase.slice(8).map((l) => `${l} changed`),
 				]),
 			},
 		},
@@ -128,6 +129,30 @@ const onTop = (l: Locator) =>
 			b.top + b.height / 2,
 		);
 		return hit !== null && el.contains(hit);
+	});
+
+/**
+ * The points across the element's whole box (its hit area: the 40px
+ * targets are their boxes) where a tap would land on something else, named.
+ */
+const uncovered = (l: Locator) =>
+	l.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		const out: string[] = [];
+		for (let y = r.top + 1; y < r.bottom - 0.5; y += 3) {
+			for (let x = r.left + 1; x < r.right - 0.5; x += 3) {
+				const hit = document.elementFromPoint(x, y);
+				if (!hit || !el.contains(hit)) {
+					const what = hit
+						?.closest("[data-testid]")
+						?.getAttribute("data-testid");
+					out.push(
+						`${Math.round(x)},${Math.round(y)}: ${hit?.tagName ?? "nothing"} ${what ?? ""}`,
+					);
+				}
+			}
+		}
+		return out;
 	});
 
 test("scrolled sideways, the row scrolls whole and only the cluster's controls float at the code's left edge", async ({
@@ -263,6 +288,65 @@ test("scrolled sideways, the row scrolls whole and only the cluster's controls f
 	await expect(controls).not.toHaveAttribute("data-stuck");
 	expect(await x(controls)).toBe(await x(slot));
 	expect(await xs(cells)).toEqual(before);
+});
+
+test("scrolled sideways, the floating controls never cover the rename label", async ({
+	page,
+	pr,
+	startCrb,
+}, testInfo) => {
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, WIDE);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const label = section.getByTestId("file-label");
+	await expect(label).toContainText(`Renamed from ${WIDE_WAS}`);
+	const row = section.locator("tr:has([data-testid=file-label])");
+	const controls = row.locator("[data-sticky-controls]");
+	/** The label's first character, and what a tap at its centre hits. */
+	const firstChar = () =>
+		label.evaluate((el) => {
+			const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+			let node = walker.nextNode();
+			while (node && !node.textContent?.trim()) node = walker.nextNode();
+			if (!node?.textContent) return null;
+			const at = node.textContent.search(/\S/);
+			const range = document.createRange();
+			range.setStart(node, at);
+			range.setEnd(node, at + 1);
+			const r = range.getBoundingClientRect();
+			const hit = document.elementFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			return {
+				char: node.textContent[at],
+				left: r.left,
+				underControls: hit?.closest("[data-sticky-controls]") !== null,
+			};
+		});
+	const scroller = diffScroller(section);
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	// Floating at the code's left edge: in the label's row, or (on touch,
+	// the row right under the file header, its targets reaching above it)
+	// just under the header, the same corner.
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await expect(controls).toHaveAttribute("data-stuck", /^(shift|fixed)$/);
+	const c = await controls.boundingBox();
+	const first = await firstChar();
+	if (!c || !first) throw new Error("not rendered");
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/gutter-${testInfo.project.name}-label.png`,
+		});
+	}
+	expect(first.char).toBe("R");
+	expect(first.underControls).toBe(false);
+	expect(first.left).toBeGreaterThanOrEqual(c.x + c.width);
 });
 
 test("on the narrowest phone, the floating controls never make the page scroll sideways", async ({
@@ -403,48 +487,47 @@ test("a narrow diff (the tree dragged wide) tightens the leading columns; with r
 	).toBe("4px");
 });
 
-test("a phone is cramped: a narrow leading block whose controls and numbers still take a tap", async ({
+test("a phone is cramped: where every cluster's controls stack, a narrow leading block whose controls and numbers still take a tap", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
 	test.skip(!isMobile, "touch targets");
-	await setup(pr);
+	await pr(tallFixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const section = fileSection(page, WIDE);
+	const section = fileSection(page, TALL);
 	await section.getByRole("button", { name: "Expand file" }).click();
-	const row = section.locator('tr[data-testid="diff-line"][data-new-no="4"]');
-	await expect(row).toBeVisible();
+	const first = section.locator('tr[data-testid="diff-line"][data-new-no="3"]');
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	await expect(section.locator("table")).toHaveAttribute("data-tight", "true");
-	// Rail, controls and both numbers of a 3-digit file: well under 120px.
-	const rail = await row.locator("td").first().boundingBox();
-	const last = await row.getByTestId("new").boundingBox();
+	// Rail, controls and both numbers of a 2-digit file: well under 120px.
+	const rail = await first.locator("td").first().boundingBox();
+	const last = await first.getByTestId("new").boundingBox();
 	if (!rail || !last) throw new Error("not rendered");
 	expect(last.x + last.width - rail.x).toBeLessThan(120);
 	// The numbers together are the pick's target, 40px wide at least.
-	const old = await row.getByTestId("old").boundingBox();
+	const old = await first.getByTestId("old").boundingBox();
 	if (!old) throw new Error("not rendered");
 	expect(last.x + last.width - old.x).toBeGreaterThanOrEqual(40);
 
-	// The two controls' 40px targets, by what a tap would hit.
-	// On the cluster's first row, the deleted line (the file cluster above
-	// has its own).
-	const lines = section.locator('tr[data-testid="diff-line"]');
-	const boxTarget = lines.getByTestId("cluster-box-target");
-	const cross = lines.getByRole("button", { name: "Cross off cluster" });
+	// Stacked: the cross-off under the box, each a whole 40px target.
+	const boxTarget = first.getByTestId("cluster-box-target");
+	const cross = first.getByRole("button", { name: "Cross off cluster" });
+	const b = await boxTarget.boundingBox();
+	const c = await cross.boundingBox();
+	if (!b || !c) throw new Error("not rendered");
+	expect(c.y).toBeGreaterThanOrEqual(b.y + b.height - 0.5);
 	for (const target of [boxTarget, cross]) {
+		expect(await uncovered(target)).toEqual([]);
 		expect(await tapWidth(target)).toBeGreaterThanOrEqual(40);
 		expect(await tapHeight(target)).toBeGreaterThanOrEqual(40);
 	}
-	const b = await boxTarget.boundingBox();
-	if (!b) throw new Error("not rendered");
 	await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
-	await expect(
-		lines.getByRole("checkbox", { name: "Mark cluster reviewed" }),
-	).toBeChecked();
+	await expect(first.getByRole("checkbox")).toBeChecked();
 	// A tap on either number picks the line.
+	const row = section.locator('tr[data-testid="diff-line"][data-new-no="5"]');
 	await row.getByTestId("old").tap();
 	await expect(row).toHaveAttribute("data-picked", "true");
 	await page.keyboard.press("Escape");
@@ -452,6 +535,214 @@ test("a phone is cramped: a narrow leading block whose controls and numbers stil
 	await row.getByTestId("new").tap();
 	await expect(row).toHaveAttribute("data-picked", "true");
 	await expectNoPageOverflow(page);
+});
+
+/** Two one-line changes one context line apart: two short clusters. */
+const ADJ = "src/adj.ts";
+const adjBase = Array.from({ length: 12 }, (_, i) => `adj ${i + 1}`);
+const adjFixture: PrOptions = {
+	base: { [ADJ]: text(adjBase) },
+	files: [
+		{
+			message: "Adjacent",
+			files: {
+				[ADJ]: text(
+					adjBase.map((l, i) => (i === 3 || i === 5 ? `${l} changed` : l)),
+				),
+			},
+		},
+	],
+};
+
+/** Side by side: the box and the cross-off level, the cross-off right of it. */
+async function expectSideBySide(row: Locator) {
+	const b = await row.getByTestId("cluster-box-target").boundingBox();
+	const c = await row
+		.getByRole("button", { name: "Cross off cluster" })
+		.boundingBox();
+	if (!b || !c) throw new Error("not rendered");
+	expect(Math.abs(b.y - c.y)).toBeLessThan(1);
+	expect(c.x).toBeGreaterThanOrEqual(b.x + b.width - 0.5);
+}
+
+test("touch: two clusters one context line apart each keep a whole cross-off, and a tap crosses off its own", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	await pr(adjFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, ADJ);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const firsts = section.locator(
+		'tr[data-testid="diff-line"]:has([data-sticky-slot])',
+	);
+	await expect(firsts).toHaveCount(2);
+	const a = firsts.nth(0);
+	const b = firsts.nth(1);
+	await a.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const aCross = a.getByRole("button", { name: "Cross off cluster" });
+	const bCross = b.getByRole("button", { name: "Cross off cluster" });
+	for (const row of [a, b]) {
+		// Two rows each: too short to stack in, so side by side.
+		await expectSideBySide(row);
+		for (const target of [
+			row.getByTestId("cluster-box-target"),
+			row.getByRole("button", { name: "Cross off cluster" }),
+		]) {
+			expect(await uncovered(target)).toEqual([]);
+		}
+	}
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/gutter-${testInfo.project.name}-adjacent.png`,
+		});
+	}
+	// A tap low in A's cross-off's target crosses off A, never marks B.
+	const c = await aCross.boundingBox();
+	if (!c) throw new Error("not rendered");
+	await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height - 3);
+	await expect(aCross).toHaveAttribute("aria-pressed", "true");
+	await expect(bCross).toHaveAttribute("aria-pressed", "false");
+	await expect(b.getByRole("checkbox")).not.toBeChecked();
+	await expectNoPageOverflow(page);
+});
+
+test("touch: a thread opened on a cluster's first line leaves its cross-off whole", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	const p = await pr(tallFixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		// On the tall cluster's first line: it would stack if not for the card.
+		graph.reviewThreads = [
+			reviewThread({ path: TALL, line: 3, subjectType: "LINE" }, [
+				threadComment({
+					login: "ann",
+					text: "Why three?",
+					commit: head,
+					diffHunk: "",
+				}),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const first = section.locator('tr[data-testid="diff-line"][data-new-no="3"]');
+	await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await first.getByRole("button", { name: /1 comment on/ }).tap();
+	const card = section.getByTestId("thread-row");
+	await expect(card).toBeVisible();
+	await expectSideBySide(first);
+	const cross = first.getByRole("button", { name: "Cross off cluster" });
+	for (const target of [first.getByTestId("cluster-box-target"), cross]) {
+		expect(await uncovered(target)).toEqual([]);
+	}
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/gutter-${testInfo.project.name}-card.png`,
+		});
+	}
+	const c = await cross.boundingBox();
+	if (!c) throw new Error("not rendered");
+	await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height - 3);
+	await expect(cross).toHaveAttribute("aria-pressed", "true");
+});
+
+test("touch: a one-line cluster lays its controls side by side, each whole", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	await pr({
+		base: { [ADJ]: text(adjBase) },
+		files: [
+			{
+				message: "One line",
+				files: {
+					[ADJ]: text([
+						...adjBase.slice(0, 4),
+						"one new line",
+						...adjBase.slice(4, -1),
+						// A second cluster: crossing off the first doesn't finish the file.
+						"adj 12 changed",
+					]),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, ADJ);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const row = section.locator(
+		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="5"]',
+	);
+	await expect(row).toContainText("one new line");
+	await row.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await expectSideBySide(row);
+	const cross = row.getByRole("button", { name: "Cross off cluster" });
+	for (const target of [row.getByTestId("cluster-box-target"), cross]) {
+		expect(await uncovered(target)).toEqual([]);
+		expect(await tapWidth(target)).toBeGreaterThanOrEqual(40);
+		expect(await tapHeight(target)).toBeGreaterThanOrEqual(40);
+	}
+	const c = await cross.boundingBox();
+	if (!c) throw new Error("not rendered");
+	await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height - 3);
+	await expect(cross).toHaveAttribute("aria-pressed", "true");
+});
+
+test("touch: floating near its cluster's end, a stacked pair stays inside the cluster", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	await pr(tallFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, TALL);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const line = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const first = line(3);
+	const lastRow = line(42);
+	const controls = first.locator("[data-sticky-controls]");
+	const cross = first.getByRole("button", { name: "Cross off cluster" });
+	// The cluster's last row 50px below the file header: too little room
+	// left to float in, so the pair rides up with the cluster's end.
+	await expect
+		.poll(() =>
+			lastRow.evaluate((el) => {
+				const header = el.closest("section")?.querySelector("header");
+				const bottom = header?.getBoundingClientRect().bottom ?? 0;
+				const delta = el.getBoundingClientRect().top - (bottom + 50);
+				if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+				return Math.abs(delta);
+			}),
+		)
+		.toBeLessThan(1);
+	await expect(controls).toHaveAttribute("data-stuck", "end");
+	const end = await lastRow.boundingBox();
+	const c = await cross.boundingBox();
+	if (!end || !c) throw new Error("not rendered");
+	expect(c.y + c.height).toBeLessThanOrEqual(end.y + end.height + 0.5);
+	expect(await uncovered(cross)).toEqual([]);
 });
 
 /** A file whose gaps get two and three stacked arrows. */
@@ -542,14 +833,15 @@ test("a touch cluster's cross-off never covers the thread card under its line", 
 	await first.getByRole("button", { name: /1 comment on/ }).tap();
 	const card = section.getByTestId("thread-row");
 	await expect(card).toBeVisible();
-	// The cross-off reaches into the card's rows...
+	// The card starts below the cross-off's target (side by side here: a
+	// thread under the first line leaves no room to stack)...
 	const cross = await first
 		.getByRole("button", { name: "Cross off cluster" })
 		.boundingBox();
-	const box = await card.boundingBox();
+	const box = await card.locator("div.sticky").first().boundingBox();
 	if (!cross || !box) throw new Error("not rendered");
-	expect(cross.y + cross.height).toBeGreaterThan(box.y);
-	// ...but where they meet, the card is on top.
+	expect(box.y).toBeGreaterThanOrEqual(cross.y + cross.height - 0.5);
+	// ...and nothing of the controls is over it.
 	const under = await card.evaluate(
 		(el, c) => {
 			const out: string[] = [];
