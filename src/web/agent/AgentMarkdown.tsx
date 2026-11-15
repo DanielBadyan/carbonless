@@ -215,7 +215,7 @@ function useCitationLinks(
 		}
 		const onClick = (e: MouseEvent) => {
 			const link = (e.target as Element | null)?.closest<HTMLElement>("a");
-			if (!link || link.dataset.testid !== "agent-conversation-link") return;
+			if (link?.dataset.testid !== "agent-conversation-link") return;
 			if (e.button !== 0) return;
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 			e.preventDefault();
