@@ -94,6 +94,38 @@ describe("ThreadAgentButton", () => {
 		expect(screen.queryByRole("status")).toBeNull();
 	});
 
+	it("a drawer tab on the card's right edge in every state, never a header pill", async () => {
+		const tab = (el: HTMLElement) => {
+			expect(el.className).toContain("absolute");
+			expect(el.className).toContain("right-0");
+			expect(el.className).toContain("rounded-l-lg");
+			expect(el.className).toContain("border-r-0");
+			expect(el.className).not.toContain("rounded-full");
+		};
+		show({});
+		tab(screen.getByRole("button", { name: "Ask agent" }));
+		cleanup();
+		show({ conversation: conversation({ unread: true, seenUpTo: "m3" }) });
+		tab(screen.getByRole("button", { name: "4 agent messages, 1 new" }));
+		cleanup();
+		show({}, { threads: null });
+		tab(screen.getByTestId("thread-agent-loading"));
+		cleanup();
+		show(
+			{},
+			{
+				threads: null,
+				fetch: async () =>
+					new Response(JSON.stringify({ error: "broke" }), { status: 502 }),
+			},
+		);
+		tab(
+			await screen.findByRole("button", {
+				name: "Agent messages couldn't load",
+			}),
+		);
+	});
+
 	it("pressed state when open", () => {
 		show({ conversation: conversation(), open: true });
 		const button = screen.getByRole("button", {

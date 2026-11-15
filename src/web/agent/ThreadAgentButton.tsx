@@ -12,18 +12,31 @@ import {
 	useThreadAgentContext,
 } from "./threadAgent";
 
-/** The header's pill size: 40px tall on a phone and under a finger. */
-const PILL = "h-7 max-sm:h-10 pointer-coarse:h-10";
+/**
+ * The room a card keeps free on its right for the agent tab: the tab
+ * (32px; 40px on a phone and under a finger) and a 4-8px gap. The card's
+ * box that holds the tab is `relative` and has this right padding.
+ */
+export const AGENT_TAB_GUTTER = "pr-10 max-sm:pr-11 pointer-coarse:pr-11";
 
 /**
- * A thread card's agent button, beside its comment counter: a teal pill
- * with the sparkle and the number of messages in the thread's agent
- * conversation, an `accent` dot while one of the agent's is unseen; a
- * dashed sparkle ("Ask agent") before there is one. Pressed while the
- * conversation is open. A spinner in its place while the agent threads
- * load (never "Ask agent" that would then turn into a count); an alert in
- * `bad` when they couldn't be read, still pressable (it opens the panel
- * and reads them again). Absent on a
+ * The tab: a drawer opener on the card's right edge, flush with its
+ * border (rounded on the side facing the card only), near the top, where
+ * the conversation slides in from. At least 48px tall.
+ */
+const TAB =
+	"absolute top-2 right-0 flex min-h-12 w-8 shrink-0 flex-col items-center justify-center gap-0.5 rounded-l-lg border border-r-0 py-1.5 max-sm:w-10 pointer-coarse:w-10";
+
+/**
+ * A thread card's agent tab, a drawer opener on the card's right edge
+ * (the caller keeps AGENT_TAB_GUTTER free for it): the teal tab with the
+ * sparkle and the number of messages in the thread's agent conversation,
+ * an `accent` dot while one of the agent's is unseen; a dashed sparkle
+ * ("Ask agent") before there is one. Pressed while the conversation is
+ * open, the panel's handle at its right edge. A spinner in its place
+ * while the agent threads load (never "Ask agent" that would then turn
+ * into a count); an alert in `bad` when they couldn't be read, still
+ * pressable (it opens the panel and reads them again). Absent on a
  * thread with no id, a deleted one, and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
@@ -43,7 +56,7 @@ export function ThreadAgentButton(props: {
 			<span
 				data-testid="thread-agent-loading"
 				aria-busy="true"
-				className={`inline-flex min-w-10 items-center justify-center ${PILL}`}
+				className={`${TAB} border-line`}
 			>
 				<Spinner label="Loading agent messages" size={14} />
 			</span>
@@ -69,7 +82,7 @@ export function ThreadAgentButton(props: {
 							retry();
 							props.onToggle();
 						}}
-						className={`inline-flex min-w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-bad px-2 text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent ${PILL}`}
+						className={`${TAB} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent`}
 					>
 						<AlertIcon size={14} aria-hidden />
 					</button>
@@ -94,7 +107,7 @@ export function ThreadAgentButton(props: {
 					aria-label={name}
 					aria-pressed={open}
 					onClick={props.onToggle}
-					className={`relative inline-flex min-w-10 shrink-0 items-center justify-center gap-1 rounded-full border px-2 text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:outline-accent ${PILL} ${
+					className={`${TAB} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
 						conversation
 							? open
 								? "border-agent-ink bg-agent shadow-[inset_0_0_0_1px_var(--color-agent-ink)]"
@@ -112,7 +125,7 @@ export function ThreadAgentButton(props: {
 						<span
 							aria-hidden
 							data-testid="agent-unread-dot"
-							className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
+							className="absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
 						/>
 					)}
 				</button>

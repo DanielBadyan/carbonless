@@ -35,7 +35,10 @@ import type {
 	ReviewThread,
 	ThreadAnchorRef,
 } from "../../shared/types";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import {
+	AGENT_TAB_GUTTER,
+	ThreadAgentButton,
+} from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -502,7 +505,7 @@ export function UnplacedShell(props: {
 	movedTo?: string;
 	link?: ReactNode;
 	handle?: ReactNode;
-	/** The thread's agent button, beside the link. */
+	/** The thread's agent tab, on the row's right edge (kept free for it). */
 	agent?: ReactNode;
 	testId?: string;
 	children: ReactNode;
@@ -559,8 +562,9 @@ export function UnplacedShell(props: {
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
 			data-resolved={thread.resolved || undefined}
-			className="min-w-0 space-y-1.5 rounded-md border border-line bg-surface p-2"
+			className={`relative min-w-0 space-y-1.5 rounded-md border border-line bg-surface ${props.agent ? `py-2 pl-2 ${AGENT_TAB_GUTTER}` : "p-2"}`}
 		>
+			{props.agent}
 			<div className="flex min-h-10 min-w-0 items-center gap-2">
 				{props.handle}
 				<fate.icon
@@ -587,7 +591,6 @@ export function UnplacedShell(props: {
 					)}
 				</span>
 				{props.link}
-				{props.agent}
 				{thread.resolved && (
 					<Tooltip content="Collapse" describe={false}>
 						{(trigger) => (

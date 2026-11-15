@@ -50,7 +50,10 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import {
+	AGENT_TAB_GUTTER,
+	ThreadAgentButton,
+} from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -1768,14 +1771,6 @@ function ThreadItem({
 							tall={agent !== null}
 							onCounter={agent?.open ? agent.close : undefined}
 						/>
-						{agent && (
-							<ThreadAgentButton
-								thread={thread}
-								conversation={agent.conversation}
-								open={agent.open}
-								onToggle={agent.toggle}
-							/>
-						)}
 						{!thread.hasReply && !thread.resolved && (
 							<Badge tone="yellow" icon={ReplyIcon}>
 								no reply
@@ -1789,7 +1784,18 @@ function ThreadItem({
 						{thread.code && <SnapshotChip code={thread.code} />}
 					</div>
 				</div>
-				<div className="space-y-2 px-3 pt-1 pb-3">
+				<div
+					className={`relative space-y-2 pt-1 pb-3 pl-3 ${agent ? AGENT_TAB_GUTTER : "pr-3"}`}
+				>
+					{/* The agent's drawer opener, on the card's right edge. */}
+					{agent && (
+						<ThreadAgentButton
+							thread={thread}
+							conversation={agent.conversation}
+							open={agent.open}
+							onToggle={agent.toggle}
+						/>
+					)}
 					<ThreadPlace thread={thread} line={line} target={target} />
 					<ThreadFateLine thread={thread} />
 					{thread.code?.source === "pending" ? (

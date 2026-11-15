@@ -12,7 +12,9 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import type { Fate } from "../../shared/rereview/placement";
-import type { ReviewThread } from "../../shared/types";
+import type { PrOverview, ReviewThread } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
+import { overviewQuery } from "../api";
 import { NotInComparison } from "./NotInComparison";
 import {
 	ChangedSince,
@@ -508,6 +510,44 @@ describe("UnplacedRow", () => {
 		expect(top.textContent).toBe(sentence);
 		// One line on a phone: truncated, never wrapped.
 		expect(top.className).toContain("truncate");
+	});
+
+	it("its agent tab sits on the row's right edge, in a gutter kept free for it; none without an agent", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise(() => {})),
+		);
+		const client = new QueryClient();
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "on",
+		} as PrOverview);
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [] });
+		render(
+			<QueryClientProvider client={client}>
+				<PlacementProvider value={info()}>
+					<UnplacedRow thread={thread()} readId="r1" fate="deleted" />
+				</PlacementProvider>
+			</QueryClientProvider>,
+		);
+		const row = screen.getByTestId("unplaced-thread");
+		const tab = screen.getByRole("button", { name: "Ask agent" });
+		// A direct child of the row (not in its top line), the row `relative`.
+		expect(tab.parentElement).toBe(row);
+		expect(tab.className).toContain("right-0");
+		expect(row.className).toContain("relative");
+		expect(row.className).toContain("pr-10");
+		cleanup();
+		// No agent (no writes): no tab, no gutter.
+		render(
+			wrap(
+				info(),
+				<UnplacedRow thread={thread()} readId="r1" fate="deleted" />,
+			),
+		);
+		expect(screen.queryByRole("button", { name: "Ask agent" })).toBeNull();
+		expect(screen.getByTestId("unplaced-thread").className).not.toContain(
+			"pr-10",
+		);
 	});
 
 	it("moved? names where the line may have gone, as text", () => {

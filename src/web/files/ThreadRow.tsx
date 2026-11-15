@@ -13,7 +13,10 @@ import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { AgentUnplaced } from "../agent/AgentUnplaced";
 import { agentStatusQuery } from "../agent/api";
 import { useAgentPlacing } from "../agent/placeable";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import {
+	AGENT_TAB_GUTTER,
+	ThreadAgentButton,
+} from "../agent/ThreadAgentButton";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
@@ -90,14 +93,6 @@ export function ThreadBlock(props: {
 							tall={agent !== null}
 							onCounter={agent?.open ? agent.close : undefined}
 						/>
-						{agent && (
-							<ThreadAgentButton
-								thread={thread}
-								conversation={agent.conversation}
-								open={agent.open}
-								onToggle={agent.toggle}
-							/>
-						)}
 						{thread.outdated && (
 							<Badge tone="gray" icon={HistoryIcon}>
 								outdated
@@ -105,7 +100,18 @@ export function ThreadBlock(props: {
 						)}
 					</span>
 				</div>
-				<div className="space-y-2 p-2.5">
+				<div
+					className={`relative space-y-2 ${agent ? `py-2.5 pl-2.5 ${AGENT_TAB_GUTTER}` : "p-2.5"}`}
+				>
+					{/* The agent's drawer opener, on the card's right edge. */}
+					{agent && (
+						<ThreadAgentButton
+							thread={thread}
+							conversation={agent.conversation}
+							open={agent.open}
+							onToggle={agent.toggle}
+						/>
+					)}
 					{placement?.kind === "changed" && (
 						<ChangedSince thread={thread} placement={placement} />
 					)}
