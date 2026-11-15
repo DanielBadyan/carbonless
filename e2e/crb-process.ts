@@ -29,12 +29,12 @@ export const START_TIMEOUT_MS = 20_000;
 const STOP_GRACE_MS = 10_000;
 
 /**
- * How long a deadline that fired looks once more before it counts. A
- * loaded machine can freeze a test process for many seconds (swapped out);
- * when it runs again, its overdue timers fire before it reads what arrived
- * meanwhile (Node runs timers ahead of I/O), so a child that printed its
- * URL or exited in time would still miss its deadline. A few loop turns
- * read that I/O first.
+ * How long a deadline that fired waits before it counts. A loaded machine
+ * can freeze a test process for many seconds (swapped out), mid-callback;
+ * by the time it runs on, a deadline may be overdue while what would have
+ * beaten it (the child's output, its exit, the server's answer) has
+ * arrived but not yet been read. Waiting for the next turns of the loop
+ * reads it first. What matters is that wait, not its length.
  */
 const LATE_LOOK_MS = 100;
 

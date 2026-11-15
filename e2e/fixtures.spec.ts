@@ -18,7 +18,7 @@ import {
 	test,
 	watchConsoleErrors,
 } from "./fixtures";
-import { CLI, crbEnv } from "./pr-setup";
+import { crbEnv } from "./pr-setup";
 
 /**
  * The spans of trace `traceId` under `dir`. readRequests keeps every line
@@ -258,8 +258,11 @@ const alive = (pid: number) => {
 test("a crb serve that prints no URL in time is killed, not left running", async ({
 	workdir,
 }) => {
-	// 1 ms: no crb listens that soon, so the start timer fires.
-	const error = await startServe(workdir, [], crbEnv(workdir), CLI, 1).catch(
+	// A stand-in that stays up and never prints: the start timer fires,
+	// however fast a real crb would have started.
+	const cli = join(workdir, "silent-crb.cjs");
+	writeFileSync(cli, "setInterval(() => {}, 1000);\n");
+	const error = await startServe(workdir, [], crbEnv(workdir), cli, 1).catch(
 		(e: unknown) => e,
 	);
 	expect(error).toBeInstanceOf(CrbStartTimeout);
@@ -293,7 +296,7 @@ setInterval(() => {}, 1000);
 	// Frozen (as a swapped-out process is): no timer, no read, until the
 	// line is in the pipe and the deadline long past.
 	while (!existsSync(mark) || Date.now() < started + 1000) {
-		if (Date.now() > started + 60_000) throw new Error("no mark in 60 s");
+		if (Date.now() > started + 20_000) throw new Error("no mark in 20 s");
 	}
 	const result = await served;
 	expect(result).not.toBeInstanceOf(Error);
