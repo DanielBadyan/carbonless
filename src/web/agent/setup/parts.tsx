@@ -100,13 +100,11 @@ export function Step(props: {
 					/>
 				</button>
 			</h3>
-			<div
-				id={bodyId}
-				hidden={!opened}
-				className="flex min-w-0 flex-col gap-2.5"
-			>
-				{opened && props.children}
-			</div>
+			{opened && (
+				<div id={bodyId} className="flex min-w-0 flex-col gap-2.5">
+					{props.children}
+				</div>
+			)}
 		</section>
 	);
 }
