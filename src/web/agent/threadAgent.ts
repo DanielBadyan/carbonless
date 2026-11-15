@@ -1,7 +1,7 @@
 /**
  * The thread agent (CAR-120): one private agent conversation per GitHub
- * review thread, behind an agent button in the thread card's header and a
- * panel that slides over the thread's comments. Here: finding a thread's
+ * review thread, behind an agent handle at the right end of the thread
+ * card's bottom row (beside Resolve) and a panel that slides over the thread's comments. Here: finding a thread's
  * conversation, the card's open state (never stored: a reload shows
  * threads), the text typed to the agent (kept while the panel closes, and
  * counted as unsent by Resolve's close), the comparison a question is sent

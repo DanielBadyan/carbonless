@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { bumpHomePr, homePr, release } from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
@@ -1142,6 +1142,116 @@ test("a note sits under the title on one line; hover or a tap shows all of it", 
 	await expect(tip).toContainText("and tell Tomer");
 	expect(await tip.innerText()).toBe(`Note: ${note}`);
 	await expectNoPageOverflow(page);
+});
+
+/**
+ * Holds Home's reads (the view and every repo's rows) in the page until
+ * `release`, each answered then by the server with `edit` applied to a
+ * repo's rows. The server answers a plain re-read from its own cache inside
+ * refresh.minutes, without asking gh: a fake gh `hold` would never catch it.
+ */
+async function holdHomeReads(page: Page, edit: (title: string) => string) {
+	let release = () => {};
+	const gate = new Promise<void>((r) => {
+		release = r;
+	});
+	let seen = 0;
+	let asked = () => {};
+	const firstAsk = new Promise<void>((r) => {
+		asked = r;
+	});
+	const pattern = /\/api\/home(\/repos\/[^/]+\/[^/?]+)?(\?.*)?$/;
+	const handler = async (route: Route) => {
+		seen++;
+		asked();
+		await gate;
+		// A read the page dropped meanwhile has nobody to answer.
+		try {
+			const answer = await route.fetch();
+			const body = await answer.json();
+			if (Array.isArray(body.rows)) {
+				for (const row of body.rows) row.title = edit(row.title);
+			}
+			await route.fulfill({ response: answer, json: body });
+		} catch {
+			// Dropped: nothing to do.
+		}
+	};
+	await page.route(pattern, handler);
+	return {
+		asked: firstAsk,
+		seen: () => seen,
+		release: async () => {
+			await page.unroute(pattern, handler);
+			release();
+		},
+	};
+}
+
+test("back on Home from a PR, its rows show at once while they refresh, by Back and by the Home link", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	await setup(workdir, pr, { widgetInView: true });
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const mine = section(page, "Mine");
+	const loading = page.getByRole("status", { name: "Loading" });
+	// A section's own spinner (the busy slot's says "Loading…").
+	const skeletons = page.getByRole("img", { name: "Loading", exact: true });
+	const openWidget = async () => {
+		await expect(loading).toBeHidden();
+		await page.getByRole("link", { name: /Add widget cache/ }).click();
+		await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+		await expect(
+			page.getByRole("link", { name: "Files changed" }),
+		).toBeVisible();
+	};
+	const backHome = async (
+		go: () => Promise<unknown>,
+		was: string,
+		now: string,
+	) => {
+		const reads = await holdHomeReads(page, (t) =>
+			t.replace("Snooze PRs", now),
+		);
+		await go();
+		await expect(page).toHaveURL(home(crb.url));
+		// The last visit's rows, at once, while their re-reads are held:
+		// the busy spinner, no section waiting.
+		await expect(mine.getByText(was)).toBeVisible();
+		await expect(loading).toBeVisible();
+		await reads.asked;
+		await expect(skeletons).toHaveCount(0);
+		await expect(mine.getByText(was)).toBeVisible();
+		await reads.release();
+		// The re-read's answer, in place.
+		await expect(mine.getByText(now)).toBeVisible();
+		await expect(loading).toBeHidden();
+		expect(reads.seen()).toBeGreaterThan(0);
+	};
+
+	await openWidget();
+	await backHome(() => page.goBack(), "Snooze PRs", "Snooze (v2) PRs");
+
+	await openWidget();
+	await backHome(
+		() => page.getByRole("link", { name: "Home" }).first().click(),
+		"Snooze (v2) PRs",
+		"Snooze (v3) PRs",
+	);
+
+	// A reload starts from nothing: the sections wait, then the rows come.
+	const reads = await holdHomeReads(page, (t) => t);
+	await page.reload();
+	await expect(
+		mine.getByRole("img", { name: "Loading", exact: true }),
+	).toBeVisible();
+	await expect(mine.getByText("Snooze PRs")).toHaveCount(0);
+	await reads.release();
+	await expect(mine.getByText("Snooze PRs from the inbox")).toBeVisible();
 });
 
 test("a failed refresh shows the warning and keeps the rows", async ({

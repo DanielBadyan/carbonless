@@ -18,7 +18,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars. The file tree's resize handle is a `line` rule, `line-strong` under the pointer and `accent` (2px) while focused or dragged |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
-| `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; never a state |
+| `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill, handle or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; never a state |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
@@ -580,20 +580,32 @@ config). Answering:
   dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links
   to the first agent thread with an unseen message.
 - **The thread agent** (`ThreadAgentButton`, `ThreadAgentPanel`): each
-  GitHub thread card's header has, beside the comment counter, a teal pill
-  (`agent` inside `agent-edge`, `agent-ink` sparkle and count of messages);
-  a dashed sparkle ("Ask agent") before a conversation exists; a spinner in
-  its place while the agent threads load. An `accent` dot on the pill (and
-  in the file tree, on a file and its folders) is an unseen agent message:
-  unread, never a state. Pressed, the conversation slides in from the right
-  over the comments (250 ms `transform`, none under reduced motion), leaving
-  their 40px avatar column as a strip that brings the thread back, as do the
-  counter and the pill; the card header and the composer row stay
-  uncovered. The composer's "Reply…" crossfades to "Ask agent…" (an
-  `agent-edge` box, the sparkle to send). A "new" rule in `accent` sits
-  above the first unseen agent message. An answer suggesting a resolve gets
-  "Resolve By Agent Suggestion" (`ok`) inside it, as its last part, and an `ok` ring on Resolve;
-  only a press resolves. 40px tall on a phone (pill and counter).
+  GitHub thread card ends its bottom row with the agent's handle, right
+  after Resolve, under the edge the conversation slides in from: the
+  sparkle and the count of messages (`agent` inside `agent-edge`,
+  `agent-ink`), rounded on the left with a 4px right edge (the drawer's
+  side), Resolve's 40px height; a dashed sparkle on a light `agent` wash
+  ("Ask agent") before a conversation exists; a spinner in its place while
+  the agent threads load. While a card's actions row is closed (an
+  Overview card or unplaced row not expanded), the handle sits at the right
+  end of the Show more row, the toggle kept centred in equal columns; with
+  no such row, alone at the card's bottom right. On a phone too the closed
+  reply box shares the line with Resolve and the handle, narrow, its hint
+  clipped inside it; tapped, it takes the line. The thread
+  keeps its full width: nothing is reserved for the handle. An `accent`
+  dot on the handle's top-left (and in the file tree, on a file and its
+  folders) is an unseen agent message: unread, never a state. Pressed, the
+  conversation slides in from the right over the comments (250 ms
+  `transform`, none under reduced motion), leaving their 40px avatar
+  column as a strip that brings the thread back, as do the header's
+  comment counter and the handle (pressed while open: the drawer's
+  handle); the card header and the composer row stay uncovered. The
+  composer's "Reply…" crossfades to "Ask agent…" (an `agent-edge` box, the
+  sparkle to send). A "new" rule in `accent` sits above the first unseen
+  agent message. An answer suggesting a resolve gets "Resolve By Agent
+  Suggestion" (`ok`) inside it, as its last part, and an `ok` ring on
+  Resolve; only a press resolves. 40px tall everywhere (the handle, and on
+  a phone the counter).
 
 ## Final Verdict
 

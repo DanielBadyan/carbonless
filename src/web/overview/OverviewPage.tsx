@@ -51,7 +51,7 @@ import {
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
 import { requestConversationOpen } from "../agent/conversationLinks";
-import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
@@ -88,6 +88,7 @@ import {
 	useCommentWrite,
 } from "../threads/CommentEdit";
 import {
+	AgentHandleRow,
 	COMMENT_SURFACE,
 	commentSurface,
 	ThreadActions,
@@ -1683,6 +1684,8 @@ function ThreadItem({
 	) : (
 		commentCell
 	);
+	// The composer row: never under the agent's panel.
+	const actions = (open || agent?.open === true) && !thread.unavailable;
 	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
@@ -1781,14 +1784,6 @@ function ThreadItem({
 							tall={agent !== null}
 							onCounter={agent?.open ? agent.close : undefined}
 						/>
-						{agent && (
-							<ThreadAgentButton
-								thread={thread}
-								conversation={agent.conversation}
-								open={agent.open}
-								onToggle={agent.toggle}
-							/>
-						)}
 						{!thread.hasReply && !thread.resolved && (
 							<Badge tone="yellow" icon={ReplyIcon}>
 								no reply
@@ -1838,13 +1833,13 @@ function ThreadItem({
 					)}
 					{/* No agent: the replies under the whole card, as they were. */}
 					{!agent && repliesEl}
-					{/* The composer row: never under the agent's panel. */}
-					{(open || agent?.open) && !thread.unavailable && (
-						<ThreadActions thread={thread} onToggle={onToggle} />
-					)}
+					{actions && <ThreadActions thread={thread} onToggle={onToggle} />}
+					{/* The agent's handle at the bottom, while the actions row is closed. */}
+					{agent && !actions && !more && <AgentHandleRow />}
 					{more && (
-						// Its own row, centred under the card.
-						<div data-testid="thread-more-row" className="flex justify-center">
+						// Its own row, centred under the card; the agent's handle at its
+						// right end while the actions row is closed.
+						<CentredWithHandle testId="thread-more-row" handle={!actions}>
 							<MoreToggle
 								open={open}
 								onClick={() => setOpen((o) => !o)}
@@ -1858,7 +1853,7 @@ function ThreadItem({
 								replies={replies}
 								kind={kind}
 							/>
-						</div>
+						</CentredWithHandle>
 					)}
 				</div>
 			</li>

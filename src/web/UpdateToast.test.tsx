@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateInfo } from "../shared/update";
@@ -34,6 +41,8 @@ const OFFER: UpdateInfo = {
 	channel: "latest",
 	install: "npm",
 	byHand: false,
+	byHandReason: null,
+	byHandManager: null,
 	lastChecked: "2026-11-12T10:00:00.000Z",
 	checkError: null,
 	checksOff: null,
@@ -166,6 +175,55 @@ describe("UpdateToast", () => {
 			OFFER.command,
 		);
 		expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+	});
+
+	it("crb can't update itself: why, in one line, with the FAQ section on setting it up; the command stays", async () => {
+		const FAQ =
+			"https://github.com/Gilthans/carbonless/blob/master/docs/faq.md";
+		const cases: [Partial<UpdateInfo>, string, string][] = [
+			[
+				{ byHandReason: "no-install" },
+				"No auto-update: not an npm/pnpm global install",
+				"not-an-npm-or-pnpm-global-install",
+			],
+			[
+				{ byHandReason: "not-writable" },
+				"No auto-update: installed in a folder crb can't write",
+				"installed-in-a-folder-crb-cant-write",
+			],
+			[
+				{ byHandReason: "service", byHandManager: "systemd (crb.service)" },
+				"No auto-update: systemd won't restart crb",
+				"systemd-wont-restart-crb",
+			],
+			[
+				{ byHandReason: "service", byHandManager: "PID 1" },
+				"No auto-update: crb is PID 1, nothing restarts it",
+				"crb-is-a-containers-pid-1",
+			],
+		];
+		for (const [over, text, anchor] of cases) {
+			serve({
+				info: () => ({ ...OFFER, oneClick: false, byHand: true, ...over }),
+			});
+			show();
+			const t = await toast();
+			expect(within(t).getByTestId("update-by-hand")).toHaveTextContent(text);
+			expect(
+				within(t).getByRole("link", { name: "How to set up updates" }),
+			).toHaveAttribute("href", `${FAQ}#${anchor}`);
+			expect(within(t).getByTestId("update-command")).toHaveTextContent(
+				OFFER.command ?? "",
+			);
+			expect(within(t).queryByRole("button", { name: "Update" })).toBeNull();
+			cleanup();
+			vi.unstubAllGlobals();
+		}
+		// One click: no reason, no link.
+		serve({ info: () => OFFER });
+		show();
+		await toast();
+		expect(screen.queryByTestId("update-by-hand")).toBeNull();
 	});
 
 	it("Copy command says Copied, or Copy failed with the command selected (CAR-121)", async () => {

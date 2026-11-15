@@ -12,7 +12,9 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import type { Fate } from "../../shared/rereview/placement";
-import type { ReviewThread } from "../../shared/types";
+import type { PrOverview, ReviewThread } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
+import { overviewQuery } from "../api";
 import { NotInComparison } from "./NotInComparison";
 import {
 	ChangedSince,
@@ -538,6 +540,46 @@ describe("UnplacedRow", () => {
 			expect(line.querySelector(".truncate")).toBeTruthy();
 		},
 	);
+
+	it("its agent handle sits in the row's bottom line, no width kept for it; none without an agent", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise(() => {})),
+		);
+		const client = new QueryClient();
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "on",
+		} as PrOverview);
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [] });
+		render(
+			<QueryClientProvider client={client}>
+				<PlacementProvider value={info()}>
+					<UnplacedRow thread={thread()} readId="r1" fate="deleted" />
+				</PlacementProvider>
+			</QueryClientProvider>,
+		);
+		const row = screen.getByTestId("unplaced-thread");
+		const tab = screen.getByRole("button", { name: "Ask agent" });
+		// In the row's last line, never its top line.
+		expect(row.lastElementChild?.contains(tab)).toBe(true);
+		expect(
+			screen
+				.getByTestId("unplaced-fate")
+				.parentElement?.parentElement?.contains(tab),
+		).toBe(false);
+		// The row as without an agent: its own padding, no gutter.
+		expect(row.className).toContain("p-2");
+		expect(row.className).not.toMatch(/\bpr-\d/);
+		cleanup();
+		// No agent (no writes): no handle.
+		render(
+			wrap(
+				info(),
+				<UnplacedRow thread={thread()} readId="r1" fate="deleted" />,
+			),
+		);
+		expect(screen.queryByRole("button", { name: "Ask agent" })).toBeNull();
+	});
 
 	it("moved? names where the line may have gone, as text", () => {
 		render(

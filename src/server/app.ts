@@ -138,6 +138,8 @@ const noUpdate = (): UpdateInfo => ({
 	channel: channelOf(BUILD.version),
 	install: null,
 	byHand: false,
+	byHandReason: null,
+	byHandManager: null,
 	lastChecked: null,
 	checkError: null,
 	checksOff: "unavailable",
@@ -887,7 +889,9 @@ export async function buildApp(
 				return { ok: true };
 			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());
-			review.get("/head", (request) => sessionOf(request).checkHead());
+			review.get("/head", (request) =>
+				sessionOf(request).checkHead({ reuseOpen: true }),
+			);
 		},
 		{ prefix: "/api/r/:id" },
 	);

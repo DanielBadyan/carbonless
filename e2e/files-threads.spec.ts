@@ -359,6 +359,19 @@ test("a thread with no commit of its own sits on GitHub's line; an outdated one 
 	await expect(outdated.getByTestId("unplaced-fate")).toHaveText(
 		"GitHub marks the commented line outdated",
 	);
+	// Its agent handle at the row's bottom right (the Show more row's end),
+	// clear of the opener above it, a finger's size.
+	const handle = outdated.getByTestId("thread-agent-button");
+	await expect(handle).toBeVisible();
+	const h = await handle.boundingBox();
+	const opener = await outdated.getByTestId("unplaced-opener").boundingBox();
+	const rowBox = await outdated.boundingBox();
+	if (!h || !opener || !rowBox) throw new Error("not laid out");
+	expect(h.y).toBeGreaterThanOrEqual(opener.y + opener.height);
+	expect(rowBox.x + rowBox.width - (h.x + h.width)).toBeLessThanOrEqual(12);
+	expect(rowBox.y + rowBox.height - (h.y + h.height)).toBeLessThanOrEqual(12);
+	expect(h.height).toBeGreaterThanOrEqual(40);
+	expect(h.width).toBeGreaterThanOrEqual(40);
 	await bubble.click();
 	const card = section
 		.getByTestId("files-thread")

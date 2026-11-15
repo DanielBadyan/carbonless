@@ -175,7 +175,7 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	expect(storedReplies(p, "Kept on purpose")).toBe(1);
 });
 
-test("a short card's toggle says Reply; on a phone the closed box and Resolve share a line", async ({
+test("a short card's toggle says Reply; on a phone the closed box, Resolve and the agent handle share a line", async ({
 	page,
 	pr,
 	startCrb,
@@ -206,11 +206,32 @@ test("a short card's toggle says Reply; on a phone the closed box and Resolve sh
 		if (!b) throw new Error("not laid out");
 		return b;
 	};
-	// Closed and empty: one line, Resolve beside it (desktop and phone).
+	// Closed and empty: one line on a desktop and a phone alike, Resolve
+	// and the agent's handle beside the box (narrow on a phone), its hint
+	// clipped inside it, never under the send button.
 	let b = await rect(box);
 	let r = await rect(resolve);
+	const handle = await rect(c.getByTestId("thread-agent-button"));
+	const closedWidth = b.width;
 	expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
 	expect(Math.abs(r.y + r.height - (b.y + b.height))).toBeLessThanOrEqual(2);
+	expect(handle.x).toBeGreaterThanOrEqual(r.x + r.width);
+	expect(
+		Math.abs(handle.y + handle.height - (r.y + r.height)),
+	).toBeLessThanOrEqual(2);
+	expect(handle.height).toBeGreaterThanOrEqual(40);
+	expect(handle.width).toBeGreaterThanOrEqual(40);
+	const hint = await c.getByText("Reply…", { exact: true }).evaluate((el) => {
+		const clip = el.parentElement;
+		if (!clip) throw new Error("no hint box");
+		const box = clip.getBoundingClientRect();
+		return {
+			right: box.right,
+			clipped: getComputedStyle(clip).overflow === "hidden",
+		};
+	});
+	expect(hint.clipped).toBe(true);
+	expect(hint.right).toBeLessThanOrEqual(b.x + b.width);
 	expect(r.height).toBeGreaterThanOrEqual(40);
 	expect((await rect(send(c))).height).toBeGreaterThanOrEqual(40);
 	const overflow = () =>
@@ -226,6 +247,8 @@ test("a short card's toggle says Reply; on a phone the closed box and Resolve sh
 	r = await rect(resolve);
 	if (isMobile) {
 		expect(r.y).toBeGreaterThanOrEqual(b.y + b.height);
+		// Tapped, the narrow box widens to the line.
+		expect(b.width).toBeGreaterThan(closedWidth);
 	} else {
 		expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
 	}

@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread } from "../../shared/types";
@@ -92,6 +98,46 @@ describe("ThreadAgentButton", () => {
 		show({ thread }, { writes });
 		expect(screen.queryByRole("button")).toBeNull();
 		expect(screen.queryByRole("status")).toBeNull();
+	});
+
+	it("a drawer handle (its right edge the drawer's side), Resolve's height, in every state; never a header pill", async () => {
+		const handle = (el: HTMLElement) => {
+			expect(el.className).toContain("h-10");
+			expect(el.className).toContain("min-w-10");
+			expect(el.className).toContain("rounded-l-lg");
+			expect(el.className).toContain("border-r-4");
+			expect(el.className).not.toContain("absolute");
+			expect(el.className).not.toContain("rounded-full");
+		};
+		show({});
+		handle(screen.getByRole("button", { name: "Ask agent" }));
+		cleanup();
+		show({ conversation: conversation({ unread: true, seenUpTo: "m3" }) });
+		handle(screen.getByRole("button", { name: "4 agent messages, 1 new" }));
+		cleanup();
+		show({}, { threads: null });
+		handle(screen.getByTestId("thread-agent-loading"));
+		cleanup();
+		show(
+			{},
+			{
+				threads: null,
+				fetch: async () =>
+					new Response(JSON.stringify({ error: "broke" }), { status: 502 }),
+			},
+		);
+		handle(
+			await screen.findByRole("button", {
+				name: "Agent messages couldn't load",
+			}),
+		);
+	});
+
+	it("a press keeps the focus where it is (the composer beside it would fold and move it away)", () => {
+		show({ conversation: conversation() });
+		const button = screen.getByRole("button", { name: "4 agent messages" });
+		// fireEvent returns false when the default (taking the focus) was prevented.
+		expect(fireEvent.mouseDown(button)).toBe(false);
 	});
 
 	it("pressed state when open", () => {
