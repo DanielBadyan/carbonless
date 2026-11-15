@@ -107,7 +107,7 @@ const NO_THREADS: ReviewThread[] = [];
 const NO_AGENT_THREADS: AgentThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
-import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
+import { STALE_MESSAGE, useReviewView, useSyncStale } from "./useSetStates";
 import { useViewShortcuts } from "./viewShortcuts";
 
 /**
@@ -622,7 +622,7 @@ export function FilesPage() {
 		if (!eyesOnly || !byFile) return ordered;
 		return ordered.filter((f) => eyesOf(f, byFile.get(f.index)) !== "carried");
 	}, [data, eyesOnly, byFile]);
-	const { stale } = useSyncState();
+	const stale = useSyncStale();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();

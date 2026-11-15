@@ -19,6 +19,7 @@ import type { RepoHome } from "../../shared/home";
 import { composeSections } from "../../shared/homeSections";
 import { Logo } from "../brand/Brand";
 import { RelativeTime } from "../RelativeTime";
+import { Settings } from "../Settings";
 import { useOpenShortcutsHelp } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
@@ -227,7 +228,6 @@ export function HomePage() {
 			: undefined;
 	const sections = composeSections(
 		repos.flatMap(({ query }) => query.data?.rows ?? []),
-		data?.viewer.login ?? "",
 	);
 	useEffect(() => {
 		document.title = "carbonless";
@@ -284,6 +284,7 @@ export function HomePage() {
 								</button>
 							)}
 						</Tooltip>
+						<Settings review={false} />
 					</div>
 				</div>
 			</header>

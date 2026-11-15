@@ -7,6 +7,7 @@ import type {
 	Snapshot,
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
+import { BlobCache } from "./blobCache.js";
 import { buildAllClusters } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
@@ -20,19 +21,19 @@ import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
 
-const MAX_CACHED_BLOBS = 200;
+/**
+ * The blob cache's cap. A snapshot reads every changed text file's old and
+ * new blob, and the Files page reads them again per file. Measured working
+ * sets (distinct blobs of the three-dot diff, summed): a 49-file real PR
+ * 0.6 MiB (72 blobs); this repo's largest merged PRs, 194 to 237 files,
+ * 5.7 to 6.5 MiB (304 to 377 blobs, more than the old 200-entry limit
+ * held). 32 MiB keeps about five of the largest at once (a re-review reads
+ * two snapshots; the server keeps several reviews open), and bounds the
+ * always-on server whatever the files' sizes.
+ */
+export const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
 
-/** Blob contents by OID, least recently used first. */
-const blobCache = new Map<string, Buffer>();
-
-function remember(oid: string, bytes: Buffer): void {
-	blobCache.delete(oid);
-	blobCache.set(oid, bytes);
-	while (blobCache.size > MAX_CACHED_BLOBS) {
-		const oldest = blobCache.keys().next().value as string;
-		blobCache.delete(oldest);
-	}
-}
+const blobCache = new BlobCache(BLOB_CACHE_BYTES);
 
 const MAX_CACHED_HEADINGS = 8;
 
@@ -51,6 +52,16 @@ export const HEADING_WAIT_MS = 500;
  * (they are a reading aid), never a run per file open.
  */
 const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
+
+/**
+ * Empties the blob and heading caches, as a fresh process has them (the
+ * test hook's reset): tests' fixture repos share blob ids, so a warm cache
+ * would hide a first open's cost from the next test.
+ */
+export function clearSnapshotCaches(): void {
+	blobCache.clear();
+	headingRuns.clear();
+}
 
 function snapshotHeadings(
 	repo: string,
@@ -89,10 +100,7 @@ export async function readBlobs(
 	const result = new Map<string, Buffer>();
 	const missing = [...new Set(oids)].filter((oid) => {
 		const cached = blobCache.get(oid);
-		if (cached) {
-			remember(oid, cached);
-			result.set(oid, cached);
-		}
+		if (cached) result.set(oid, cached);
 		return !cached;
 	});
 	if (missing.length === 0) return result;
@@ -109,8 +117,15 @@ export async function readBlobs(
 		}
 		const start = eol + 1;
 		const end = start + Number(match[3]);
-		const bytes = Buffer.from(out.subarray(start, end));
-		remember(oid, bytes);
+		// A short read would leave allocUnsafeSlow's bytes uninitialized.
+		if (end > out.length) {
+			throw new GitError(`Could not read blob ${oid}: output cut short`);
+		}
+		// Its own allocation: a slice of Node's shared pool (Buffer.from of a
+		// small blob) would pin the whole 64 KiB slab while cached.
+		const bytes = Buffer.allocUnsafeSlow(end - start);
+		out.copy(bytes, 0, start, end);
+		blobCache.set(oid, bytes);
 		result.set(oid, bytes);
 		pos = end + 1;
 	}

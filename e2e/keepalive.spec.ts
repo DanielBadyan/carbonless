@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
-import { expect, PR_NUMBER, type Pr, type PrOptions, test } from "./fixtures";
+import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
  * Switching pages and back (tabs, browser back/forward) finds each page as
@@ -43,9 +43,9 @@ const fixture: PrOptions = {
 
 /**
  * The bot's thread on b/long.ts line 3, written on the PR's head: placed on
- * its line from the start. (Without a commit it can't be traced, and the
- * placements' late answer moves it into the file's header list: 654 px above
- * the reader, which scroll anchoring makes a change of scrollY.)
+ * its line from the start. (A thread the placements' late answer moves,
+ * e.g. into the file's header list, shifts the page: 654 px above the
+ * reader, which scroll anchoring makes a change of scrollY.)
  */
 const botThread = (commit: string) =>
 	reviewThread({ path: "b/long.ts", line: 3 }, [
@@ -68,7 +68,7 @@ async function openPr(pr: (o: PrOptions) => Promise<Pr>) {
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[PR_NUMBER]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [botThread(head)];
 	});
