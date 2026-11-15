@@ -18,7 +18,6 @@ import { ThreadActions } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
-import { ThreadAgentButton } from "./ThreadAgentButton";
 import { AgentCover } from "./ThreadAgentPanel";
 import {
 	resetAgentDrafts,
@@ -80,14 +79,6 @@ function Card(props: { thread: ReviewThread }) {
 						thread={thread}
 						onCounter={agent?.open ? agent.close : undefined}
 					/>
-					{agent && (
-						<ThreadAgentButton
-							thread={thread}
-							conversation={agent.conversation}
-							open={agent.open}
-							onToggle={agent.toggle}
-						/>
-					)}
 				</header>
 				<AgentCover>
 					<p data-testid="comments">The thread's comments</p>

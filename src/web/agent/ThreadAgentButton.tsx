@@ -1,4 +1,5 @@
 import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
+import type { MouseEvent, ReactNode } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
@@ -12,27 +13,46 @@ import {
 	useThreadAgentContext,
 } from "./threadAgent";
 
-/** The header's pill size: 40px tall on a phone and under a finger. */
-const PILL = "h-7 max-sm:h-10 pointer-coarse:h-10";
+/**
+ * The handle: a drawer pull at the right end of the thread's bottom row
+ * (beside Resolve), where the conversation slides in from; its right
+ * side a thick edge, the side the drawer comes out of. As tall as
+ * Resolve: 40px, and at least 40px wide.
+ */
+const HANDLE =
+	"flex h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-l-lg rounded-r-sm border border-r-4 px-2";
 
 /**
- * A thread card's agent button, beside its comment counter: a teal pill
- * with the sparkle and the number of messages in the thread's agent
- * conversation, an `accent` dot while one of the agent's is unseen; a
- * dashed sparkle ("Ask agent") before there is one. Pressed while the
- * conversation is open. A spinner in its place while the agent threads
- * load (never "Ask agent" that would then turn into a count); an alert in
+ * A press leaves the focus where it is: beside the composer, taking it
+ * would fold the box (it closes on blur) and move the handle out from
+ * under the pointer before the click lands. The toggle then puts the
+ * focus where it belongs (the composer, or the handle).
+ */
+const keepFocus = (e: MouseEvent) => e.preventDefault();
+
+/**
+ * A thread card's agent handle, at the right end of its bottom row
+ * (ThreadActions, beside Resolve; the Show more row where that row is
+ * closed): the teal handle with the sparkle and the number of messages
+ * in the thread's agent conversation, an `accent` dot while one of the
+ * agent's is unseen; a dashed sparkle on a light wash ("Ask agent")
+ * before there is one. Pressed while the conversation is open: the
+ * panel's handle. A spinner in its place while the agent threads load
+ * (never "Ask agent" that would then turn into a count); an alert in
  * `bad` when they couldn't be read, still pressable (it opens the panel
- * and reads them again). Absent on a
- * thread with no id, a deleted one, and where the session doesn't write.
+ * and reads them again). Absent on a thread with no id, a deleted one,
+ * and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
 	thread: ReviewThread;
 	conversation: AgentThread | undefined;
 	open: boolean;
 	onToggle: () => void;
+	/** Its positioning (default `relative`; e.g. pinned to the right of the Show more row). */
+	className?: string;
 }) {
 	const { conversation, open } = props;
+	const handle = `${HANDLE} ${props.className ?? "relative"}`;
 	const on = useAgentOn();
 	const loading = useAgentThreadsLoading();
 	const { failed, retry } = useAgentThreadsFailed();
@@ -43,7 +63,7 @@ export function ThreadAgentButton(props: {
 			<span
 				data-testid="thread-agent-loading"
 				aria-busy="true"
-				className={`inline-flex min-w-10 items-center justify-center ${PILL}`}
+				className={`${handle} border-line`}
 			>
 				<Spinner label="Loading agent messages" size={14} />
 			</span>
@@ -65,11 +85,12 @@ export function ThreadAgentButton(props: {
 						data-failed="true"
 						aria-label={failedName}
 						aria-pressed={open}
+						onMouseDown={keepFocus}
 						onClick={() => {
 							retry();
 							props.onToggle();
 						}}
-						className={`inline-flex min-w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-bad px-2 text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent ${PILL}`}
+						className={`${handle} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent`}
 					>
 						<AlertIcon size={14} aria-hidden />
 					</button>
@@ -93,15 +114,16 @@ export function ThreadAgentButton(props: {
 					data-testid="thread-agent-button"
 					aria-label={name}
 					aria-pressed={open}
+					onMouseDown={keepFocus}
 					onClick={props.onToggle}
-					className={`relative inline-flex min-w-10 shrink-0 items-center justify-center gap-1 rounded-full border px-2 text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:outline-accent ${PILL} ${
+					className={`${handle} text-xs font-semibold text-agent-ink focus-visible:outline-2 focus-visible:outline-accent ${
 						conversation
 							? open
 								? "border-agent-ink bg-agent shadow-[inset_0_0_0_1px_var(--color-agent-ink)]"
 								: "border-agent-edge bg-agent hover:border-agent-ink"
 							: open
 								? "border-dashed border-agent-ink bg-agent"
-								: "border-dashed border-agent-edge hover:border-agent-ink hover:bg-agent"
+								: "border-dashed border-agent-edge bg-agent/60 hover:border-agent-ink hover:bg-agent"
 					}`}
 				>
 					<SparkleFillIcon size={14} aria-hidden />
@@ -112,11 +134,71 @@ export function ThreadAgentButton(props: {
 						<span
 							aria-hidden
 							data-testid="agent-unread-dot"
-							className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
+							className="absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
 						/>
 					)}
 				</button>
 			)}
 		</Tooltip>
+	);
+}
+
+/**
+ * The thread's agent handle from its ThreadAgentContext (the card's
+ * bottom row); nothing without an agent.
+ */
+export function AgentHandle(props: { className?: string }) {
+	const agent = useThreadAgentContext();
+	if (!agent) return null;
+	return (
+		<ThreadAgentButton
+			thread={agent.thread}
+			conversation={agent.conversation}
+			open={agent.open}
+			onToggle={agent.toggle}
+			className={props.className}
+		/>
+	);
+}
+
+/**
+ * A row centred under the card (the Show more toggle) with the agent's
+ * handle at its right end while `handle`: with an agent, three columns,
+ * the outer two equal while there is room, so the toggle stays centred;
+ * when tight the left one gives way first, the right one never below the
+ * handle's width, so the toggle never runs under it. The
+ * columns stay while the handle is elsewhere, so the toggle is never
+ * remounted (its focus kept). Both sit on the row's bottom, the handle
+ * sunk as the toggle is (`-mb-2`), so neither rises into what is above.
+ */
+export function CentredWithHandle(props: {
+	/** Show the handle here (the card's actions row is closed). */
+	handle: boolean;
+	testId?: string;
+	children: ReactNode;
+}) {
+	const agent = useThreadAgentContext();
+	if (!agent) {
+		return (
+			<div data-testid={props.testId} className="flex justify-center">
+				{props.children}
+			</div>
+		);
+	}
+	return (
+		<div
+			data-testid={props.testId}
+			// The right column never narrower than the handle (a bare 1fr
+			// resolved under it, and the handle ran into the toggle); the
+			// toggle's column gives way last, wrapping its words if it must.
+			className="grid grid-cols-[1fr_minmax(0,auto)_minmax(max-content,1fr)] items-end gap-2"
+		>
+			<div className="col-start-2 flex min-w-0 justify-center">
+				{props.children}
+			</div>
+			{props.handle && (
+				<AgentHandle className="relative col-start-3 -mb-2 justify-self-end" />
+			)}
+		</div>
 	);
 }

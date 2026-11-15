@@ -15,8 +15,8 @@ test.use({ crbServer: "own" });
 
 /**
  * The thread agent (CAR-120): a private agent conversation per GitHub
- * thread, behind the agent button in the thread card's header, sliding
- * over the thread's comments. Against the fake ACP agent and the fake gh,
+ * thread, behind the agent handle at the thread card's bottom right (CAR-162),
+ * sliding over the thread's comments. Against the fake ACP agent and the fake gh,
  * on the Overview and in Files changed, desktop and phone. One GitHub
  * thread by rev1 on src/calc.ts's line 3, open, no reply.
  */
@@ -486,7 +486,7 @@ test("no horizontal page scroll at 360px with the panel open", async ({
 		"A long line",
 	);
 	await expectNoPageOverflow(page);
-	// The header's agent button and comment counter: 40px tall at this width.
+	// The agent handle and the header's comment counter: 40px tall at this width.
 	for (const el of [agentButton(card), card.getByTestId("thread-counter")]) {
 		expect((await el.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
 	}
@@ -499,4 +499,220 @@ test("no horizontal page scroll at 360px with the panel open", async ({
 	await expectNoPageOverflow(page);
 	const strip = thread.getByRole("button", { name: "Back to the thread" });
 	expect((await strip.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+});
+
+/** A box's edges. */
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) =>
+	a.x < b.x + b.width &&
+	b.x < a.x + a.width &&
+	a.y < b.y + b.height &&
+	b.y < a.y + a.height;
+
+/**
+ * Asserts the agent opener is the card's bottom handle: at the right end of
+ * the actions row beside Resolve (at the card's bottom when that row is
+ * closed), a finger's size, covering nothing, and the thread keeping its
+ * full width (no gutter kept for it).
+ */
+async function expectBottomHandle(card: Locator, page: Page) {
+	const handle = agentButton(card);
+	await handle.scrollIntoViewIfNeeded();
+	await expect(handle).toBeInViewport();
+	const t = await handle.boundingBox();
+	const c = await card.boundingBox();
+	if (!t || !c) throw new Error("no boxes");
+	const resolve = card.getByTestId("thread-actions").getByRole("button", {
+		name: /^(Resolve|Unresolve)/,
+	});
+	if (await resolve.isVisible()) {
+		// On Resolve's row, just right of it.
+		const r = await resolve.boundingBox();
+		if (!r) throw new Error("no Resolve box");
+		expect(
+			Math.abs(t.y + t.height / 2 - (r.y + r.height / 2)),
+		).toBeLessThanOrEqual(4);
+		expect(t.x).toBeGreaterThanOrEqual(r.x + r.width - 1);
+		expect(t.x - (r.x + r.width)).toBeLessThanOrEqual(16);
+	} else {
+		// The actions row closed: at the card's bottom.
+		expect(c.y + c.height - (t.y + t.height)).toBeLessThanOrEqual(20);
+	}
+	// At the right end of the card's content.
+	expect(c.x + c.width - (t.x + t.width)).toBeLessThanOrEqual(16);
+	// A finger's target: 40px each way on a phone.
+	const phone = (page.viewportSize()?.width ?? 1000) < 640;
+	expect(t.height).toBeGreaterThanOrEqual(40);
+	if (phone) expect(t.width).toBeGreaterThanOrEqual(40);
+	// No width kept for it: the comments reach the card's right as without an agent.
+	const cover = await card.getByTestId("agent-cover").boundingBox();
+	if (!cover) throw new Error("no agent cover");
+	expect(c.x + c.width - (cover.x + cover.width)).toBeLessThanOrEqual(16);
+	// It covers no comment, reply box or other button.
+	const others = card.locator(
+		"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",
+	);
+	for (const o of await others.all()) {
+		if (!(await o.isVisible())) continue;
+		const b = await o.boundingBox();
+		if (!b) continue;
+		expect(
+			overlaps(t, b),
+			await o.evaluate((n) => n.outerHTML.slice(0, 80)),
+		).toBe(false);
+	}
+}
+
+test("the agent opener is a handle at the card's bottom beside Resolve, the panel's handle while open", async ({
+	page,
+	pr,
+	agentCrb,
+	acpScenario,
+}) => {
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [{ text: "Answered while you looked away.", chunks: 2 }],
+			hold: ["prompt"],
+		},
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	// Ask agent: the dashed handle, at the card's bottom.
+	await expect(agentButton(card)).toHaveAccessibleName("Ask agent");
+	await expectBottomHandle(card, page);
+	await openPanel(card);
+	await sendToAgent(card, "Take your time");
+	await expect(panel(card).getByTestId("agent-answering")).toBeVisible();
+	// Open: beside Resolve, under the panel's right edge, pressed.
+	await expectBottomHandle(card, page);
+	const handleBox = await agentButton(card).boundingBox();
+	const panelBox = await panel(card).boundingBox();
+	if (!handleBox || !panelBox) throw new Error("no boxes");
+	expect(
+		Math.abs(handleBox.x + handleBox.width - (panelBox.x + panelBox.width)),
+	).toBeLessThanOrEqual(2);
+	await agentButton(card).click();
+	await expectClosed(card);
+	releaseAcp(acpScenario, "prompt");
+	// Closed with an unread answer: the count and the dot on the handle.
+	await expect(card.getByTestId("agent-unread-dot")).toBeVisible();
+	await expect(agentButton(card)).toHaveAccessibleName(
+		"2 agent messages, 1 new",
+	);
+	await expect(agentButton(card)).toHaveText("2");
+	await expectBottomHandle(card, page);
+	// A fresh page: the card closed, its handle at the Show more row's end,
+	// sunk as the toggle is, neither it nor its dot reaching into the content above.
+	await page.reload();
+	const fresh = overviewCard(page);
+	await expect(fresh.getByTestId("agent-unread-dot")).toBeVisible();
+	await expect(fresh.getByTestId("thread-actions")).toHaveCount(0);
+	await expectBottomHandle(fresh, page);
+	const moreRow = fresh.getByTestId("thread-more-row");
+	await expect(moreRow.getByTestId("thread-agent-button")).toBeVisible();
+	const above = await moreRow.evaluate(
+		(el) => el.previousElementSibling?.getBoundingClientRect().bottom ?? 0,
+	);
+	const dot = await fresh.getByTestId("agent-unread-dot").boundingBox();
+	const h = await agentButton(fresh).boundingBox();
+	const toggle = await fresh.getByTestId("thread-more").boundingBox();
+	if (!dot || !h || !toggle) throw new Error("no boxes");
+	expect(h.y).toBeGreaterThanOrEqual(above);
+	expect(dot.y).toBeGreaterThanOrEqual(above);
+	expect(
+		Math.abs(h.y + h.height - (toggle.y + toggle.height)),
+	).toBeLessThanOrEqual(1);
+	// In Files changed too.
+	const thread = await filesThread(page, s.url);
+	await expect(thread.getByTestId("agent-unread-dot")).toBeVisible();
+	await expectBottomHandle(thread, page);
+	await agentButton(thread).click();
+	await expect(panel(thread)).toHaveAttribute("data-open", "true");
+	await expectNoPageOverflow(page);
+});
+
+test("at 360px a long Show more toggle and a two-digit handle share their row without overlapping", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	const at = (m: number) => `2026-01-02T09:0${m}:00Z`;
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: CALC, line: 3, subjectType: "LINE" }, [
+				threadComment({
+					login: "rev1",
+					text: QUESTION,
+					createdAt: at(0),
+					commit: head,
+				}),
+				threadComment({ login: "rev2", text: "Agreed.", createdAt: at(1) }),
+				threadComment({ login: "rev1", text: "Fixing.", createdAt: at(2) }),
+				threadComment({ login: "rev2", text: "Thanks.", createdAt: at(3) }),
+				threadComment({ login: "Octo_Cat", text: "My draft", pending: true }),
+			]),
+		];
+	});
+	const s = await agentCrb({ scenario: { agent: AGENT, answers: [] } });
+	// Twelve agent messages on the thread, the last one unseen.
+	const messages = Array.from({ length: 12 }, (_, i) => ({
+		id: `m${i + 1}`,
+		by: i % 2 ? "ai" : "human",
+		at: `2026-01-03T10:${String(i).padStart(2, "0")}:00Z`,
+		text: `Message ${i + 1}`,
+	}));
+	await page.route(/\/agent\/threads$/, (route) =>
+		route.request().method() === "GET"
+			? route.fulfill({
+					json: {
+						threads: [
+							{
+								id: "A1",
+								anchor: {
+									subject: "thread",
+									// The fake gh's id for PR 7's first thread.
+									thread: "T7-0",
+									path: CALC,
+									commit: head,
+									side: "RIGHT",
+									line: 3,
+									startSide: "RIGHT",
+									startLine: 3,
+								},
+								openedBy: "human",
+								at: messages[0]?.at,
+								messages,
+								resolved: false,
+								waiting: false,
+								unread: true,
+								seenUpTo: "m10",
+							},
+						],
+					},
+				})
+			: route.fallback(),
+	);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	const toggle = card.getByTestId("thread-more");
+	await expect(toggle).toHaveAccessibleName(/^Show more, 4 replies, 1 pending/);
+	const handle = agentButton(card);
+	await expect(handle).toHaveText("12");
+	await expectBottomHandle(card, page);
+	const t = await toggle.boundingBox();
+	const h = await handle.boundingBox();
+	if (!t || !h) throw new Error("no boxes");
+	// Side by side on the row's bottom, the toggle clear of the handle.
+	expect(t.x + t.width).toBeLessThanOrEqual(h.x);
+	expect(Math.abs(t.y + t.height - (h.y + h.height))).toBeLessThanOrEqual(1);
+	expect(h.width).toBeGreaterThanOrEqual(40);
+	await expectNoPageOverflow(page);
 });
