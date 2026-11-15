@@ -2600,6 +2600,8 @@ test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ m
 	await expect(fileActionButton(extra, "Undo cross-off")).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	// It finished the open file, which closes like any other (CAR-159).
+	await extra.getByRole("button", { name: "Expand file" }).click();
 	await expect(
 		extra.getByRole("checkbox", { name: "Undo cross-off" }),
 	).toBeVisible();
@@ -2621,13 +2623,12 @@ const reworkRevert = {
 
 test("in the since view, marking a file's last cluster keeps it open while a reverted piece is left; marking the piece moves on to the next file (CAR-159)", async ({
 	page,
-	workdir,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
-	await pushed(page, workdir, s, p, reworkRevert);
+	await pushed(page, s, p, reworkRevert);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
@@ -2664,4 +2665,150 @@ test("in the since view, marking a file's last cluster keeps it open while a rev
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(toRead(page)).toHaveText(/1 to read/);
+});
+
+/**
+ * PS1: core.ts (A: line 5, line 30), util.ts (lines 3 and 8), extra.ts
+ * (new). PS2 reworks core 5, reverts util 3 (util.ts keeps line 8,
+ * carried: only its reverted piece is left) and deletes extra.ts (a gone
+ * file after the tree's).
+ */
+const moveOnFixture: PrOptions = {
+	base: fixture.base,
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+				"src/util.ts": edit(util, { 3: "util 3 changed", 8: "util 8 changed" }),
+				"src/extra.ts": text(["extra 1", "extra 2", "extra 3"]),
+			},
+		},
+	],
+};
+const moveOnPush: FixtureCommit = {
+	message: "rework core, revert util 3, drop extra",
+	files: {
+		"src/core.ts": edit(core, {
+			5: "core 5 reworked",
+			30: "core 30 changed",
+		}),
+		"src/util.ts": edit(util, { 8: "util 8 changed" }),
+	},
+	delete: ["src/extra.ts"],
+};
+
+/** PS1 reviewed from the closed headers, then the push, in the since view. */
+async function moveOnSince(page: Page, s: Crb, p: Pr) {
+	await openFiles(page, s.url);
+	for (const path of ["src/core.ts", "src/extra.ts", "src/util.ts"]) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead(moveOnPush);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(fileSection(page, "src/extra.ts")).toHaveAttribute(
+		"data-gone-file",
+		"src/extra.ts",
+	);
+	await expect(toRead(page)).toHaveText(/3 to read/);
+}
+
+/** A file a move-on opened: its lines in, it takes marks. */
+async function movedOnTo(page: Page, section: Locator) {
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await marksReady(page, section);
+}
+
+const expanded = (section: Locator) =>
+	section.getByRole("button", { name: "Collapse file" });
+
+test("in the since view, finishing a file opens the next with only a reverted piece left, then a gone file; finishing that one raises the verdict (CAR-159)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(moveOnFixture);
+	const s = await startCrb();
+	await moveOnSince(page, s, p);
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	const extraS = fileSection(page, "src/extra.ts");
+	await expand(page, "src/core.ts");
+	await expect(boxes(coreS)).toHaveCount(1);
+	// core.ts's last cluster: util.ts has only its reverted piece left.
+	await boxes(coreS).click();
+	await movedOnTo(page, utilS);
+	await expect(expanded(coreS)).toHaveCount(0);
+	const piece = utilS
+		.locator("tbody[data-gone]")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(piece).toHaveCount(1);
+	// Its piece: the gone file is all that is left, and it opens.
+	await piece.click();
+	await movedOnTo(page, extraS);
+	await expect(expanded(utilS)).toHaveCount(0);
+	await expect(boxes(extraS)).toHaveCount(1);
+	// The gone file's piece: nothing left, it closes; nothing else opens.
+	await boxes(extraS).click();
+	await expect(
+		extraS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+});
+
+test("in the since view, finishing a gone file moves on; a file with only a reverted piece left, the last one, opens rather than the verdict (CAR-159)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(moveOnFixture);
+	const s = await startCrb();
+	await moveOnSince(page, s, p);
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	const extraS = fileSection(page, "src/extra.ts");
+	await expand(page, "src/extra.ts");
+	// The gone file's piece: it closes and the page wraps to core.ts.
+	await boxes(extraS).click();
+	await movedOnTo(page, coreS);
+	await expect(expanded(extraS)).toHaveCount(0);
+	// core.ts's last cluster: util.ts, the only file left, has only its
+	// reverted piece; it opens (no verdict yet).
+	await boxes(coreS).click();
+	await movedOnTo(page, utilS);
+	await expect(progress(page)).not.toHaveAttribute("aria-valuenow", "100");
+	await utilS
+		.locator("tbody[data-gone]")
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.click();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });

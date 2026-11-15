@@ -612,22 +612,10 @@ export function FileDiff(props: {
 		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded,
 	});
-	// Opened by a move-on, its lines (or what shows instead) arrive under the
-	// pointer once read: just as unseen, so they restart the wait for marks.
-	const bodyIn = expanded && !hunks.isPending;
-	const [bodyInAt, setBodyInAt] = useState<number | null>(null);
-	const guarded = props.ignoreMarksUntil !== undefined;
-	useLayoutEffect(() => {
-		if (!guarded) setBodyInAt(null);
-		else if (bodyIn) setBodyInAt((at) => at ?? performance.now());
-	}, [guarded, bodyIn]);
-	const ignoreMarksUntil =
-		props.ignoreMarksUntil === undefined
-			? undefined
-			: Math.max(
-					props.ignoreMarksUntil,
-					bodyInAt === null ? 0 : bodyInAt + UNDO_ARM_MS,
-				);
+	const ignoreMarksUntil = useMarksWait(
+		props.ignoreMarksUntil,
+		expanded && !hunks.isPending,
+	);
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
 		saveStates(revision, file.path, changes);
@@ -1364,6 +1352,27 @@ function FileMarkActions(props: {
  * so its clusters are gone. Its header names it; its body is the interdiff,
  * each piece marked on its own (since marks: pieces.ts).
  */
+/**
+ * When a file opened by a move-on takes marks again: `until`, or later
+ * once its lines (or what shows instead: `bodyIn`) arrive under the
+ * pointer, just as unseen, restarting the wait (UNDO_ARM_MS from then).
+ * Undefined when it isn't guarded.
+ */
+function useMarksWait(
+	until: number | undefined,
+	bodyIn: boolean,
+): number | undefined {
+	const [bodyInAt, setBodyInAt] = useState<number | null>(null);
+	const guarded = until !== undefined;
+	useLayoutEffect(() => {
+		if (!guarded) setBodyInAt(null);
+		else if (bodyIn) setBodyInAt((at) => at ?? performance.now());
+	}, [guarded, bodyIn]);
+	return until === undefined
+		? undefined
+		: Math.max(until, bodyInAt === null ? 0 : bodyInAt + UNDO_ARM_MS);
+}
+
 export function GoneFile(props: {
 	index: number;
 	path: string;
@@ -1381,6 +1390,14 @@ export function GoneFile(props: {
 	/** The find's hits on the path, and in the lines (FilesPage). */
 	pathFind?: readonly FindMark[];
 	find?: DiffFind;
+	/**
+	 * The reviewer's own mark just finished this open file (no piece left):
+	 * the owner closes it and moves on, as FileDiff's does. Without it, the
+	 * file just closes.
+	 */
+	onFinished?: () => void;
+	/** Opened by a move-on: marks are ignored before then (FileDiff's). */
+	ignoreMarksUntil?: number;
 }) {
 	const [ownExpanded, setOwnExpanded] = useState(false);
 	const expanded = props.expanded ?? ownExpanded;
@@ -1388,9 +1405,47 @@ export function GoneFile(props: {
 		if (props.expanded === undefined) setOwnExpanded(next);
 		props.onExpandedChange?.(next);
 	};
+	const toggleButton = useRef<HTMLButtonElement>(null);
+	// The same read DiffBody makes (one query): its lines arriving restart
+	// a move-on's wait for marks.
+	const hunks = useQuery({
+		...hunksQuery(props.revision, props.index, props.since),
+		enabled: expanded,
+	});
+	const ignoreMarksUntil = useMarksWait(
+		props.ignoreMarksUntil,
+		expanded && !hunks.isPending,
+	);
 	const { save } = useSetStates();
-	const sinceMark = (piece: SincePiece, cross: boolean) => {
-		save(props.revision, props.path, [
+	const file = goneFileView(props);
+	// The header's whole-file actions, as on any file (CAR-155): every
+	// piece is the file's, marked on its since mark alone.
+	const pieces = props.pieces ?? [];
+	const only: SinceOnly = {
+		marks: props.sinceMarks,
+		since: props.since,
+		path: props.path,
+		pieces,
+	};
+	const change = (action: SinceFileAction) =>
+		sinceFileChange(props.sinceMarks, props.since, props.path, pieces, action);
+	const left = change("reviewed") !== null;
+	const unReview = left ? null : change("reset-reviewed");
+	const unCross = left ? null : change("reset-crossed-off");
+	// A mark that leaves no piece unmarked finishes the open file, as on any
+	// file: it closes and the page moves on. Only a finished file closes.
+	const send = (c: StateChange | null) => {
+		if (!c || props.readOnly) return;
+		if (performance.now() < (ignoreMarksUntil ?? 0)) return;
+		if (expanded && finishes([], [c], only)) {
+			toggleButton.current?.focus({ preventScroll: true });
+			if (props.onFinished) props.onFinished();
+			else setExpanded(false);
+		}
+		save(props.revision, props.path, [c]).catch(() => {});
+	};
+	const sinceMark = (piece: SincePiece, cross: boolean) =>
+		send(
 			sinceToggleChange(
 				props.sinceMarks,
 				props.since,
@@ -1398,30 +1453,21 @@ export function GoneFile(props: {
 				piece,
 				cross,
 			),
-		]).catch(() => {});
-	};
-	const file = goneFileView(props);
-	// The header's whole-file actions, as on any file (CAR-155): every
-	// piece is the file's, marked on its since mark alone.
-	const pieces = props.pieces ?? [];
-	const change = (action: SinceFileAction) =>
-		sinceFileChange(props.sinceMarks, props.since, props.path, pieces, action);
-	const left = change("reviewed") !== null;
-	const unReview = left ? null : change("reset-reviewed");
-	const unCross = left ? null : change("reset-crossed-off");
-	const send = (c: StateChange | null) => {
-		if (!c || props.readOnly) return;
-		save(props.revision, props.path, [c]).catch(() => {});
-	};
+		);
 	return (
 		<section
 			id={`file-${props.index}`}
 			data-gone-file={props.path}
 			aria-label={props.path}
+			// When it takes marks again (`performance.now()`), for tests to wait on.
+			data-marks-from={
+				ignoreMarksUntil === undefined ? undefined : Math.ceil(ignoreMarksUntil)
+			}
 			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
 		>
 			<header className="@container flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
 				<button
+					ref={toggleButton}
 					type="button"
 					aria-expanded={expanded}
 					aria-label={expanded ? "Collapse file" : "Expand file"}
@@ -1449,6 +1495,7 @@ export function GoneFile(props: {
 							review={{ undo: unReview !== null, none: !left && !unReview }}
 							readOnly={props.readOnly}
 							idle="Nothing unreviewed"
+							ignoreClicksUntil={ignoreMarksUntil}
 							onMark={(state) => send(change(state))}
 							onReset={(kind) => send(kind === "reviewed" ? unReview : unCross)}
 						/>

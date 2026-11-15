@@ -548,6 +548,33 @@ describe("FileDiff", () => {
 			},
 		);
 
+		it("✓ on an open file whose clusters are done finishes it by its pieces left, and moves on (CAR-159)", async () => {
+			const f = file([cluster("k1", { state: "reviewed" })]);
+			const onFinished = vi.fn();
+			const { posts, user } = setup(
+				f,
+				() => ({ status: 200, body: view(f) }),
+				hunks,
+				"clusters",
+				{ since: 1, sincePieces: [gonePiece], onFinished },
+			);
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			await screen.findAllByText(codeLine("new five"));
+			await user.click(
+				screen.getByRole("button", { name: "Mark remaining reviewed" }),
+			);
+			expect(onFinished).toHaveBeenCalledTimes(1);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual([
+					{
+						key: "since:1:src/a.ts",
+						state: "reviewed",
+						sinceMark: goneMark("reviewed"),
+					},
+				]),
+			);
+		});
+
 		it("once the pieces are marked too, the reset takes back clusters and pieces of its kind", async () => {
 			const f = file([cluster("k1", { state: "reviewed" })]);
 			const { queryClient, posts, user } = setup(

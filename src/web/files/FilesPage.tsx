@@ -856,8 +856,14 @@ export function FilesPage() {
 	 * With none left it closes and the verdict at the end rises into view.
 	 */
 	const finished = (index: number) => {
-		// In the since view a file's since-only pieces are left in it too.
-		const next = nextFile(files, index, (f) =>
+		// In the since view a file's since-only pieces are left in it too,
+		// and the gone files after the tree's (no clusters: all pieces) are
+		// files to move on to like any other.
+		const candidates = [
+			...files,
+			...gone.map((g) => ({ index: g.index, path: g.path, clusters: [] })),
+		];
+		const next = nextFile(candidates, index, (f) =>
 			fileLeft(
 				f.clusters,
 				since === null || !sinceAnswer
@@ -1602,6 +1608,12 @@ export function FilesPage() {
 														}
 														pathFind={find.pathOf(file.index)}
 														find={find.diffOf(file.index)}
+														onFinished={() => finished(file.index)}
+														ignoreMarksUntil={
+															movedOn?.key === keyOf(file.index)
+																? movedOn.until
+																: undefined
+														}
 													/>
 												))}
 												{/* Threads whose file isn't in this comparison at all. */}

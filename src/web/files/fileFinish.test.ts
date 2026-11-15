@@ -65,7 +65,7 @@ describe("finishes", () => {
 });
 
 describe("finishes, in the since view (CAR-159)", () => {
-	// One removed piece no cluster owns: old lines 10–11.
+	// One removed piece no cluster owns: old lines 10 and 11 ([10, 12) is half-open).
 	const removed = { old: [[10, 12]] as [number, number][], new: [] };
 	const only = (marks?: SinceMark[]): SinceOnly => ({
 		marks,
@@ -213,6 +213,50 @@ describe("nextFile", () => {
 			nextFile(files, 0, (x) => fileLeft(x.clusters) || piecesIn.has(x.index))
 				?.index,
 		).toBe(1);
+	});
+	it("in the since view, a file with only a since-only piece left is next, even the only one left (CAR-159)", () => {
+		const removed = { old: [[10, 12]] as [number, number][], new: [] };
+		// B's clusters are done; its removed piece is unmarked. D is a gone
+		// file: no clusters, every piece its own.
+		const files = [
+			{ index: 0, path: "a.ts", clusters: left },
+			{ index: 1, path: "b.ts", clusters: done },
+			{ index: 2, path: "c.ts", clusters: left },
+			{ index: 3, path: "d.ts", clusters: [] },
+		];
+		const sinceLeft =
+			(marks: SinceMark[]) => (x: { path: string; clusters: Cluster[] }) =>
+				fileLeft(x.clusters, {
+					marks,
+					since: 1,
+					path: x.path,
+					pieces: [removed],
+				});
+		const markedOn = (path: string): SinceMark => ({
+			since: 1,
+			path,
+			reviewed: { old: [[10, 12]], new: [] },
+			crossed: { old: [], new: [] },
+		});
+		// Every file has its piece left: B, not C.
+		expect(nextFile(files, 0, sinceLeft([]))?.index).toBe(1);
+		// The clusters-only default skips B.
+		expect(nextFile(files, 0)?.index).toBe(2);
+		// B the only file left (C's and D's pieces marked, C's clusters too).
+		const onlyB = files.map((f) =>
+			f.index === 2 ? { ...f, clusters: done } : f,
+		);
+		const marks = [markedOn("a.ts"), markedOn("c.ts"), markedOn("d.ts")];
+		expect(nextFile(onlyB, 0, sinceLeft(marks))?.index).toBe(1);
+		expect(nextFile(onlyB, 0)).toBeUndefined();
+		// The gone file, the only one left, is next too.
+		expect(
+			nextFile(
+				onlyB,
+				0,
+				sinceLeft([markedOn("a.ts"), markedOn("b.ts"), markedOn("c.ts")]),
+			)?.index,
+		).toBe(3);
 	});
 	it("has none when no other file has anything left, or for an unknown one", () => {
 		const files = [f(0, done), f(1, left), f(2, done)];
