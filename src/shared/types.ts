@@ -469,6 +469,12 @@ export interface ReviewThread {
 	 * person their tint across the PR (src/web/threads/people.ts).
 	 */
 	participants: ThreadParticipant[];
+	/**
+	 * Who published the latest comment (as of a cutoff, by then; the one
+	 * `lastActivityAt` dates), pending comments left out: the opener when
+	 * no one else spoke.
+	 */
+	lastAuthor: ThreadAuthor;
 	/** Comments in the thread, the opening one included. */
 	commentCount: number;
 	/** Someone other than the opener commented. */
@@ -517,6 +523,14 @@ export interface ReviewThread {
 }
 
 /** Someone who commented on a thread. */
+/** A commenter, as a thread's row shows them. */
+export interface ThreadAuthor {
+	login: string;
+	/** Their avatar image ("" when the host gave none). */
+	avatarUrl: string;
+	bot: boolean;
+}
+
 export interface ThreadParticipant {
 	login: string;
 	/** Their avatar image ("" when the host gave none). */
@@ -587,6 +601,7 @@ export interface ThreadUpdate {
 	resolved: boolean;
 	commentCount: number;
 	lastActivityAt: string;
+	lastAuthor: ThreadAuthor;
 	attention: string[];
 	yourTurn: boolean;
 	viewerCan: ReviewThread["viewerCan"];
