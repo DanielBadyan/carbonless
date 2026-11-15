@@ -1,5 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type { BuildInfo } from "../version.js";
 import { PACKAGE } from "./registry.js";
@@ -64,6 +71,32 @@ export interface DetectOptions {
 	execPath?: string;
 	exists?: (file: string) => boolean;
 	writable?: (dir: string) => boolean;
+	/**
+	 * The real paths of the crb packages a pnpm global dir links to (its
+	 * `<entry>/node_modules/carbonless-review`; default: read from disk).
+	 */
+	globalLinks?: (globalDir: string) => string[];
+}
+
+/** The real paths of the crb packages `globalDir`'s entries link to. */
+function readGlobalLinks(globalDir: string): string[] {
+	let entries: string[];
+	try {
+		entries = readdirSync(globalDir);
+	} catch {
+		return [];
+	}
+	const found: string[] = [];
+	for (const e of entries) {
+		try {
+			found.push(
+				realpathSync(path.join(globalDir, e, "node_modules", PACKAGE)),
+			);
+		} catch {
+			// Not an install of crb.
+		}
+	}
+	return found;
 }
 
 /**
@@ -96,7 +129,10 @@ export function canWrite(dir: string): boolean {
  * - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
  *   in `<prefix>/bin` (Windows: `<prefix>\node_modules\carbonless-review`
  *   and `<prefix>\crb.cmd`).
- * - pnpm: `<PNPM_HOME>/global/<v>/.../node_modules/.pnpm/.../carbonless-review`.
+ * - pnpm: `<PNPM_HOME>/global/<v>/.../node_modules/.pnpm/.../carbonless-review`,
+ *   or, with pnpm's global virtual store (pnpm 12 on Windows, any OS with it on),
+ *   `<PNPM_HOME>/store/<v>/links/.../node_modules/carbonless-review` when an
+ *   entry of `<PNPM_HOME>/global/<v>` links to it.
  */
 export function detectInstall(
 	root: string,
@@ -109,6 +145,33 @@ export function detectInstall(
 	const parts = root.split(/[\\/]+/);
 	if (parts.at(-1) !== PACKAGE || parts.at(-2) !== "node_modules") return null;
 	const join = (segments: string[]) => segments.join(p.sep) || p.sep;
+	// pnpm's global virtual store (pnpm 12, and earlier with it on): the
+	// package lies in `<PNPM_HOME>/store/<vN>/links/...`, linked from an
+	// entry of `<PNPM_HOME>/global/<vN>`. A project's dependency can lie in
+	// the same store: only a package the global dir links to counts.
+	const linksAt = parts.lastIndexOf("links");
+	if (
+		linksAt >= 2 &&
+		parts[linksAt - 2] === "store" &&
+		/^v?\d+$/.test(parts[linksAt - 1] ?? "")
+	) {
+		const home = join(parts.slice(0, linksAt - 2));
+		const globalDir = p.join(home, "global", parts[linksAt - 1] as string);
+		const links = (opts.globalLinks ?? readGlobalLinks)(globalDir);
+		const same = (a: string) =>
+			platform === "win32"
+				? a.toLowerCase() === root.toLowerCase()
+				: a === root;
+		if (!links.some(same)) return null;
+		return {
+			pm: "pnpm",
+			root,
+			home,
+			writable: writable(globalDir),
+			packages: [p.join(globalDir, "node_modules", PACKAGE)],
+			scan: [globalDir],
+		};
+	}
 	const pnpmAt = parts.lastIndexOf(".pnpm");
 	if (pnpmAt >= 0) {
 		const globalAt = parts.lastIndexOf("global", pnpmAt);

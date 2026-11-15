@@ -1,4 +1,13 @@
-import { chmodSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +20,7 @@ import {
 	restartArgs,
 	showCommand,
 } from "./install";
+import { findInstalled } from "./updateHelper";
 
 const SHA = "a3bc706b8c8b834aeefb8411ee8973ab2bb57973";
 const BUILD = { version: "0.2.0", commit: SHA };
@@ -152,6 +162,112 @@ describe("detectInstall", () => {
 			home: "C:\\Users\\Jane Doe\\AppData\\Local\\pnpm",
 			scan: ["C:\\Users\\Jane Doe\\AppData\\Local\\pnpm\\global\\5"],
 		});
+	});
+
+	it("pnpm 12's global virtual store on Windows: the real package in <PNPM_HOME>\\store, linked from the global dir", () => {
+		const home = "C:\\Users\\Jane Doe\\AppData\\Local\\pnpm";
+		const root = `${home}\\store\\v11\\links\\@\\carbonless-review\\0.3.0-rc.9\\5f1c0e9a2b\\node_modules\\carbonless-review`;
+		const globalDir = `${home}\\global\\v11`;
+		const linked: string[] = [];
+		expect(
+			detectInstall(root, {
+				platform: "win32",
+				exists: none,
+				writable: (d) => d === globalDir,
+				globalLinks: (d) => {
+					linked.push(d);
+					return [root];
+				},
+			}),
+		).toEqual({
+			pm: "pnpm",
+			root,
+			home,
+			writable: true,
+			packages: [`${globalDir}\\node_modules\\carbonless-review`],
+			scan: [globalDir],
+		});
+		expect(linked).toEqual([globalDir]);
+	});
+
+	it("pnpm's global virtual store on Linux too", () => {
+		const home = "/home/me/.local/share/pnpm";
+		const root = `${home}/store/v11/links/@/carbonless-review/0.3.0-rc.9/5f1c0e9a2b/node_modules/carbonless-review`;
+		expect(
+			detectInstall(root, {
+				platform: "linux",
+				exists: none,
+				writable: all,
+				globalLinks: () => ["/elsewhere", root],
+			}),
+		).toMatchObject({
+			pm: "pnpm",
+			home,
+			writable: true,
+			scan: [`${home}/global/v11`],
+		});
+	});
+
+	it("pnpm's global virtual store on disk: found through the global dir's link, and the new version found there after an install", () => {
+		if (process.platform === "win32") return;
+		const tmp = realpathSync(mkdtempSync(join(tmpdir(), "crb-pnpm-gvs-")));
+		try {
+			const put = (version: string, hash: string) => {
+				const pkg = join(
+					tmp,
+					"store/v11/links/@/carbonless-review",
+					version,
+					hash,
+					"node_modules/carbonless-review",
+				);
+				mkdirSync(join(pkg, "dist"), { recursive: true });
+				writeFileSync(
+					join(pkg, "dist/build-info.json"),
+					JSON.stringify({ version }),
+				);
+				writeFileSync(join(pkg, "dist/cli.js"), "");
+				const entry = join(tmp, "global/v11", hash, "node_modules");
+				mkdirSync(entry, { recursive: true });
+				symlinkSync(pkg, join(entry, "carbonless-review"), "dir");
+				return pkg;
+			};
+			const root = put("0.3.0-rc.9", "aaa");
+			const install = detectInstall(root, { platform: "linux" });
+			expect(install).toMatchObject({ pm: "pnpm", home: tmp, writable: true });
+			put("0.3.0-rc.10", "bbb");
+			const cli = findInstalled(
+				{ packages: install?.packages ?? [], scan: install?.scan ?? [] },
+				"0.3.0-rc.10",
+			);
+			expect(cli && realpathSync(cli)).toBe(
+				join(
+					tmp,
+					"store/v11/links/@/carbonless-review/0.3.0-rc.10/bbb/node_modules/carbonless-review/dist/cli.js",
+				),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("a store package no global install links to (a project's dependency through the global virtual store): unknown", () => {
+		const root =
+			"/home/me/.local/share/pnpm/store/v11/links/@/carbonless-review/0.3.0-rc.9/5f1c0e9a2b/node_modules/carbonless-review";
+		const opts = { platform: "linux" as const, exists: none, writable: all };
+		expect(detectInstall(root, { ...opts, globalLinks: () => [] })).toBeNull();
+		expect(
+			detectInstall(root, {
+				...opts,
+				globalLinks: () => [root.replace("rc.9", "rc.8")],
+			}),
+		).toBeNull();
+		// Not a store's links dir at all.
+		expect(
+			detectInstall(
+				"/home/me/project/links/@/carbonless-review/1/h/node_modules/carbonless-review",
+				{ ...opts, globalLinks: (d) => [d] },
+			),
+		).toBeNull();
 	});
 
 	it("anything else is unknown: a project's dependency (even under a lib dir), a project's pnpm store, a checkout, yarn's or volta's global", () => {

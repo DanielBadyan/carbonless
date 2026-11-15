@@ -202,7 +202,10 @@ function versionAt(pkg: string): string | null {
 }
 
 /** The cli.js of the installed `version`, or null when none is found. */
-export function findInstalled(r: Relaunch, version: string): string | null {
+export function findInstalled(
+	r: Pick<Relaunch, "packages" | "scan">,
+	version: string,
+): string | null {
 	const candidates = [...r.packages];
 	for (const dir of r.scan) {
 		let entries: string[] = [];
