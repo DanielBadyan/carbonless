@@ -179,6 +179,26 @@ describe("railDots", () => {
 		expect(dots[1]?.label).toBe("aaaaaaa");
 		expect(head?.id).toBe("head");
 	});
+	it("before any patch set, the PR's current position is a dot even when it is the head", () => {
+		const s = session([], oid("a"));
+		const { dots, head } = railDots(s, { kind: "head", oid: oid("a") });
+		expect(dots.map((d) => d.id)).toEqual(["branch", "snapshot"]);
+		expect(dots[1]).toMatchObject({
+			kind: "snapshot",
+			label: "aaaaaaa",
+			viewing: { kind: "head", oid: oid("a") },
+		});
+		expect(head).toBeNull();
+		// Before the comparison is known, too.
+		expect(railDots(s, null).dots.map((d) => d.id)).toEqual([
+			"branch",
+			"snapshot",
+		]);
+	});
+	it("once patch sets exist, a head equal to the newest adds no dot", () => {
+		const s = session([1], oid("1"));
+		expect(railDots(s, ps(1)).dots.map((d) => d.id)).toEqual(["branch", "ps1"]);
+	});
 });
 
 describe("PatchsetGraph", () => {
@@ -196,6 +216,20 @@ describe("PatchsetGraph", () => {
 		expect(markerIn("ps2", "comparison target")).not.toBeNull();
 		expect(markerIn("ps1", "comparison base")).not.toBeNull();
 		expect(markerIn("ps1", "comparison target")).toBeNull();
+	});
+
+	it("first review (no patch set, head = snapshot): a dot for the current position, viewed, then up to date", () => {
+		renderGraph(session([], oid("a")), {
+			viewing: { kind: "head", oid: oid("a") },
+			base: { kind: "branch" },
+		});
+		const dot = screen.getByRole("button", { name: "snapshot aaaaaaa" });
+		expect(dot).toHaveAttribute("data-viewing", "true");
+		expect(markerIn("snapshot", "comparison target")).not.toBeNull();
+		expect(markerIn("branch", "comparison base")).not.toBeNull();
+		expect(tail()).toHaveAttribute("data-state", "up-to-date");
+		expect(screen.getByRole("img", { name: "up to date" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^head/ })).toBeNull();
 	});
 
 	it("a newer head: the same slot holds the dashed connector with its count and the head dot", async () => {

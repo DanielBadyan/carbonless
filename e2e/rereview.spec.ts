@@ -639,6 +639,43 @@ test("an empty since view says so once the engine has answered, with a spinner u
 	);
 });
 
+test("a first review shows a dot for the PR's current position, viewed and up to date, with no patch set written", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const current = node(page, "snapshot");
+	await expect(current).toBeVisible();
+	await expect(current.getByTestId("ps-dot-label")).toHaveText(
+		p.head().slice(0, 7),
+	);
+	await expect(
+		current.getByRole("button", { name: "comparison target" }),
+	).toBeVisible();
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(node(page, "head")).toHaveCount(0);
+	// Its card (a click makes it sticky, on a phone too): the commit it is at.
+	const short = p.head().slice(0, 7);
+	await page.getByTestId("ps-dot-snapshot").click();
+	const details = page.getByRole("dialog", { name: `${short} details` });
+	await expect(details).toContainText("Snapshot");
+	await expect(details).toContainText(short);
+	await expectNoPageOverflow(page);
+	const rail = await page.getByTestId("psrail").boundingBox();
+	const viewport = page.viewportSize();
+	expect((rail?.x ?? 0) + (rail?.width ?? 0)).toBeLessThanOrEqual(
+		viewport?.width ?? 0,
+	);
+	// A plain dot: no patch set was made for it.
+	expect(reviewRefs(s, p)).not.toContain("/patchsets/");
+});
+
 test("a newer head fills the rail's last slot and shows the toast; nothing below the rail moves, nothing takes focus", async ({
 	page,
 	pr,

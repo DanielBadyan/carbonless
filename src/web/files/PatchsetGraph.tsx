@@ -134,14 +134,16 @@ export function railDots(
 	];
 	const numbers = session.patchsets.map((p) => p.number);
 	// Before any patch set, the snapshot being reviewed is a dot of its
-	// own; so is a viewed head that is neither it nor the PR's head.
+	// own, even when it is the PR's head (owner, 2026-11-16: the rail
+	// always shows where the PR is, with no patch set made for it); so is
+	// a viewed head that is neither it nor the PR's head.
 	const snapshotOid =
 		viewing?.kind === "head" && viewing.oid !== session.head?.oid
 			? viewing.oid
 			: session.patchsets.length === 0
 				? session.snapshotHead
 				: null;
-	if (snapshotOid !== null && snapshotOid !== session.head?.oid) {
+	if (snapshotOid !== null) {
 		dots.push({
 			id: "snapshot",
 			kind: "snapshot",
@@ -1174,7 +1176,7 @@ export function PatchsetGraph(props: {
 					</>
 				) : upToDate ? (
 					<Tooltip
-						content="The PR's head is this patch set: nothing new was pushed"
+						content={`The PR's head is this ${session.patchsets.length ? "patch set" : "snapshot"}: nothing new was pushed`}
 						describe={false}
 					>
 						{(trigger) => (
