@@ -57,10 +57,11 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
-	// Whitespace-only runs as clusters of their own (CAR-156): the split,
-	// the progress the switch counts, and marks carried onto the pieces.
+	// Marks carried onto split pieces (CAR-156). The split and the counted
+	// progress (src/shared/whitespace.ts, progress.ts) feed every page:
+	// left unmapped, they run every spec.
 	[
-		/^src\/shared\/(whitespace|progress)\.ts$|^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
+		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
 	// Pure (hunks in, placements out); its unit tests are the coverage.
