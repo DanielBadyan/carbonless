@@ -7,6 +7,8 @@ import { threadsCount } from "./ThreadsPanel";
 import {
 	agentBlurb,
 	agentRows,
+	type FocusWorld,
+	focusPlan,
 	githubRows,
 	listedRows,
 	plainText,
@@ -285,6 +287,12 @@ describe("blurbs", () => {
 			text: "Should this expire?",
 		});
 		expect(blurb({ loaded: false, excerpt: "" })).toEqual({ kind: "loading" });
+		// The read that brings its text failed: says so, never loads forever.
+		expect(
+			githubRows([reviewThread({ loaded: false })], new Map(), {
+				contentFailed: true,
+			})[0]?.blurb,
+		).toEqual({ kind: "failed" });
 		expect(blurb({ unavailable: "deleted" })).toEqual({
 			kind: "unavailable",
 			text: "Deleted on GitHub",
@@ -347,5 +355,73 @@ describe("blurbs", () => {
 		expect(plainText("snake_case_name and 2*3*4")).toBe(
 			"snake_case_name and 2*3*4",
 		);
+	});
+});
+
+describe("focusPlan", () => {
+	const world = (more: Partial<FocusWorld> = {}): FocusWorld => ({
+		fileOf: (path) => ({ "src/cache.ts": 0, "src/a.ts": 1 })[path],
+		hidden: () => false,
+		githubListed: new Set(["RT1"]),
+		githubAfter: new Set(),
+		agentAfter: new Set(),
+		pending: false,
+		...more,
+	});
+	const [gh] = githubRows([reviewThread()], new Map());
+	const [onThread] = agentRows([conversation()], new Map(), new Map());
+	const [onSpan] = agentRows([span()], new Map(), new Map());
+	if (!gh || !onThread || !onSpan) throw new Error("no rows");
+
+	it("a thread in a file: that file opens and its card is asked for", () => {
+		expect(focusPlan(gh, world())).toEqual({
+			open: 0,
+			unhide: false,
+			request: { id: "RT1" },
+		});
+		expect(focusPlan(onSpan, world())).toEqual({
+			open: 1,
+			unhide: false,
+			request: { id: "S1" },
+		});
+		expect(focusPlan(onThread, world())).toEqual({
+			open: 0,
+			unhide: false,
+			request: { id: "RT1", conversation: "A1" },
+		});
+	});
+
+	it('"needs eyes" lets the file show again only when it hides the card\'s file', () => {
+		expect(focusPlan(gh, world({ hidden: () => true })).unhide).toBe(true);
+		// Its card after the files: the filter stays.
+		expect(
+			focusPlan(
+				gh,
+				world({ hidden: () => true, githubAfter: new Set(["RT1"]) }),
+			),
+		).toEqual({ open: null, unhide: false, request: { id: "RT1" } });
+		expect(
+			focusPlan(
+				onSpan,
+				world({ hidden: () => true, agentAfter: new Set(["S1"]) }),
+			),
+		).toEqual({ open: null, unhide: false, request: { id: "S1" } });
+	});
+
+	it("leaves nothing pending when no card can show it", () => {
+		// A conversation on a review thread this view doesn't list: its
+		// file opens, nothing is asked for.
+		expect(focusPlan(onThread, world({ githubListed: new Set() }))).toEqual({
+			open: 0,
+			unhide: false,
+			request: null,
+		});
+		// No file, not after the files, nothing on its way.
+		const nowhere = world({ fileOf: () => undefined });
+		expect(focusPlan(gh, nowhere).request).toBeNull();
+		// While the placements come, a card may yet show: asked for.
+		expect(focusPlan(gh, { ...nowhere, pending: true }).request).toEqual({
+			id: "RT1",
+		});
 	});
 });

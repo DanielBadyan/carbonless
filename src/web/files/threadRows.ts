@@ -45,6 +45,8 @@ export interface PanelRow {
 export type Blurb =
 	| { kind: "text"; text: string }
 	| { kind: "loading" }
+	/** Its text was to come from a read that failed. */
+	| { kind: "failed" }
 	| { kind: "unavailable"; text: string };
 
 /**
@@ -70,13 +72,14 @@ export function plainText(markdown: string): string {
 	);
 }
 
-/** A GitHub thread's blurb: its excerpt once read, else loading or why not. */
-function githubBlurb(t: ReviewThread): Blurb {
+/** A GitHub thread's blurb: its excerpt once read, else loading (or failed) or why not. */
+function githubBlurb(t: ReviewThread, contentFailed: boolean): Blurb {
 	if (t.unavailable === "deleted")
 		return { kind: "unavailable", text: "Deleted on GitHub" };
 	if (t.unavailable === "unreadable")
 		return { kind: "unavailable", text: "Couldn't be read from GitHub" };
-	if (!t.loaded) return { kind: "loading" };
+	if (!t.loaded)
+		return contentFailed ? { kind: "failed" } : { kind: "loading" };
 	return { kind: "text", text: t.excerpt };
 }
 
@@ -117,13 +120,15 @@ function githubPlace(
 export function githubRows(
 	threads: readonly ReviewThread[],
 	shown: ReadonlyMap<string, ReviewThread>,
+	/** The read that brings the threads' text failed. */
+	opts: { contentFailed?: boolean } = {},
 ): PanelRow[] {
 	return threads.map((t) => ({
 		key: `gh:${t.id}`,
 		id: t.id,
 		...githubPlace(t, shown),
 		focus: { id: t.id },
-		blurb: githubBlurb(t),
+		blurb: githubBlurb(t, opts.contentFailed === true),
 		at: t.lastActivityAt,
 		resolved: t.resolved,
 		last: {
@@ -210,4 +215,49 @@ export function listedRows(
 		.map((r, i) => ({ r, i, ms: timeOf(r.at) }))
 		.sort((x, y) => y.ms - x.ms || x.i - y.i)
 		.map(({ r }) => r);
+}
+
+/** What the page knows of where conversations' cards are (FilesPage). */
+export interface FocusWorld {
+	/** The diff's file at `path` (old paths too), by index; undefined: none. */
+	fileOf: (path: string) => number | undefined;
+	/** The "needs eyes" filter hides file `index`. */
+	hidden: (index: number) => boolean;
+	/** The review threads listed in this view (the rows' own). */
+	githubListed: ReadonlySet<string>;
+	/** Review threads whose cards are listed after the files (not in the comparison, unplaced on a failure). */
+	githubAfter: ReadonlySet<string>;
+	/** Agent threads whose cards are listed after the files. */
+	agentAfter: ReadonlySet<string>;
+	/** The placements are still on their way: a card may yet show anywhere. */
+	pending: boolean;
+}
+
+/**
+ * What a row's pick does: the file to open (null: none), whether "needs
+ * eyes" must let that file show again, and the card to ask for (null: no
+ * card can show it in this view; nothing is left pending).
+ */
+export interface FocusPlan {
+	open: number | null;
+	unhide: boolean;
+	request: PanelRow["focus"] | null;
+}
+
+export function focusPlan(row: PanelRow, w: FocusWorld): FocusPlan {
+	const none = { open: null, unhide: false, request: null };
+	const onGithub = row.key.startsWith("gh:") || !!row.focus.conversation;
+	// A conversation on a review thread this view doesn't list (published
+	// after the viewed patch set): no card holds it here.
+	if (onGithub && !w.githubListed.has(row.focus.id)) {
+		const file = w.fileOf(row.path);
+		return { ...none, open: file ?? null, unhide: false };
+	}
+	const after = onGithub ? w.githubAfter : w.agentAfter;
+	if (after.has(row.focus.id)) return { ...none, request: row.focus };
+	const file = w.fileOf(row.path);
+	if (file !== undefined) {
+		return { open: file, unhide: w.hidden(file), request: row.focus };
+	}
+	return w.pending ? { ...none, request: row.focus } : none;
 }

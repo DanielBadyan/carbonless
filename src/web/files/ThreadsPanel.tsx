@@ -85,6 +85,18 @@ function Blurb(props: { id: string; blurb: BlurbData }) {
 			</span>
 		);
 	}
+	if (blurb.kind === "failed") {
+		return (
+			<span
+				id={props.id}
+				data-testid="threads-row-blurb-failed"
+				className="flex h-4 items-center gap-1 pl-[1.375rem] text-xs text-bad"
+			>
+				<AlertIcon size={12} aria-hidden />
+				Couldn't load
+			</span>
+		);
+	}
 	return (
 		<span
 			id={props.id}

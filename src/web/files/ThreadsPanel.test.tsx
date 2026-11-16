@@ -147,6 +147,22 @@ describe("ThreadsPanel", () => {
 		).toBeNull();
 	});
 
+	it("a row whose text failed to load says so beneath", () => {
+		const rows = githubRows(
+			[reviewThread({ id: "f", loaded: false, excerpt: "" })],
+			new Map(),
+			{ contentFailed: true },
+		);
+		render(<Panel people={rows} ai={[]} />);
+		const failed = within(region("People")).getByTestId(
+			"threads-row-blurb-failed",
+		);
+		expect(failed.textContent).toBe("Couldn't load");
+		expect(
+			within(region("People")).queryByTestId("threads-row-blurb-loading"),
+		).toBeNull();
+	});
+
 	it("a row goes to its thread", async () => {
 		const user = userEvent.setup();
 		const onJump = vi.fn();
@@ -289,7 +305,7 @@ describe("FileTree's tabs", () => {
 		const tab = screen.getByRole("tab", {
 			name: "Threads, couldn't load People",
 		});
-		expect(within(tab).getByTestId("threads-failed")).toBeTruthy();
+		expect(within(tab).getByTestId("threads-tab-failed")).toBeTruthy();
 		expect(within(tab).queryByTestId("threads-open")).toBeNull();
 	});
 });

@@ -936,7 +936,7 @@ function TabButton(props: {
 							<AlertIcon
 								size={12}
 								aria-hidden
-								data-testid="threads-failed"
+								data-testid="threads-tab-failed"
 								className="text-bad"
 							/>
 						) : (

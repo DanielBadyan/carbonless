@@ -1,11 +1,15 @@
 import { type RefObject, useEffect, useSyncExternalStore } from "react";
+import { usePageActive } from "../pageActive";
+import { stickyBottom } from "./scrollAnchor";
 
 /**
  * A request to show one conversation's card in Files changed (the Threads
  * tab's rows): whatever holds it opens (a line's or a hidden run's bubble,
  * the file bubble, a collapsed card, the thread's agent conversation), and
- * the card scrolls into view under the sticky stack. Each request (`seq`)
- * scrolls once, by the first card to show it; a new click is a new request,
+ * the card scrolls in just below the sticky stack. A request lasts until a
+ * card shown on screen scrolls to it, or until the reviewer goes anywhere
+ * else (`cancel`: another pick, a find step, a link, a file opened or
+ * closed, another comparison, another page). A new click is a new request,
  * so the same row again still scrolls.
  */
 export interface ThreadFocus {
@@ -14,11 +18,10 @@ export interface ThreadFocus {
 	id: string;
 	/** On a review thread: its agent conversation (an agent thread's id) opens too. */
 	conversation?: string;
-	/** A card took it into view. */
-	scrolled: boolean;
 }
 
 let current: ThreadFocus | null = null;
+let lastSeq = 0;
 const listeners = new Set<() => void>();
 const notify = () => {
 	for (const l of listeners) l();
@@ -26,24 +29,26 @@ const notify = () => {
 
 export const threadFocus = {
 	request(target: { id: string; conversation?: string }): ThreadFocus {
+		lastSeq += 1;
 		current = {
-			seq: (current?.seq ?? 0) + 1,
+			seq: lastSeq,
 			id: target.id,
 			...(target.conversation ? { conversation: target.conversation } : {}),
-			scrolled: false,
 		};
 		notify();
 		return current;
 	},
+	/** The pending request, if any. */
 	get: () => current,
-	/** The card of request `seq` is in view. */
+	/** Ends request `seq`: its card is in view. */
 	scrolled(seq: number) {
-		if (current?.seq !== seq || current.scrolled) return;
-		current = { ...current, scrolled: true };
+		if (current?.seq !== seq) return;
+		current = null;
 		notify();
 	},
-	/** Forgets any request (tests). */
-	reset() {
+	/** Ends any pending request: the reviewer went elsewhere. */
+	cancel() {
+		if (current === null) return;
 		current = null;
 		notify();
 	},
@@ -55,24 +60,46 @@ export const threadFocus = {
 	},
 };
 
-/** The pending request, if any (one not yet scrolled to). */
-export function useThreadFocus(): ThreadFocus | null {
-	const focus = useSyncExternalStore(threadFocus.subscribe, threadFocus.get);
-	return focus && !focus.scrolled ? focus : null;
+/**
+ * Whether `el` is drawn where the reviewer can see it: in the document,
+ * laid out, and not inside a hidden or inert part (a kept page that isn't
+ * showing, a closed sheet).
+ */
+export function onScreen(el: Element | null): el is Element {
+	return (
+		el?.isConnected === true &&
+		el.getClientRects().length > 0 &&
+		el.closest("[inert],[hidden]") === null
+	);
 }
 
 /**
- * The pending request for any of `ids` (a container's threads), once per
- * request: what to open for it.
+ * Scrolls `el`'s top just below the sticky stack over it: the app header,
+ * the Files bar and its file's header (as a thread link's landing does).
+ */
+function scrollUnder(el: Element, margin = 8) {
+	window.scrollTo({
+		top:
+			el.getBoundingClientRect().top +
+			window.scrollY -
+			stickyBottom(el) -
+			margin,
+	});
+}
+
+/**
+ * The pending request for one of a container's threads (`has`), once per
+ * request, on the page showing: what to open for it.
  */
 export function useFocusAmong(
 	has: (id: string) => boolean,
 	open: (focus: ThreadFocus) => void,
 ) {
+	const active = usePageActive();
 	// Only a request for one of its threads re-renders it.
 	const hit = useSyncExternalStore(threadFocus.subscribe, () => {
 		const focus = threadFocus.get();
-		return focus && !focus.scrolled && has(focus.id) ? focus : null;
+		return active && focus && has(focus.id) ? focus : null;
 	});
 	const seq = hit?.seq ?? 0;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per request that names one of its threads.
@@ -82,34 +109,42 @@ export function useFocusAmong(
 }
 
 /**
- * A card that can be asked for: when a request names `id`, it opens
- * (`open`: expands, opens its conversation) and, once drawn, scrolls into
- * view below the sticky stack (the page's scroll-padding).
+ * A card that can be asked for: when a request names `id` and the card is
+ * on screen (on the page showing, not a hidden copy elsewhere), it opens
+ * (`open`: expands, opens its conversation) and, once drawn, scrolls in
+ * below the sticky stack; only then is the request done. A copy that
+ * isn't on screen neither opens nor takes the request.
  */
 export function useFocusCard(
 	id: string | undefined,
 	ref: RefObject<Element | null>,
 	open?: (focus: ThreadFocus) => void,
 ) {
+	const active = usePageActive();
 	// Only a request for this card re-renders it.
 	const hit = useSyncExternalStore(threadFocus.subscribe, () => {
 		const focus = threadFocus.get();
-		return focus && !focus.scrolled && id && focus.id === id ? focus : null;
+		return active && focus && id && focus.id === id ? focus : null;
 	});
 	const seq = hit?.seq ?? 0;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per request that names this card.
 	useEffect(() => {
-		if (!hit) return;
+		if (!hit || !onScreen(ref.current)) return;
 		open?.(hit);
-		// After what opening it draws (and any landing's own scroll).
-		let frame = requestAnimationFrame(() => {
-			frame = requestAnimationFrame(() => {
+		// After what opening it draws.
+		let inner = 0;
+		const outer = requestAnimationFrame(() => {
+			inner = requestAnimationFrame(() => {
 				const el = ref.current;
-				if (!el) return;
-				el.scrollIntoView?.({ block: "start" });
+				// Still asked for (no other copy took it, nothing cancelled it).
+				if (threadFocus.get()?.seq !== hit.seq || !onScreen(el)) return;
+				scrollUnder(el);
 				threadFocus.scrolled(hit.seq);
 			});
 		});
-		return () => cancelAnimationFrame(frame);
+		return () => {
+			cancelAnimationFrame(outer);
+			cancelAnimationFrame(inner);
+		};
 	}, [seq]);
 }

@@ -57,6 +57,31 @@ const region = (scope: Locator, name: string) =>
 	scope.getByRole("region", { name, exact: true });
 const rowNames = (r: Locator) => r.getByTestId("threads-row-name");
 
+/**
+ * The card is in view and its top below the sticky stack over it (the
+ * Files bar, and its file's header when that is stuck), not under it.
+ */
+async function expectShown(card: Locator) {
+	await expect(card).toBeInViewport();
+	await expect
+		.poll(() =>
+			card.evaluate((el) => {
+				const top = el.getBoundingClientRect().top;
+				const bar = document.querySelector("[data-page-bar]");
+				const header = el
+					.closest("section[data-path]")
+					?.querySelector(":scope > header");
+				const stuck =
+					header && getComputedStyle(header).position === "sticky"
+						? header.getBoundingClientRect().bottom
+						: 0;
+				const stack = Math.max(bar?.getBoundingClientRect().bottom ?? 0, stuck);
+				return top - stack;
+			}),
+		)
+		.toBeGreaterThanOrEqual(-1);
+}
+
 test.describe("on GitHub's threads", () => {
 	test("Threads tab: loads with a spinner, lists newest first, shows resolved on the toggle, folds, survives a reload, and a row jumps to its thread", async ({
 		page,
@@ -216,7 +241,7 @@ test.describe("on GitHub's threads", () => {
 		const card = section
 			.getByTestId("files-thread")
 			.filter({ hasText: "Because" });
-		await expect(card).toBeInViewport();
+		await expectShown(card);
 		await expect(
 			section
 				.locator('tr[data-testid="diff-line"][data-new-no="3"]')
@@ -296,32 +321,35 @@ test.describe("every kind of thread opens, in view", () => {
 		// In hidden lines: its run's bubble opens, the lines stay hidden,
 		// no "isn't in this diff".
 		await jump(page, /last by gapper/);
-		await expect(card("Gap note")).toBeInViewport();
+		await expectShown(card("Gap note"));
 		await expect(section.getByTestId("landing-hint")).toHaveCount(0);
 
 		// The same row again, scrolled away: in view again, still open.
 		await page.evaluate(() => window.scrollTo(0, 0));
 		await jump(page, /last by gapper/);
-		await expect(card("Gap note")).toBeInViewport();
+		await expectShown(card("Gap note"));
+		await expect(
+			section.getByRole("button", { name: /^1 comment on hidden line/ }),
+		).toHaveAttribute("aria-expanded", "true");
 
 		// A file comment: the file bubble's card.
 		await jump(page, /last by filer/);
-		await expect(card("File note")).toBeInViewport();
+		await expectShown(card("File note"));
 
 		// A line the tracer can't place in the file: its card under the
 		// file's header, with its fate.
 		await jump(page, /last by ender/);
-		await expect(
+		await expectShown(
 			section
 				.getByTestId("unplaced-thread")
 				.filter({ hasText: "Past the end" }),
-		).toBeInViewport();
+		);
 
 		// Its file not in the comparison: its card after the files.
 		await jump(page, /last by outsider/);
-		await expect(
+		await expectShown(
 			page.getByTestId("unplaced-thread").filter({ hasText: "Outside note" }),
-		).toBeInViewport();
+		);
 	});
 });
 
@@ -376,7 +404,7 @@ test.describe("on the reviewer's agent threads", () => {
 		await region(again, "AI")
 			.getByRole("button", { name: /^src\/calc\.ts:3, last by the agent/ })
 			.click();
-		await expect(card).toBeInViewport();
+		await expectShown(card);
 		await expect(bubble).toHaveAttribute("aria-expanded", "true");
 	});
 	test("an agent conversation on a GitHub thread opens that thread with the conversation, in view", async ({
@@ -429,7 +457,7 @@ test.describe("on the reviewer's agent threads", () => {
 		const ai = region(side, "AI");
 		await expect(ai.getByTestId("threads-row-blurb")).toHaveText("Sure?");
 		await ai.getByRole("button", { name: /^src\/calc\.ts:3/ }).click();
-		await expect(thread).toBeInViewport();
+		await expectShown(thread);
 		await expect(panel).toHaveAttribute("data-open", "true");
 	});
 });

@@ -105,7 +105,13 @@ import { ShowResolvedToggle, ThreadsPanel, threadsCount } from "./ThreadsPanel";
 import { TreeColumn } from "./TreeResizer";
 import { threadFocus } from "./threadFocus";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
-import { agentRows, githubRows, type PanelRow } from "./threadRows";
+import {
+	agentRows,
+	type FocusWorld,
+	focusPlan,
+	githubRows,
+	type PanelRow,
+} from "./threadRows";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -312,6 +318,11 @@ function useDiffThreads(
 	 */
 	listed: ReviewThread[] | undefined;
 	failed: Error | null;
+	/**
+	 * The summaries are in but a later stage failed: the threads not yet
+	 * read (`loaded` false) won't be.
+	 */
+	contentFailed: boolean;
 	/** Still on their way: nothing failed and none are in yet. */
 	loading: boolean;
 	/** The threads whose file is not in the comparison (the trailing group). */
@@ -461,6 +472,7 @@ function useDiffThreads(
 		all: view?.threads,
 		listed: visible,
 		failed,
+		contentFailed: view !== undefined && error !== null,
 		loading: !threads && !failed,
 		outside,
 		unplacedOnError,
@@ -779,6 +791,9 @@ export function FilesPage() {
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
 	const toggleFile = (index: number, expanded: boolean, auto = false) => {
+		// The reviewer opened or closed a file: a Threads row's pending
+		// card is no longer where they are going.
+		if (!auto) threadFocus.cancel();
 		// A file opened or closed here is no move-on's any more: its lines
 		// arriving later are the reviewer's own open, not unseen.
 		setMovedOn(null);
@@ -854,6 +869,7 @@ export function FilesPage() {
 	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
+		threadFocus.cancel();
 		setMovedOn(null);
 		const fromSheet = sheetOpen;
 		if (fromSheet) setSheetOpen(false);
@@ -950,6 +966,7 @@ export function FilesPage() {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
 	useEffect(() => {
 		if (!active || !data || !search.path) return;
+		threadFocus.cancel();
 		// An agent conversation's link: its card opens once it shows.
 		if (search.conversation) {
 			requestConversationOpen(search.conversation, search.message);
@@ -1028,6 +1045,7 @@ export function FilesPage() {
 	// sees (painted current where they look, in the open file): on to the
 	// next. One in a closed file is gone to: its step opens the file.
 	const stepFind = (dir: 1 | -1) => {
+		threadFocus.cancel();
 		const hit = find.step(
 			dir,
 			(h) => h.index === openIndex && hitSeen(h, appHeader + barHeight),
@@ -1092,6 +1110,7 @@ export function FilesPage() {
 		all: allThreads,
 		listed: listedThreads,
 		failed: threadsFailed,
+		contentFailed,
 		loading: threadsLoading,
 		outside,
 		unplacedOnError,
@@ -1260,8 +1279,11 @@ export function FilesPage() {
 		[threads],
 	);
 	const peopleRows = useMemo(
-		() => (listedThreads ? githubRows(listedThreads, shownById) : null),
-		[listedThreads, shownById],
+		() =>
+			listedThreads
+				? githubRows(listedThreads, shownById, { contentFailed })
+				: null,
+		[listedThreads, shownById, contentFailed],
 	);
 	// No agent on this review (writes off, or the server has none: 404):
 	// none, known once the overview says so. Until then, loading.
@@ -1298,20 +1320,59 @@ export function FilesPage() {
 		shownById,
 	]);
 	const peopleFailed = threadsFailed !== null;
-	/** A row picked: its thread in Files changed, as a thread link lands. */
+	// A Threads row's card still pending is no longer asked for once the
+	// page hides, or another comparison or read shows.
+	const comparisonKey = `${data?.revision}|${threads?.readId}|${JSON.stringify(placingTo)}`;
+	useEffect(() => {
+		if (!active) threadFocus.cancel();
+	}, [active]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once per comparison or read.
+	useEffect(() => () => threadFocus.cancel(), [comparisonKey]);
+	// Where the conversations' cards are, for a row's pick.
+	const focusWorld = useMemo<FocusWorld>(() => {
+		const shownFiles = new Set(files.map((f) => f.index));
+		return {
+			fileOf: (path) =>
+				data ? landingFile(data.files, { path })?.index : undefined,
+			hidden: (index) => !shownFiles.has(index),
+			githubListed: new Set((listedThreads ?? []).map((t) => t.id)),
+			githubAfter: new Set([
+				...outside.map((o) => o.thread.id),
+				...(unplacedOnError ?? []).map((t) => t.id),
+			]),
+			agentAfter: new Set([
+				...agentOutsideShown.map((p) => p.thread.id),
+				...(agentPlacingState.error
+					? agentWaitingList.map((p) => p.thread.id)
+					: []),
+			]),
+			pending: placementInfo.pending || agentPending,
+		};
+	}, [
+		files,
+		data,
+		listedThreads,
+		outside,
+		unplacedOnError,
+		agentOutsideShown,
+		agentPlacingState.error,
+		agentWaitingList,
+		placementInfo.pending,
+		agentPending,
+	]);
+	/** A row picked: its conversation's card, open and in view. */
 	const jumpTo = (row: PanelRow) => {
 		setMovedOn(null);
 		if (sheetOpen) setSheetOpen(false);
 		// Its file opens (as a pick does); the card opens wherever it is (a
 		// line, a hidden run, the file bubble, the lists after the files)
-		// and scrolls into view (threadFocus).
-		const file = data ? landingFile(data.files, { path: row.path }) : undefined;
-		// "Needs eyes" hides a fully carried file: its threads show again.
-		if (file && eyesOnly && !files.some((f) => f.index === file.index)) {
-			setEyesOnly(false);
-		}
-		if (file && file.index !== openIndex) openOnly(file.index);
-		threadFocus.request(row.focus);
+		// and scrolls in (threadFocus). "Needs eyes" lets the file show
+		// again when it hid the card's file.
+		const plan = focusPlan(row, focusWorld);
+		threadFocus.cancel();
+		if (plan.unhide) setEyesOnly(false);
+		if (plan.open !== null && plan.open !== openIndex) openOnly(plan.open);
+		if (plan.request) threadFocus.request(plan.request);
 	};
 	const tree = data && (
 		<FileTree
