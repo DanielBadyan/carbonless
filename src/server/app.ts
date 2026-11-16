@@ -871,11 +871,6 @@ export async function buildApp(
 					return { ok: true };
 				},
 			);
-			// The reviewer's Disconnect of a joined session.
-			review.post("/agent/disconnect", async (request) => {
-				await agentOf(request).disconnect();
-				return { ok: true };
-			});
 			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();

@@ -1041,7 +1041,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		await approve();
 		writeFileSync(join(dir, "acp-on"), "");
 		expect(acpOff()).toBe(true);
-		await host.disconnect();
+		await host.detach();
 		expect(acpOff()).toBe(false);
 	});
 
@@ -1093,9 +1093,9 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(runner.asked).not.toHaveBeenCalled();
 	});
 
-	it("disconnect: left in the status, the ACP buddy stays off", async () => {
+	it("Detach of a joined session: left in the status, the ACP buddy stays off", async () => {
 		await approve();
-		await host.disconnect();
+		await host.detach();
 		const s = await host.status();
 		expect(s.via).toBeUndefined();
 		expect(s.joined).toBeUndefined();
@@ -1367,14 +1367,6 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(host.join.view().left).toBeUndefined();
 		});
 
-		it("the reviewer's Disconnect of a spawned agent is its Detach", async () => {
-			await spawnedHost();
-			await host.disconnect();
-			expect(runner.detach).toHaveBeenCalledTimes(1);
-			expect(existsSync(join(dir, "acp-on"))).toBe(false);
-			expect(host.join.isJoined()).toBe(false);
-		});
-
 		it("a human question wakes the spawned agent through the runner, never a watcher", async () => {
 			const token = await spawnedHost();
 			expect(host.join.watcher(token)).toBeNull();
@@ -1507,7 +1499,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			const x = await host.open({ clientId: "c1", text: "Why?", span });
 			for (const leave of [
 				(token: string) => host.sessionDetach(token),
-				(_: string) => host.disconnect(),
+				(_: string) => host.detach(),
 				// replaced by a newer join
 				async (_: string) => {
 					await approve();
@@ -2027,7 +2019,7 @@ describe("AgentHost with a session joined through MCP", () => {
 				via: "mcp",
 				machine: WHO.machine,
 			});
-			await host.disconnect();
+			await host.detach();
 			const secret = "S".repeat(43);
 			const { request } = host.join.admit(
 				{ name: "fake-acp", machine: "devbox", harness: "1.0.0" },

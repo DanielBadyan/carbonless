@@ -1476,7 +1476,7 @@ describe("/mcp", () => {
 			await vi.waitFor(async () =>
 				expect((await status()).state).toBe("ready"),
 			);
-			const off = await api("/agent/disconnect", "POST");
+			const off = await api("/agent/detach", "POST");
 			expect(off.statusCode).toBe(200);
 			expect(await lineOf(res)).toMatch(/no longer joined.*disconnected/);
 			expect((await watcher(a.token)).res.status).toBe(410);

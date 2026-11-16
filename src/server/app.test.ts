@@ -1431,7 +1431,7 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
-		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;
 			if (!host) throw new Error("no agent");
@@ -1461,7 +1461,7 @@ describe("API", () => {
 			});
 			expect(joined.spawned).toBeUndefined();
 			expect(joined.joinRequest).toBeUndefined();
-			const off = await post("/api/agent/disconnect");
+			const off = await post("/api/agent/detach");
 			expect(off.statusCode, off.body).toBe(200);
 			const left: AgentStatus = await get("/api/agent");
 			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
@@ -1643,7 +1643,6 @@ describe("API", () => {
 				["GET", "/api/agent/threads"],
 				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
-				["POST", "/api/agent/disconnect"],
 				["POST", "/api/agent/start"],
 				["POST", "/api/agent/detach"],
 			] as const) {
@@ -1665,7 +1664,6 @@ describe("API", () => {
 					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
 					{ approve: true },
 				],
-				["POST", "/api/agent/disconnect", {}],
 				["POST", "/api/agent/start", {}],
 				["POST", "/api/agent/detach", {}],
 				["PUT", "/api/config/agent", null],

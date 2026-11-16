@@ -734,13 +734,6 @@ export class AgentHost {
 		await this.runner.detach();
 	}
 
-	/** The reviewer's Disconnect of a joined session (a spawned agent's ends it, as Detach). */
-	async disconnect(): Promise<void> {
-		await this.#restored;
-		if (this.join.isSpawned()) return this.detach();
-		this.join.leave("disconnected");
-	}
-
 	async close(): Promise<void> {
 		this.#closed = true;
 		if (this.#pageTimer) clearTimeout(this.#pageTimer);
