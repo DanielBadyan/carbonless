@@ -166,6 +166,9 @@ interface VerdictReadState {
 export class UnknownReadError extends Error {}
 
 /** The session has closed (crb shutting down): HTTP 503. */
+/** Tries per session at a snapshot's split carry (#carrySplits). */
+const SPLIT_CARRY_TRIES = 2;
+
 export class SessionClosedError extends Error {}
 
 /** crb --head and the hidden dev options (--as-of, --viewer). */
@@ -262,6 +265,8 @@ export class Session {
 	readonly #snapshots = new Map<string, Snapshot>();
 	/** Snapshot ids whose split carries are written (#carrySplits). */
 	readonly #splitsCarried = new Set<string>();
+	/** Snapshot ids' split carry attempts so far, done or not (#carrySplits). */
+	readonly #splitsTried = new Map<string, number>();
 	/**
 	 * Each patch set's commits over its merge base (info().patchsets'
 	 * `commits`), by "<merge base> <head>": counted in the background on
@@ -632,11 +637,21 @@ export class Session {
 		// them unreviewed.
 		// Never in a view of the past or a pinned head (dev modes that don't
 		// otherwise write): their old marks just read unreviewed there.
+		let carried: boolean | null = null;
 		const progressNow =
 			state.patchset && !asOf && !pinned
 				? await step("crb: split carries", () =>
 						reviews.carrySplits(reviewId, viewer, snapshot),
-					).catch(() => state)
+					).then(
+						(after) => {
+							carried = true;
+							return after;
+						},
+						() => {
+							carried = false;
+							return state;
+						},
+					)
 				: state;
 		// The PR's head as fetched: the graph's head dot, with its commits
 		// over the patch set (none for a view that never moves on).
@@ -668,6 +683,10 @@ export class Session {
 			headInfo,
 		);
 		if (options.reuseOpenHead && !asOf) session.#openHeadAt = metaAt;
+		// The open's carry counts as the snapshot's (#carrySplits): done, or
+		// one try spent and one left for the next read.
+		if (carried === true) session.#splitsCarried.add(snapshot.revision);
+		else if (carried === false) session.#splitsTried.set(snapshot.revision, 1);
 		return session;
 	}
 
@@ -1949,6 +1968,8 @@ export class Session {
 
 	async review(): Promise<ReviewView> {
 		const snapshot = this.#snapshot;
+		// A carry the open couldn't write gets its second try here.
+		await this.#carrySplits(snapshot);
 		const view = buildReviewView(snapshot, await this.#progress());
 		if (snapshot === this.#snapshot) this.#patchset = view.patchset;
 		return view;
@@ -1973,9 +1994,15 @@ export class Session {
 
 	/** The patch set's snapshot: the current one, a kept one, or rebuilt. */
 	async #snapshotOf(record: PatchsetRecord): Promise<Snapshot> {
-		if (this.#snapshot.revision === record.revision) return this.#snapshot;
-		const kept = this.#snapshots.get(record.revision);
-		if (kept) return kept;
+		const built =
+			this.#snapshot.revision === record.revision
+				? this.#snapshot
+				: this.#snapshots.get(record.revision);
+		if (built) {
+			// One whose carry failed gets its second try (#carrySplits).
+			await this.#carrySplits(built);
+			return built;
+		}
 		const pins = await this.reviews.patchsetPins(
 			this.reviewId,
 			this.viewer,
@@ -1998,11 +2025,16 @@ export class Session {
 	 * pieces it now cuts them into (ReviewService.carrySplits, CAR-156),
 	 * once per snapshot per session; writes nothing when there is nothing
 	 * to carry. A failure leaves the pieces unreviewed (principle 2) and is
-	 * tried again on the next build.
+	 * tried once more, on the next read of that snapshot (review, reviewAt,
+	 * a comparison); after two failures the session leaves it (a new open
+	 * tries again). Never in an as-of or pinned view.
 	 */
 	async #carrySplits(snapshot: Snapshot): Promise<void> {
 		if (this.#splitsCarried.has(snapshot.revision)) return;
 		if (this.options.asOf || this.pinned) return;
+		const tries = this.#splitsTried.get(snapshot.revision) ?? 0;
+		if (tries >= SPLIT_CARRY_TRIES) return;
+		this.#splitsTried.set(snapshot.revision, tries + 1);
 		try {
 			this.#noted(
 				await this.reviews.carrySplits(this.reviewId, this.viewer, snapshot),
