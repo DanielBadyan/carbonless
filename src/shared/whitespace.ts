@@ -38,6 +38,9 @@ export interface Side {
 }
 
 /**
+ * Shared by the view's `~` rows and the server's cut (splitHunk): a change
+ * here moves cluster keys, see splitHunk.
+ *
  * The heaviest common subsequence of `a` and `b` under key equality, as
  * index pairs in order. A context side weighs P = n + m + 1 (more than
  * every change-to-change match together could), a change side nothing but
@@ -128,6 +131,16 @@ export interface HunkPiece {
 }
 
 /**
+ * The most removed × added lines a hunk may have for splitHunk to match
+ * it (O(n·m), on the server's event loop as a snapshot is built): about
+ * 4 ms of CPU at the cap (500 × 500), measured 2026-11-16, against 45-55 ms
+ * for 2000 × 2000. A hunk over it stays one change cluster (the safe
+ * direction: progress counts it), unless both sides are the same keys line
+ * for line (a wholesale re-indent: no matching needed).
+ */
+export const SPLIT_CELLS = 250_000;
+
+/**
  * A `-U0` hunk cut at its whitespace-only runs (CAR-156): the longest
  * order-preserving matching of its removed lines to its added ones under
  * `-w` equality (`matchSides`, every side a change), each maximal run of
@@ -139,9 +152,16 @@ export interface HunkPiece {
  * last removed / added line has no newline at end of file.
  *
  * The pieces cover every line exactly once, in order (whitespace.test.ts
- * checks it for any input). A hunk with nothing to pair, or over
- * PAIR_CAP on a side and not the same keys line for line, is one change
- * piece; an all-whitespace hunk is one whitespace-only piece.
+ * checks it for any input). A hunk with nothing to pair, or of more than
+ * SPLIT_CELLS removed × added lines and not the same keys line for line,
+ * is one change piece; an all-whitespace hunk is one whitespace-only piece.
+ *
+ * **Part of cluster identity.** Where this cuts decides the clusters and
+ * so their keys (docs/review-data-storage.md, "Split carries"): any change
+ * here or in `matchSides` (weights, tie-breaks, the fast path, the caps,
+ * `whitespaceKey`) moves cuts, and marks on pieces cut the old way would no
+ * longer match (fail safe, but the reviewer loses them). Treat it as a key
+ * format change; `snapshot.test.ts` pins the keys of a few fixed hunks.
  */
 export function splitHunk(
 	removed: readonly string[],
@@ -170,7 +190,7 @@ export function splitHunk(
 	const b = side(added, noNewlineNew);
 	const same = n === m && a.every((s, i) => s.key === (b[i] as Side).key);
 	if (!same) {
-		if (n > PAIR_CAP || m > PAIR_CAP) return [whole];
+		if (n * m > SPLIT_CELLS) return [whole];
 		const keys = new Set(a.map((s) => s.key));
 		if (!b.some((s) => keys.has(s.key))) return [whole];
 	}

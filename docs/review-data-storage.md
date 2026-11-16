@@ -651,6 +651,24 @@ clusters the old way, so it still reads the hunk's own mark, never more.
 Home never writes: it folds the carries in memory
 (`withSplitCarries`), as the review's next open writes them.
 
+**The cut is part of cluster identity.** Where `splitHunk` cuts decides
+which clusters exist and so their keys. A change to it, or to the matcher
+it shares with the view (`matchSides`: weights, tie-breaks, the fast path;
+`whitespaceKey`; the `SPLIT_CELLS` cap), moves cuts, and marks on pieces
+cut the old way stop matching: they fail safe (unreviewed), but the
+reviewer loses them, and the split carry only maps whole-hunk keys. Treat
+such a change as a key format change (carry it, or say so in the release);
+`snapshot.test.ts` pins the keys of a few fixed hunks. A hunk over
+`SPLIT_CELLS` (removed × added lines, 250,000) isn't cut unless both sides
+are the same keys line for line: the matching costs about 4 ms of CPU at
+the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on the server as the
+snapshot is built.
+
+**Mixed versions.** Once progress refs sync, an older crb that unticks the
+whole hunk (its key still a cluster there) leaves pieces already
+split-carried as they were: they still show a mark the reviewer made,
+though not their latest intent.
+
 **Departures.** It is a new event type, not a `carried` rule: `carried` is
 between two patch sets and its entries are never sources for the next
 carry (the fold's carried guard), while a split carry is a re-keying

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio } from "../../test/cpu.js";
 import {
 	type HunkPiece,
-	PAIR_CAP,
+	SPLIT_CELLS,
 	splitHunk,
 	stripWhitespace,
 	whitespaceEqual,
@@ -146,8 +147,15 @@ describe("splitHunk", () => {
 		expect(split(["a", " b"], ["a ", "b"], true, true)).toEqual(["~a, b|a ,b"]);
 	});
 
-	it("keeps an unequal-length hunk over the size cap one change", () => {
-		const removed = Array.from({ length: PAIR_CAP + 1 }, (_, i) => ` l${i}`);
+	it("matches a hunk up to the cap, and keeps one over it one change", () => {
+		const within = Array.from({ length: 499 }, (_, i) => ` w${i}`);
+		expect(
+			splitHunk([...within, "x"], [...within.map((l) => l.trim()), "y"]).map(
+				(p) => p.whitespaceOnly,
+			),
+		).toEqual([true, false]);
+		const removed = Array.from({ length: 501 }, (_, i) => ` l${i}`);
+		expect(removed.length * (removed.length + 1)).toBeGreaterThan(SPLIT_CELLS);
 		const added = [...removed.map((l) => l.trim()), "extra"];
 		expect(splitHunk(removed, added)).toEqual([
 			{
@@ -168,6 +176,18 @@ describe("splitHunk", () => {
 				whitespaceOnly: true,
 			},
 		]);
+	});
+
+	it("does no O(n·m) work on a hunk over the cap: it costs about what a re-indent of the same size does", () => {
+		const old = Array.from({ length: 2000 }, (_, i) => `  l${i % 50}`);
+		const reindent = old.map((l) => l.trim());
+		const rewritten = [...old.map((l, i) => (i % 3 ? l.trim() : `${l}!`)), "x"];
+		const { ratio } = bestCpuRatio(
+			() => splitHunk(old, rewritten),
+			() => splitHunk(old, reindent),
+		);
+		// The matching would be well over 10x (about 50 ms against 2).
+		expect(ratio).toBeLessThan(3);
 	});
 
 	it("covers every line exactly once and labels only -w-equal pairs, for any generated hunk", () => {

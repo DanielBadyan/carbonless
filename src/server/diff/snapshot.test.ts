@@ -9,10 +9,12 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import type { Cluster, Snapshot } from "../../shared/types.js";
+import { parseU0Patch } from "./clusters.js";
 import { listChangedFiles } from "./files.js";
 import { clusterKeys } from "./identity.js";
 import {
 	buildSnapshot,
+	cutClusters,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
@@ -582,5 +584,75 @@ describe("whitespace-only runs are clusters of their own (CAR-156)", () => {
 			"add:",
 			"context:q",
 		]);
+	});
+});
+
+describe("the cut is part of cluster identity (CAR-156)", () => {
+	it("pins the pieces' keys, flags and whole-hunk keys of fixed hunks: changing the cut changes keys", () => {
+		// Change / whitespace only / change; and a deletion, a re-indent, an addition.
+		const patch =
+			"@@ -2,6 +2,6 @@\n-a\n-b\n-  c\n-  d\n-e\n-f\n+A\n+B\n+c\n+d\n+E\n+F\n@@ -10,3 +10,3 @@\n-gone\n-  b1\n-  b2\n+b1\n+b2\n+new\n";
+		const newLines = [
+			"x",
+			"A",
+			"B",
+			"c",
+			"d",
+			"E",
+			"F",
+			"y",
+			"z",
+			"b1",
+			"b2",
+			"new",
+			"w",
+		];
+		const hunks = parseU0Patch(patch).map((c) => ({
+			...c,
+			kind: "lines" as const,
+		}));
+		const pieces = cutClusters(hunks, (cs) =>
+			clusterKeys("pin.ts", cs, newLines),
+		);
+		const H1 =
+			"35dd0fb1a6d7c6027046a57f11edac073159a6af469e26d654a851c390431c67";
+		const H2 =
+			"cb73730b567b19658bc8c50a13b5bcb7f0ab1236d08fa5f454cca383ce98cffe";
+		expect(
+			pieces.map((c) => [c.key, c.whitespaceOnly ?? false, c.split?.key]),
+		).toEqual([
+			[
+				"90fb21e0cd88e607b32a1774e9640366d23424fa7ad79d52e3dc15ed65cbb4a7",
+				false,
+				H1,
+			],
+			[
+				"bd127ad9d802f80bffc09937d7680c472e6fa200733f90ebd34c1b871b222651",
+				true,
+				H1,
+			],
+			[
+				"980fbb79e35b46f1c46f400491ad19b4e63b05cca63ec9a0cf07221df47eab16",
+				false,
+				H1,
+			],
+			[
+				"dad65bfd0e1a5cd2b813d6f367001d8fd1f1ee070700140eee0b3aafd736fc0d",
+				false,
+				H2,
+			],
+			[
+				"fa83eec9c99b688351ae1f9fd74395ed5a2a610d8c5b2ad431b810ed503d367b",
+				true,
+				H2,
+			],
+			[
+				"0ad01c5dd0362b3ca8210dbb060b877159303fab4c2b2b26bed305d316d0eaf8",
+				false,
+				H2,
+			],
+		]);
+		// The whole hunks' keys are what they were as one cluster each.
+		expect(clusterKeys("pin.ts", hunks, newLines)).toEqual([H1, H2]);
 	});
 });
