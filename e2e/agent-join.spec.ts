@@ -305,6 +305,7 @@ test("a session asks to join: the bar on every page of the review pushes the hea
 
 test("Detach in the status modal: the toast says it left, the question waits, the ACP buddy stays off", async ({
 	page,
+	isMobile,
 	pr,
 	agentCrb,
 	acpLogPath,
@@ -333,8 +334,11 @@ test("Detach in the status modal: the toast says it left, the question waits, th
 	await chip(page).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
 	await expect(statusDialog(page)).toHaveCount(0);
-	// Closed again (on a phone the full-screen drawer covers the chip).
-	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	// Closed again: the chip on a desktop; on a phone the full-screen
+	// drawer covers it, so its own Close.
+	if (isMobile) {
+		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	} else await chip(page).click();
 	await openAgentModal(page);
 	const status = statusDialog(page);
 	await expect(status.getByTestId("agent-status-card")).toContainText(

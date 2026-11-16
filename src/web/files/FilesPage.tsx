@@ -1663,7 +1663,7 @@ export function FilesPage() {
 												aria-label="Files"
 												aria-haspopup="dialog"
 												onClick={() => setSheetOpen(true)}
-												className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+												className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 											>
 												<span aria-hidden>☰</span>
 												Files

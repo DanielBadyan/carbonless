@@ -1,11 +1,14 @@
 import type { Page } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
 import {
+	bar,
 	CALC,
 	chip,
 	expect,
 	fixture,
+	openFile,
 	reviewDrawer,
+	selectText,
 	spawnAgent,
 	statusDialog,
 	test,
@@ -208,9 +211,27 @@ test("a hostile answer renders inert and never leaves the review", async ({
 	await expect(answer.locator("img[onerror]")).toHaveCount(0);
 	await expect(answer.locator('a[href^="javascript:"]')).toHaveCount(0);
 	await expect(answer.getByTestId("agent-code-link")).toHaveCount(0);
+	// The external link: a new tab with no opener, never this one.
+	const out = answer.getByRole("link", { name: "out" });
+	await expect(out).toHaveAttribute("target", "_blank");
+	await expect(out).toHaveAttribute("rel", /noopener/);
+	await page.context().route(/evil\.example/, (r) => r.abort());
 	const before = page.url();
+	// Every navigation of this tab while the links are clicked.
+	const moved: string[] = [];
+	page.on("framenavigated", (f) => {
+		if (f === page.mainFrame()) moved.push(f.url());
+	});
 	await answer.getByText("click me").click();
 	await answer.getByText("../../etc/passwd:1").click();
+	const popup = page.context().waitForEvent("page");
+	await out.click();
+	await (await popup).close();
+	// A full round trip later (another question answered), anything a
+	// click started has long committed.
+	await send(page, "Again?", isMobile);
+	await expect(answer).toHaveCount(2);
+	expect(moved).toEqual([]);
 	expect(page.url()).toBe(before);
 	expect(
 		await page.evaluate(() => (window as { __pwned?: number }).__pwned),
@@ -342,4 +363,149 @@ test("the status button opens Your agent; the shortcut toggles the drawer; cover
 	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
 		"Fine.",
 	]);
+});
+
+test("between 640 and 1023px the drawer lies over the page, below its pinned top: the chip, Settings and Find stay in reach", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a desktop width");
+	await page.setViewportSize({ width: 900, height: 720 });
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "ok" }] },
+	});
+	await openFiles(page, s.url);
+	await page.keyboard.press("ControlOrMeta+f");
+	const find = page.getByRole("search", { name: "Find in PR" });
+	await expect(find).toBeVisible();
+	await chip(page).click();
+	const drawer = reviewDrawer(page);
+	await expect(drawer).toHaveAttribute("data-mode", "overlay");
+	const header = page.locator("[data-app-header]");
+	const bottom = async (l: ReturnType<Page["locator"]>) => {
+		const b = await l.boundingBox();
+		return (b?.y ?? 0) + (b?.height ?? 0);
+	};
+	// Below the find bar and the header, never over them.
+	await expect
+		.poll(async () => (await drawer.boundingBox())?.y ?? 0)
+		.toBeGreaterThanOrEqual(Math.floor(await bottom(header)));
+	expect((await drawer.boundingBox())?.y ?? 0).toBeGreaterThanOrEqual(
+		Math.floor(await bottom(find)),
+	);
+	// Their controls take a click (nothing over them).
+	for (const control of [
+		page.getByTestId("find-box"),
+		page.getByRole("button", { name: "Settings" }),
+		page.getByRole("button", { name: "Refresh" }),
+		chip(page),
+	]) {
+		await control.click({ trial: true });
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-900", isMobile);
+	// Scrolled, it follows the header's compact row up.
+	await page.getByTestId("find-box").press("Escape");
+	await expect(find).toHaveCount(0);
+	await page.mouse.wheel(0, 600);
+	await expect
+		.poll(async () => (await drawer.boundingBox())?.y ?? 0)
+		.toBeLessThanOrEqual(Math.ceil(await bottom(header)) + 1);
+	await chip(page).click({ trial: true });
+	// The chip still toggles it.
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toBeVisible();
+});
+
+test("at 1024px on Files changed the drawer pushes: the selection bar and the find bar stay left of it, nothing scrolls sideways", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a desktop width");
+	await page.setViewportSize({ width: 1024, height: 720 });
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "ok" }] },
+	});
+	await openFile(page, s.url, CALC);
+	await chip(page).click();
+	const drawer = reviewDrawer(page);
+	await expect(drawer).toHaveAttribute("data-mode", "push");
+	const d = (await drawer.boundingBox())?.x ?? 0;
+	await expectNoPageOverflow(page);
+	// A selection at the line's far end: its bar stays left of the drawer.
+	await selectText(page, CALC, 3, 20, 29);
+	const sel = bar(page);
+	await expect(sel).toBeVisible();
+	const sb = await sel.boundingBox();
+	expect((sb?.x ?? 0) + (sb?.width ?? 0)).toBeLessThanOrEqual(d);
+	await page.keyboard.press("ControlOrMeta+f");
+	const find = page.getByRole("search", { name: "Find in PR" });
+	await expect(find).toBeVisible();
+	const fb = await find.boundingBox();
+	expect((fb?.x ?? 0) + (fb?.width ?? 0)).toBeLessThanOrEqual(d);
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-1024-files", isMobile);
+});
+
+test("leaving the review and coming back: the drawer is closed and nothing took focus", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// A phone's full-screen drawer covers Home: there is no leaving with it open.
+	test.skip(isMobile, "Home is under a phone's drawer");
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "ok" }] },
+	});
+	await page.goto(s.url);
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toBeVisible();
+	await page.getByTestId("home-link").click();
+	await expect(page).toHaveURL(/\/(\?.*)?$/);
+	await page.goBack();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	expect(
+		await page.evaluate(
+			() => document.activeElement?.closest("#review-conversation") ?? null,
+		),
+	).toBeNull();
+});
+
+test("the Overview's agent row opens Your agent; on a desktop the chip closes the drawer again", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "ok" }] },
+	});
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	await page
+		.getByTestId("agent-overview-row")
+		.getByRole("button", { name: /^Your agent: / })
+		.click();
+	const status = statusDialog(page);
+	await expect(status).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(status).toHaveCount(0);
+	if (isMobile) return;
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toBeVisible();
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 });

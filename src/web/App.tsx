@@ -445,7 +445,11 @@ export function App() {
 					 * Files changed's open find bar (FindSlot). Both push the page
 					 * down; the header sticks under them (`above`).
 					 */}
-					<div className="sticky z-[35]" style={{ top: "var(--vv-top, 0px)" }}>
+					<div
+						data-pinned-top
+						className="sticky z-[35]"
+						style={{ top: "var(--vv-top, 0px)" }}
+					>
 						{/* Like the chip, none without a PR: nothing to join. */}
 						<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
 						<div ref={setSlot} data-find-slot />
@@ -764,7 +768,7 @@ export function App() {
 						/>
 					)}
 					{/* The whole review's conversation, from the chip; none without a PR. */}
-					{pr && <ReviewConversationDrawer />}
+					{pr && <ReviewConversationDrawer key={id} />}
 					<AgentSetupHost />
 				</div>
 			</SendViewHost>

@@ -65,6 +65,7 @@ const statusPoll = (page: Page) =>
 
 test("a new review opens on Setup Review Agent", async ({
 	page,
+	isMobile,
 	pr,
 	agentCrb,
 	acpLogPath,
@@ -82,8 +83,11 @@ test("a new review opens on Setup Review Agent", async ({
 	await chip(page).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
 	await expect(setupDialog(page)).toHaveCount(0);
-	// Closed again (on a phone the full-screen drawer covers the chip).
-	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	// Closed again: the chip on a desktop; on a phone the full-screen
+	// drawer covers it, so its own Close.
+	if (isMobile) {
+		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	} else await chip(page).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await openAgentModal(page);
 	const d = setupDialog(page);

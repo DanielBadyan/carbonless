@@ -77,12 +77,51 @@ export function useDrawerPush(): boolean {
 }
 
 /**
- * Whether the drawer lies over the page (open, desktop narrower than
- * DRAWER_PUSH): App narrows only the pinned top (the find bar, the
- * header), so the chip, Refresh, Settings and Find stay in reach.
+ * Where the page's pinned top (the join and find bars, the header, as
+ * much of it as is on screen) ends: an overlaid drawer starts below it, so
+ * the chip, Refresh, Settings and Find stay in reach. Followed on scroll
+ * and resize, once a frame.
  */
-export function useDrawerOverlay(): boolean {
-	return useDrawerMode() === "overlay";
+function usePinnedTopBottom(on: boolean): number {
+	const [bottom, setBottom] = useState(0);
+	useLayoutEffect(() => {
+		if (!on) return;
+		let frame = 0;
+		const measure = () => {
+			frame = 0;
+			let b = 0;
+			for (const el of document.querySelectorAll<HTMLElement>(
+				"[data-pinned-top], [data-app-header]",
+			)) {
+				if (el.hidden) continue;
+				b = Math.max(b, el.getBoundingClientRect().bottom);
+			}
+			const next = Math.max(0, Math.round(b));
+			setBottom((was) => (was === next ? was : next));
+		};
+		const schedule = () => {
+			if (!frame) frame = requestAnimationFrame(measure);
+		};
+		measure();
+		window.addEventListener("scroll", schedule, { passive: true });
+		window.addEventListener("resize", schedule);
+		const observer =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver(schedule);
+		for (const el of document.querySelectorAll(
+			"[data-pinned-top], [data-app-header]",
+		)) {
+			observer?.observe(el);
+		}
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener("scroll", schedule);
+			window.removeEventListener("resize", schedule);
+			observer?.disconnect();
+		};
+	}, [on]);
+	return bottom;
 }
 
 function useDrawerMode(): "push" | "overlay" | "phone" | null {
@@ -158,6 +197,8 @@ function Drawer() {
 	const client = useQueryClient();
 	const phone = !useMedia(NOT_PHONE);
 	const push = useMedia(DRAWER_PUSH);
+	// Over the page (a narrower desktop): below its pinned top, never over the header's buttons.
+	const pinnedTop = usePinnedTopBottom(!phone && !push);
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
 	const viewer =
 		useQuery({ ...sessionQuery, enabled: false }).data?.viewer ?? "you";
@@ -262,7 +303,11 @@ function Drawer() {
 			aria-label="Whole review conversation"
 			tabIndex={-1}
 			onKeyDown={onKeyDown}
-			style={phone ? undefined : { width: DRAWER_WIDTH }}
+			style={
+				phone
+					? undefined
+					: { width: DRAWER_WIDTH, ...(push ? {} : { top: pinnedTop }) }
+			}
 			className={`fixed z-40 flex flex-col bg-surface outline-none ${
 				phone
 					? "inset-0"
