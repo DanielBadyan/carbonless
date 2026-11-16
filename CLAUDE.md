@@ -219,7 +219,8 @@ loading never looking empty, checking against a real PR):
   an interrupted run) never runs its cleanup. What a test starts carries
   `$CRB_OWNER` (`test/setup.ts`, `crbEnv` in `e2e/pr-setup.ts`): `crb serve`,
   `queue.mjs` and the fake agent exit once that owner is gone
-  (`scripts/owner.mjs`). A new fake or helper that can wait forever (a hold,
+  (`scripts/owner.mjs`; `crb serve` uses its copy, `src/server/owner.ts`,
+  since the build can't reach `scripts/`). A new fake or helper that can wait forever (a hold,
   a loop on a file) does the same with `watchOwner`.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`

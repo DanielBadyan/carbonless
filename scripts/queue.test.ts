@@ -569,10 +569,14 @@ describe.skipIf(!hasFlock)("queue", () => {
 	}, async () => {
 		const owner = spawn("sleep", ["60"]);
 		started.push(owner);
-		const env = { CRB_OWNER: ownerToken(owner.pid) };
+		const env = { CRB_OWNER: ownerToken(owner.pid as number) };
 		const holder = holdWithPid("a", env);
 		const sh = await holder.pid();
-		const waiter = queue("true", undefined, env);
+		// Polls slower than its owner watch (1 s): never takes the freed slot first.
+		const waiter = queue("true", undefined, {
+			...env,
+			CRB_QUEUE_POLL_MS: "5000",
+		});
 		await until(() => waiter.out().includes("queue: waiting for"));
 
 		owner.kill("SIGKILL");
@@ -581,6 +585,28 @@ describe.skipIf(!hasFlock)("queue", () => {
 		expect(alive(sh)).toBe(false);
 		expect(free()).toBe(true);
 		expect(tickets()).toEqual([]);
+	});
+
+	it("once $CRB_OWNER is gone, a member of the command's group that ignores SIGTERM gets SIGKILL", {
+		timeout: 30_000,
+	}, async () => {
+		const owner = spawn("sleep", ["60"]);
+		started.push(owner);
+		const pidFile = join(home, "stubborn.pid");
+		const run = queue(
+			`sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 0.05; done' & wait`,
+			undefined,
+			{ CRB_OWNER: ownerToken(owner.pid as number) },
+		);
+		await until(
+			() => existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"),
+		);
+		const stubborn = Number(readFileSync(pidFile, "utf8"));
+
+		owner.kill("SIGKILL");
+		expect(await exited(run.child)).toBe(143);
+		await until(() => !alive(stubborn));
+		expect(free()).toBe(true);
 	});
 
 	it("a held command's own exit 200 doesn't read as a taken slot", {

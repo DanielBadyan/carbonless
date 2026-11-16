@@ -24,7 +24,9 @@ function stat(pid) {
 }
 
 /** The token naming `pid`. */
-export function ownerToken(pid = process.pid) {
+export function ownerToken(pid) {
+	if (!Number.isInteger(pid) || pid <= 0)
+		throw new Error(`no such pid: ${pid}`);
 	return `${pid} ${stat(pid)?.start ?? ""}`;
 }
 
@@ -39,8 +41,8 @@ export function ownerAlive(token) {
 		if (e.code !== "EPERM") return false;
 	}
 	const s = stat(n);
-	// No /proc: a live pid is all there is to go on.
-	if (!s) return !start;
+	// No /proc, or hidden: a live pid is all there is to go on.
+	if (!s) return true;
 	return s.state !== "Z" && s.start === start;
 }
 

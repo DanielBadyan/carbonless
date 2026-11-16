@@ -444,11 +444,19 @@ describe("a start stopped before it spawns", () => {
 
 describe("the fake agent", () => {
 	it("exits once its owner is gone, its stdin still open", async () => {
-		const owner = spawnChild("sleep", ["60"]);
-		const agent = spawnChild(join(FAKE_ACP_BIN, "claude-agent-acp"), [], {
-			env: { ...process.env, CRB_OWNER: ownerToken(owner.pid as number) },
-			stdio: ["pipe", "ignore", "ignore"],
-		});
+		// Node for both, not sleep and the sh shim: this file runs on Windows too.
+		const owner = spawnChild(process.execPath, [
+			"-e",
+			"setTimeout(() => {}, 60_000)",
+		]);
+		const agent = spawnChild(
+			process.execPath,
+			[join(FAKE_ACP_BIN, "..", "agent.mjs")],
+			{
+				env: { ...process.env, CRB_OWNER: ownerToken(owner.pid as number) },
+				stdio: ["pipe", "ignore", "ignore"],
+			},
+		);
 		try {
 			const exited = new Promise<number | null>((done) =>
 				agent.once("exit", (code) => done(code)),

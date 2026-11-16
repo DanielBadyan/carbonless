@@ -103,7 +103,7 @@ const DEFAULT_COMMITS: FixtureCommit[] = [
 /** The built CLI. */
 export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 
-const OWNER = ownerToken();
+const OWNER = ownerToken(process.pid);
 
 /**
  * The environment crb runs in: the fake gh first on PATH; cache, state

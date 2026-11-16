@@ -17,7 +17,8 @@
 // Slot i is `flock` on ~/.cache/carbonless-verify.lock (slot 0) or
 // ~/.cache/carbonless-verify.lock.<i>: the kernel frees it when the holder
 // exits, however it exits. SIGTERM, SIGINT or SIGHUP gives up the wait, or
-// stops the command (its whole process group) and exits.
+// stops the command (its whole process group; what is left of it 10 s later
+// gets SIGKILL) and exits.
 //
 // First come, first served: each run puts a ticket in
 // ~/.cache/carbonless-queue (queue-line.mjs) from its arrival to its end, and
@@ -73,24 +74,49 @@ const STOP_GRACE_MS = 10_000;
 
 /** Stops as on SIGTERM; SIGKILLs the command's group if it lingers. */
 function stopForGone() {
+	const pgid = current?.group ? current.child.pid : 0;
 	process.kill(process.pid, "SIGTERM");
-	setTimeout(() => {
-		try {
-			if (current?.group) process.kill(-current.child.pid, "SIGKILL");
-		} catch {}
-		process.exit(128 + SIGNAL_CODES.SIGTERM);
-	}, STOP_GRACE_MS).unref();
+	setTimeout(
+		() => {
+			try {
+				if (pgid) process.kill(-pgid, "SIGKILL");
+			} catch {}
+			process.exit(128 + SIGNAL_CODES.SIGTERM);
+		},
+		// A waiter gives the run holding its slot time to reap its group.
+		pgid ? STOP_GRACE_MS : STOP_GRACE_MS + 5_000,
+	).unref();
 }
 watchOwner(stopForGone);
+
+/** Waits up to STOP_GRACE_MS for group `pgid` to empty, then SIGKILLs it. */
+async function reapGroup(pgid) {
+	const live = () => {
+		try {
+			process.kill(-pgid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	for (let t = 0; live() && t < STOP_GRACE_MS; t += 100) await sleep(100);
+	try {
+		process.kill(-pgid, "SIGKILL");
+	} catch {}
+}
 
 /** Runs `c` to its end: its exit status, or 128 + the signal that ended it. */
 function run(c, a, { group = false, env = process.env } = {}) {
 	return new Promise((done) => {
 		const child = spawn(c, a, { stdio: "inherit", env, detached: group });
 		current = { child, group, caught: null };
-		child.on("exit", (status, signal) => {
-			const by = signal ?? current.caught;
+		child.on("exit", async (status, signal) => {
+			const { caught } = current;
+			// A member that outlives the signal passed on (it ignores it) gets
+			// SIGKILL. `current` stays meanwhile: another signal goes on to it.
+			if (group && caught) await reapGroup(child.pid);
 			current = null;
+			const by = signal ?? caught;
 			done(status ?? (by ? 128 + (SIGNAL_CODES[by] ?? 1) : 1));
 		});
 	});
@@ -184,7 +210,7 @@ for (;;) {
 					CRB_QUEUE_HELD: `${lock(i)}.holder`,
 					CRB_QUEUE_SINCE: String(start),
 					CRB_QUEUE_SLOTS: String(slots),
-					CRB_QUEUE_WAITER: ownerToken(),
+					CRB_QUEUE_WAITER: ownerToken(process.pid),
 				},
 			},
 		);

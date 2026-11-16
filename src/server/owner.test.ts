@@ -5,7 +5,7 @@ import { ownerAlive, watchOwner } from "./owner";
 
 describe("owner", () => {
 	it("is alive only while its pid runs with the start time in the token", () => {
-		expect(ownerAlive(ownerToken())).toBe(true);
+		expect(ownerAlive(ownerToken(process.pid))).toBe(true);
 		// The pid now belongs to another process (pid reuse).
 		expect(ownerAlive(`${process.pid} 1`)).toBe(false);
 		const gone = spawnSync("true").pid as number;

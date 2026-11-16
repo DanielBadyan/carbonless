@@ -17,7 +17,7 @@ process.env.XDG_CONFIG_HOME = join(xdg, "config");
 afterAll(() => rmSync(xdg, { recursive: true, force: true }));
 
 // What a test starts stops on its own if this worker dies (scripts/owner.mjs).
-process.env[OWNER_ENV] = ownerToken();
+process.env[OWNER_ENV] = ownerToken(process.pid);
 
 // Names the running test for the real gh trap (test/real-gh-trap.ts): a call
 // that reaches it was started by this test or one before it in this file.

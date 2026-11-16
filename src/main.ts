@@ -39,6 +39,9 @@ Serve options:
   --new-key    Replace the access key (old links stop working)
   --api-only   Serve only the API (used by the dev server)`;
 
+// A shutdown for a gone owner that hangs (an open stream, an agent) ends here.
+const OWNER_GONE_EXIT_MS = 10_000;
+
 const SERVE_ONLY = ["port", "host", "api-only", "new-key"] as const;
 const CLIENT_ONLY = ["open", "head", "as-of", "viewer"] as const;
 
@@ -173,6 +176,7 @@ async function serve(values: {
 	process.on("SIGTERM", () => void shutdown());
 	watchOwner(() => {
 		console.error("crb: the test process that started it is gone");
+		setTimeout(() => process.exit(1), OWNER_GONE_EXIT_MS).unref();
 		void shutdown();
 	});
 	// Tests and agents parse this line to find the server.

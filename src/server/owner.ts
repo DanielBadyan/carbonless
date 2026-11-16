@@ -38,8 +38,8 @@ export function ownerAlive(token: string): boolean {
 		if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
 	}
 	const s = stat(n);
-	// No /proc: a live pid is all there is to go on.
-	if (!s) return !start;
+	// No /proc, or hidden: a live pid is all there is to go on.
+	if (!s) return true;
 	return s.state !== "Z" && s.start === start;
 }
 
