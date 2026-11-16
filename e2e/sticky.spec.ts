@@ -470,7 +470,9 @@ test("the agent chip sits in its column pinned right, and stays in sight and in 
 		page.viewportSize()?.width ?? 0,
 	);
 	expect((await overview.boundingBox())?.x).toBe(tabX);
-	await expect(chip).toHaveAccessibleName(/^Your agent: /);
+	await expect(chip).toHaveAccessibleName(
+		/^Review conversation · Your agent: /,
+	);
 	// It reads as a button: a 32px circle with a control's border, the
 	// sparkle inside; a 40px tap target.
 	const face = page.getByTestId("agent-chip-face");

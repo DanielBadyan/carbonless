@@ -236,7 +236,9 @@ export function AgentChip({
 	const unread = Boolean(thread?.unread);
 	const drawer = chipOpensDrawer(data, thread !== undefined);
 	const pressed = drawerOpen && drawer;
+	// Both jobs (the conversation, the agent), then the status.
 	const name = [
+		"Review conversation",
 		`Your agent: ${tip}`,
 		count > 0 ? plural(count, "message") : "",
 		unread ? "unread" : "",
@@ -272,9 +274,14 @@ export function AgentChip({
 						className={`relative ${
 							pressed
 								? CHIP_FACE_PRESSED
-								: joined
-									? CHIP_FACE.replace("border-line-strong", "border-agent-edge")
-									: `${CHIP_FACE} group-hover:bg-overlay`
+								: `${
+										joined
+											? CHIP_FACE.replace(
+													"border-line-strong",
+													"border-agent-edge",
+												)
+											: CHIP_FACE
+									} group-hover:bg-overlay`
 						}`}
 					>
 						{status.isPending ? (
@@ -293,7 +300,9 @@ export function AgentChip({
 							<span
 								aria-hidden
 								data-testid="agent-chip-count"
-								className="absolute -right-2 -bottom-1.5 flex h-4 min-w-4 items-center justify-center gap-0.5 rounded-full border border-agent-edge bg-agent px-1 text-[11px] leading-none font-bold text-agent-ink tabular-nums"
+								// 4px past the face: the docked chip's face is 4px from a
+								// phone's edge (App's row slot), so the badge ends on it.
+								className="absolute -right-1 -bottom-1.5 flex h-4 min-w-4 items-center justify-center gap-0.5 rounded-full border border-agent-edge bg-agent px-1 text-[11px] leading-none font-bold text-agent-ink tabular-nums"
 							>
 								{joined && plug}
 								{count}

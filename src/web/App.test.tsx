@@ -2298,7 +2298,9 @@ describe("App header", () => {
 			}),
 		});
 		await screen.findByRole("heading", { level: 1 });
-		const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+		const chip = await headerChip(
+			"Review conversation · Your agent: Claude Agent 0.100.0",
+		);
 		expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
 		const slot = screen.getByTestId("agent-chip-slot");
 		expect(slot).toContainElement(chip);
@@ -2389,7 +2391,9 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			const chip = await headerChip(
+				"Review conversation · Your agent: Claude Agent 0.100.0",
+			);
 			// Its tooltip (always there, hidden while closed), opened by a hover.
 			const tip = () =>
 				[...document.querySelectorAll("[role=tooltip]")].find(
@@ -2449,7 +2453,9 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			const chip = await headerChip(
+				"Review conversation · Your agent: Claude Agent 0.100.0",
+			);
 			expect(screen.getByTestId("agent-chip-slot")).toContainElement(chip);
 			const reads = calls("/api/agent");
 			expect(reads).toBe(1);

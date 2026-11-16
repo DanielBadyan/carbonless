@@ -89,6 +89,33 @@ export async function spawnAgent(url: string): Promise<void> {
 	}
 }
 
+/**
+ * Opens the review conversation in the review at `url` with the reviewer's
+ * `text` (POST /agent/threads with `review: true`, as the drawer's first
+ * message does).
+ */
+export async function askReviewByApi(url: string, text: string): Promise<void> {
+	const u = new URL(url);
+	const id = /^\/r\/([^/]+)/.exec(u.pathname)?.[1];
+	if (!id) throw new Error(`Not a review link: ${url}`);
+	const key = u.searchParams.get("key");
+	const res = await fetch(
+		`${u.origin}/api/r/${id}/agent/threads${key ? `?${new URLSearchParams({ key })}` : ""}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ clientId: "e2e-review-1", text, review: true }),
+		},
+	);
+	if (!res.ok) {
+		throw new Error(`Asking answered ${res.status}: ${await res.text()}`);
+	}
+}
+
+/** The header chip's accessible name for the agent status `tip`. */
+export const chipName = (tip: string) =>
+	`Review conversation · Your agent: ${tip}`;
+
 export const DEFAULT_SCENARIO: AcpScenario = {
 	agent: { name: "Fake Agent", version: "9.9.9" },
 	answers: [{ text: "ok" }],

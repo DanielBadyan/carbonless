@@ -297,7 +297,7 @@ test("a session asks to join: the bar on every page of the review pushes the hea
 	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
 	await expect(chip(page).getByTestId("agent-chip-plug")).toBeVisible();
 	await expect(chip(page)).toHaveAccessibleName(
-		new RegExp(`^Your agent: ${SESSION.name} · `),
+		new RegExp(`^Review conversation · Your agent: ${SESSION.name} · `),
 	);
 	await expectNoPageOverflow(page);
 });

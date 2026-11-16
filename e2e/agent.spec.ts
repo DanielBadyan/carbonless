@@ -7,9 +7,11 @@ import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
 	ask,
+	askReviewByApi,
 	bar,
 	CALC,
 	chip,
+	chipName,
 	expect,
 	fixture,
 	openAgentModal,
@@ -316,7 +318,7 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	await expect(chip(page)).toHaveAccessibleName(/starting/i);
 	releaseAcp(acpScenario, "initialize");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
-	await expect(chip(page)).toHaveAccessibleName("Your agent: Fake Agent 9.9.9");
+	await expect(chip(page)).toHaveAccessibleName(chipName("Fake Agent 9.9.9"));
 	// Ready: the sparkle green (shots for the design review).
 	await expect(page.getByTestId("agent-chip-icon")).toHaveClass(/text-ok/);
 	const shots = process.env.DESIGN_SHOTS;
@@ -481,7 +483,7 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	await other.goto(second.url);
 	await expect(chip(other)).toHaveAttribute("data-state", "elsewhere");
 	await expect(chip(other)).toHaveAccessibleName(
-		`Your agent: answered by the server on :${port}`,
+		chipName(`answered by the server on :${port}`),
 	);
 	// Asked there, the holder's agent answers it: the one agent process on
 	// the machine is the first server's.
@@ -1181,6 +1183,39 @@ test("the chip has its own column pinned right: right of the number, its right e
 	}
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-chip-header", isMobile);
+});
+
+test("at 360px with a review conversation, the chip's count badge stays on screen, at the top and docked: no sideways scroll", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await page.setViewportSize({ width: 360, height: 760 });
+	await pr(fixture);
+	// Nothing spawned: the question stays one message.
+	const s = await agentCrb({ spawn: false });
+	await askReviewByApi(s.url, "What is the risk in this PR?");
+	await page.goto(s.url);
+	const badge = page.getByTestId("agent-chip-count");
+	await expect(badge).toHaveText("1");
+	const inside = async () => {
+		const b = await badge.boundingBox();
+		if (!b) throw new Error("not rendered");
+		expect(b.x + b.width).toBeLessThanOrEqual(360);
+	};
+	await expect(
+		page.getByTestId("agent-chip-slot").locator(chip(page)),
+	).toBeVisible();
+	await inside();
+	await expectNoPageOverflow(page);
+	// Docked: the compact row's rightmost item, at the screen's edge.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(
+		page.getByTestId("app-header-row").locator(chip(page)),
+	).toBeVisible();
+	await expect(badge).toHaveText("1");
+	await inside();
+	await expectNoPageOverflow(page);
 });
 
 test("no sideways scroll at 360 px with a card, a composer and the setup open", async ({

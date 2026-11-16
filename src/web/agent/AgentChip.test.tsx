@@ -139,6 +139,9 @@ const spanThread = (): AgentThread => ({
 
 const face = () => screen.getByTestId("agent-chip-face");
 
+/** The chip's accessible name: both its jobs, then the agent's status. */
+const named = (rest: string) => `Review conversation · Your agent: ${rest}`;
+
 describe("the chip's tap", () => {
 	it.each<[string, Partial<AgentStatus>, AgentThread[]]>([
 		[
@@ -204,6 +207,18 @@ describe("the chip's tap", () => {
 		);
 	});
 
+	it("every face not pressed highlights on hover, a joined session's too", async () => {
+		chipOver(status(), vi.fn(), []);
+		expect(face().className).toContain("group-hover:bg-overlay");
+		cleanup();
+		const { user } = chipOver(status(joined()), vi.fn(), []);
+		expect(face().className).toContain("border-agent-edge");
+		expect(face().className).toContain("group-hover:bg-overlay");
+		// Pressed keeps its wash.
+		await user.click(screen.getByTestId("agent-chip"));
+		expect(face().className).not.toContain("group-hover:bg-overlay");
+	});
+
 	it("the face is 32px in a 40px tap target", () => {
 		chipOver(status(), vi.fn(), []);
 		expect(screen.getByTestId("agent-chip").className).toContain("h-10 w-10");
@@ -217,7 +232,7 @@ describe("the chip's count and unread dot", () => {
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
 		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
-			"Your agent: Claude Agent 0.100.0",
+			named("Claude Agent 0.100.0"),
 		);
 		cleanup();
 		chipOver(status(), vi.fn(), [review(0)]);
@@ -235,7 +250,7 @@ describe("the chip's count and unread dot", () => {
 		expect(badge.className).toContain("text-agent-ink");
 		expect(badge.className).toContain("border-agent-edge");
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
-			"Your agent: Claude Agent 0.100.0 · 6 messages",
+			named("Claude Agent 0.100.0 · 6 messages"),
 		);
 	});
 
@@ -246,7 +261,7 @@ describe("the chip's count and unread dot", () => {
 		expect(dot.className).toContain("-top-");
 		expect(dot.className).toContain("-right-");
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
-			"Your agent: Claude Agent 0.100.0 · 2 messages · unread",
+			named("Claude Agent 0.100.0 · 2 messages · unread"),
 		);
 	});
 
@@ -292,7 +307,7 @@ describe("the chip's count and unread dot", () => {
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
 		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 		expect(chip).not.toHaveTextContent("0");
-		expect(chip).toHaveAccessibleName("Your agent: Claude Agent 0.100.0");
+		expect(chip).toHaveAccessibleName(named("Claude Agent 0.100.0"));
 		held.release({ threads: [review(2)] });
 		await waitFor(() =>
 			expect(screen.getByTestId("agent-chip-count")).toHaveTextContent("2"),
@@ -341,7 +356,7 @@ describe("the chip with a joined session", () => {
 		const chip = screen.getByTestId("agent-chip");
 		expect(chip.querySelector("img")).toBeNull();
 		// The name is in the tooltip and the accessible name, as text.
-		expect(chip).toHaveAccessibleName(`Your agent: ${name} · listening`);
+		expect(chip).toHaveAccessibleName(named(`${name} · listening`));
 	});
 });
 
@@ -527,7 +542,7 @@ describe("the agent chip", () => {
 			</QueryClientProvider>,
 		);
 		const chip = screen.getByTestId("agent-chip");
-		expect(chip).toHaveAccessibleName("Your agent: Claude Agent 0.100.0");
+		expect(chip).toHaveAccessibleName(named("Claude Agent 0.100.0"));
 		expect(chip).not.toHaveAttribute("aria-busy");
 		// The same answer again: nothing.
 		await act(async () =>
