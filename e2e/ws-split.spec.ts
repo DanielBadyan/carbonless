@@ -74,6 +74,9 @@ test("change / whitespace-only / change in one hunk is three clusters; Ignore wh
 	await expect(boxes(section)).toHaveCount(3);
 
 	// On: the middle one is a quiet `~` row with its own box, and not counted.
+	const barHeight = async () =>
+		(await page.locator("[data-page-bar]").boundingBox())?.height ?? 0;
+	const tall = await barHeight();
 	await ignoreWhitespace(page, true);
 	const ws = section.getByTestId("ws-cluster");
 	await expect(ws).toHaveCount(1);
@@ -82,6 +85,8 @@ test("change / whitespace-only / change in one hunk is three clusters; Ignore wh
 	await expect(bar).toContainText("0 / 2 clusters reviewed");
 	await expect(leftOut(page)).toBeVisible();
 	await expect(leftOut(page)).toHaveText("~");
+	// The `~` never grows the bar (a taller bar would move the rows being read).
+	expect(await barHeight()).toBe(tall);
 	// Side by side too.
 	await sideBySide(page, true);
 	await expect(ws).toHaveCount(1);

@@ -269,11 +269,7 @@ test("the Ignore whitespace switch keeps the row being read where it was", async
 	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
 	await ignoreWhitespace(page, false);
 	await expect(section.getByTestId("ws-cluster")).toHaveCount(0);
-	// On a phone the row can move when a collapsed cluster right above it
-	// opens again (CAR-156 report, open): checked on desktop only.
-	if (!isMobile) {
-		expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
-	}
+	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
 
 	// A context row between clusters that collapse: put too.
 	section = await expand(page, "src/reindent.ts");

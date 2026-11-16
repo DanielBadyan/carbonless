@@ -121,7 +121,10 @@ function WhitespaceLeftOut({ count }: { count: number }) {
 					data-testid="ws-left-out"
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 					tabIndex={0}
-					className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded font-mono text-faint focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:min-w-10"
+					// Its box never grows the bar (a phone's would wrap a line and
+					// move the rows being read): on touch, an invisible 40px target
+					// is laid over it instead.
+					className="relative ml-1.5 inline-flex h-5 w-4 items-center justify-center rounded font-mono text-faint focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']"
 				>
 					~
 				</span>
