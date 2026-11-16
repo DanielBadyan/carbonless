@@ -643,6 +643,7 @@ test("a first review shows a dot for the PR's current position, viewed and up to
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
@@ -670,9 +671,15 @@ test("a first review shows a dot for the PR's current position, viewed and up to
 	await page.keyboard.press("Escape");
 	await expect(details).toHaveCount(0);
 	// The branch → dot connector counts the PR's commits, like branch → PS1.
-	await expect(
-		page.getByTestId("ps-conn-snapshot").getByTestId("ps-conn-label"),
-	).toHaveText("1 commit", GIT_WAIT);
+	// (On a phone the label is the bare number; its name says it whole.)
+	const conn = page.getByTestId("ps-conn-snapshot");
+	await expect(conn).toHaveAccessibleName(
+		`main to ${short}: 1 commit`,
+		GIT_WAIT,
+	);
+	await expect(conn.getByTestId("ps-conn-label")).toHaveText(
+		isMobile ? "1" : "1 commit",
+	);
 	await expectNoPageOverflow(page);
 	// The dot and the tail are both on screen, not scrolled out of the rail.
 	const width = page.viewportSize()?.width ?? 0;
@@ -682,10 +689,8 @@ test("a first review shows a dot for the PR's current position, viewed and up to
 		expect((box?.x ?? -1) >= 0).toBe(true);
 		expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
 	}
-	// A plain dot: no patch set was made for it, then or since.
-	await expect
-		.poll(() => reviewRefs(s, p), { timeout: 2_000 })
-		.not.toContain("/patchsets/");
+	// A plain dot: no patch set was made for it.
+	expect(reviewRefs(s, p)).not.toContain("/patchsets/");
 });
 
 test("a newer head fills the rail's last slot and shows the toast; nothing below the rail moves, nothing takes focus", async ({

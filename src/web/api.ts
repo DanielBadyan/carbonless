@@ -337,9 +337,14 @@ export const sessionQuery = queryOptions({
 	staleTime: Number.POSITIVE_INFINITY,
 });
 
+/** The snapshot's count's key: by base and head, as the server counts it. */
+export const snapshotKey = (
+	info: Pick<SessionInfo, "snapshotBase" | "snapshotHead">,
+) => `snapshot ${info.snapshotBase} ${info.snapshotHead}`;
+
 /**
  * The patch sets' commit counts (`SessionInfo.patchsets[].commits`, and
- * `snapshotCommits` before any patch set, as "snapshot <head>"), which
+ * `snapshotCommits` before any patch set, under snapshotKey), which
  * the server counts in the background: the session read again every
  * REREVIEW_POLL_MS until every count is in, under its own key, so the
  * polls never touch the session the page runs on (the graph merges them).
@@ -350,11 +355,12 @@ export const patchsetCommitsQuery = (missing: string[]) =>
 		queryKey: ["patchset-commits", ...missing],
 		queryFn: async () => {
 			const info = await fetchSession();
-			// Before any patch set, the snapshot's count too ("snapshot <head>").
+			// Before any patch set, the snapshot's count too, by base and head
+			// (snapshotKey): a retarget asks anew.
 			const snapshot =
 				info.snapshotCommits === undefined
 					? []
-					: [[`snapshot ${info.snapshotHead}`, info.snapshotCommits]];
+					: [[snapshotKey(info), info.snapshotCommits]];
 			return Object.fromEntries([
 				...info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
 				...snapshot,

@@ -297,6 +297,40 @@ describe("PatchsetGraph", () => {
 		});
 	});
 
+	it("first review, retargeted before PS1: the count asks anew (a spinner), never the old base's", async () => {
+		const s = session([], oid("a"));
+		const before = { ...s, snapshotBase: oid("0") };
+		const after = { ...s, snapshotBase: oid("9") };
+		let answer: Promise<SessionInfo> = Promise.resolve({
+			...before,
+			snapshotCommits: 3,
+		});
+		const { rerender } = renderGraph(
+			{ ...before, snapshotCommits: null },
+			{ viewing: { kind: "head", oid: oid("a") }, base: { kind: "branch" } },
+			undefined,
+			undefined,
+			() => answer,
+		);
+		const conn = () => screen.getByTestId("ps-conn-snapshot");
+		expect(await within(conn()).findByText("3 commits")).toBeInTheDocument();
+		// The PR retargeted: the same head on a new merge base, its count unknown.
+		let release: () => void = () => {};
+		answer = new Promise<void>((r) => {
+			release = r;
+		}).then(() => ({ ...after, snapshotCommits: 5 }));
+		rerender({ ...after, snapshotCommits: null });
+		await expectLoadingThen({
+			loading: () => within(conn()).queryByTestId("ps-conn-counting"),
+			empty: [
+				() => within(conn()).queryByText(/^0/),
+				() => within(conn()).queryByText("3 commits"),
+			],
+			release,
+			result: () => within(conn()).queryByText("5 commits"),
+		});
+	});
+
 	it("first review, then the head moves: the current dot stays viewed and the tail takes the head", () => {
 		const { rerender } = renderGraph(session([], oid("a")), {
 			viewing: { kind: "head", oid: oid("a") },

@@ -13,7 +13,12 @@ import {
 import { createPortal } from "react-dom";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { RereviewAnswer, SessionInfo, Shape } from "../../shared/types";
-import { overviewQuery, patchsetCommitsQuery, rereviewQuery } from "../api";
+import {
+	overviewQuery,
+	patchsetCommitsQuery,
+	rereviewQuery,
+	snapshotKey,
+} from "../api";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
@@ -742,12 +747,12 @@ function DotPopover(props: {
  * missing).
  */
 function useWithCommits(session: SessionInfo): SessionInfo {
-	const snapshotKey = `snapshot ${session.snapshotHead}`;
+	const snapshot = snapshotKey(session);
 	const missing = [
 		...session.patchsets
 			.filter((p) => p.commits === null)
 			.map((p) => `${p.number} ${p.head}`),
-		...(session.snapshotCommits === null ? [snapshotKey] : []),
+		...(session.snapshotCommits === null ? [snapshot] : []),
 	];
 	const counted = useQuery({
 		...patchsetCommitsQuery(missing),
@@ -761,7 +766,7 @@ function useWithCommits(session: SessionInfo): SessionInfo {
 			commits: p.commits ?? counted[`${p.number} ${p.head}`] ?? null,
 		})),
 		...(session.snapshotCommits === null
-			? { snapshotCommits: counted[snapshotKey] ?? null }
+			? { snapshotCommits: counted[snapshot] ?? null }
 			: {}),
 	};
 }

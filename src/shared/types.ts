@@ -1159,6 +1159,11 @@ export interface SessionInfo {
 	 */
 	snapshotCommits?: number | null | { error: string };
 	/**
+	 * The merge base snapshotCommits is counted over, sent with it: the
+	 * page keys the count by base and head, so a retarget asks anew.
+	 */
+	snapshotBase?: string;
+	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.
 	 */

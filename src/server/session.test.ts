@@ -149,6 +149,7 @@ describe("Session", () => {
 			pinnedHead: null,
 			patchsets: [],
 			// Counted in the background: unknown on the first read.
+			snapshotBase: pr.mergeBase,
 			snapshotCommits: null,
 			lastSeen: null,
 			head: {
@@ -1651,8 +1652,13 @@ describe("Session", () => {
 			const expected = [count(ps1.head), count(newHead)];
 			expect(expected[0]).toBeGreaterThan(0);
 			expect(expected[1]).toBe((expected[0] as number) + 1);
-			await vi.waitFor(() =>
-				expect(again.info().patchsets.map((p) => p.commits)).toEqual(expected),
+			// A real git process: up to 10 s on a loaded machine.
+			await vi.waitFor(
+				() =>
+					expect(again.info().patchsets.map((p) => p.commits)).toEqual(
+						expected,
+					),
+				{ timeout: 10_000 },
 			);
 		});
 
@@ -1661,6 +1667,8 @@ describe("Session", () => {
 			// The page read never waits for git: unknown at first.
 			expect(s.info().patchsets).toEqual([]);
 			expect(s.info().snapshotCommits).toBeNull();
+			// Sent with its base: the page keys the count by both.
+			expect(s.info().snapshotBase).toBe(pr.mergeBase);
 			const clone = clonePath("acme", "widget");
 			const expected = Number(
 				execFileSync(
@@ -1678,12 +1686,16 @@ describe("Session", () => {
 					.trim(),
 			);
 			expect(expected).toBeGreaterThan(0);
-			await vi.waitFor(() => expect(s.info().snapshotCommits).toBe(expected));
+			// A real git process: up to 10 s on a loaded machine.
+			await vi.waitFor(() => expect(s.info().snapshotCommits).toBe(expected), {
+				timeout: 10_000,
+			});
 			// Once a patch set exists, its own count stands for it.
 			await s.setStates(s.snapshot().revision, [
 				{ key: firstKey(s), state: "reviewed" },
 			]);
 			expect(s.info().snapshotCommits).toBeUndefined();
+			expect(s.info().snapshotBase).toBeUndefined();
 		});
 
 		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {
