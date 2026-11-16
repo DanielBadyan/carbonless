@@ -396,4 +396,60 @@ describe("threadFocus", () => {
 		act(flush);
 		expect(scrollTo).toHaveBeenCalledTimes(1);
 	});
+
+	it("a card that moves right after taking the request (placed once the tracer answers): its new copy takes it", () => {
+		const first = vi.fn();
+		const moved = vi.fn();
+		const { rerender } = render(<Card key="header" id="T1" onOpen={first} />);
+		act(() => {
+			threadFocus.request({ id: "T1" });
+		});
+		expect(first).toHaveBeenCalledTimes(1);
+		rerender(<Card key="fates" id="T1" onOpen={moved} />);
+		expect(moved).toHaveBeenCalledTimes(1);
+		expect(scrollTo).toHaveBeenCalledTimes(2);
+		expect(threadFocus.get()).toBeNull();
+	});
+
+	it("a card going after a cancel, or long after, brings nothing back", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const one = render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			act(() => threadFocus.cancel());
+			one.unmount();
+			expect(threadFocus.get()).toBeNull();
+			const two = render(<Card id="T2" />);
+			act(() => {
+				threadFocus.request({ id: "T2" });
+			});
+			act(() => vi.advanceTimersByTime(5000));
+			two.unmount();
+			expect(threadFocus.get()).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a pick or a find step within the frames after a take: the card doesn't scroll", () => {
+		const queue: FrameRequestCallback[] = [];
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			queue.push(cb);
+			return queue.length;
+		});
+		vi.stubGlobal("cancelAnimationFrame", () => {});
+		const flush = () => {
+			for (const cb of queue.splice(0)) cb(0);
+		};
+		render(<Card id="T1" />);
+		act(() => {
+			threadFocus.request({ id: "T1" });
+		});
+		act(() => threadFocus.cancel());
+		act(flush);
+		act(flush);
+		expect(scrollTo).not.toHaveBeenCalled();
+	});
 });

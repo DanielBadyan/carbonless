@@ -45,6 +45,15 @@ export interface Outline {
 }
 
 let current: ThreadFocus | null = null;
+/**
+ * The request a card just took, for a moment (SETTLE_MS): should that
+ * card go (it moved: a file's threads placed once the tracer answers, from
+ * the file bubble to their fates), the request is pending again for the
+ * card that shows it now.
+ */
+let held: { focus: ThreadFocus; owner: object; at: number } | null = null;
+/** How long a taken request comes back if its card goes. */
+const SETTLE_MS = 3000;
 /** The page path the request was made on: dropped once the reviewer leaves it. */
 let requestPath: string | null = null;
 let outline: Outline | null = null;
@@ -58,9 +67,17 @@ const currentPath = () =>
 
 /** Drops the request (and any outline) once the path isn't the request's. */
 function leftPage() {
-	if (current === null || requestPath === currentPath()) return;
+	if ((current === null && held === null) || requestPath === currentPath())
+		return;
+	drop();
+}
+
+/** Ends whatever is pending, held or outlined; a frame still to scroll for it won't. */
+function drop() {
 	current = null;
+	held = null;
 	outline = null;
+	lastSeq += 1;
 	notify();
 }
 
@@ -115,35 +132,60 @@ export const threadFocus = {
 			...(target.scope !== undefined ? { scope: target.scope } : {}),
 		};
 		requestPath = currentPath();
-		// A newer request: an earlier one's outline, not yet seen, is not.
+		// A newer request: an earlier one's outline, not yet seen, is not;
+		// nor does an earlier one come back.
 		outline = null;
+		held = null;
 		notify();
 		return current;
 	},
 	/** The pending request, if any, on the path it was made on. */
 	get: pending,
 	/** Ends request `seq`: its card took it; its message, if any, is outlined. */
-	taken(seq: number) {
+	taken(seq: number, owner: object = {}) {
 		if (current?.seq !== seq) return;
 		if (current.message) {
 			outline = { message: current.message, seq, at: Date.now() };
 		}
+		held = { focus: current, owner, at: Date.now() };
 		current = null;
 		notify();
+	},
+	/**
+	 * The card that took the request is gone: within SETTLE_MS, and with
+	 * nothing newer asked or cancelled, it is pending again for whichever
+	 * card shows it now.
+	 */
+	release(owner: object) {
+		if (held?.owner !== owner) return;
+		const { focus, at } = held;
+		held = null;
+		if (
+			Date.now() - at >= SETTLE_MS ||
+			lastSeq !== focus.seq ||
+			requestPath !== currentPath()
+		)
+			return;
+		current = focus;
+		notify();
+		// Back only for the card that shows it now: not for one opened by
+		// hand much later.
+		setTimeout(() => {
+			if (current !== focus) return;
+			current = null;
+			notify();
+		}, SETTLE_MS);
 	},
 	/** Ends any pending request: the reviewer went elsewhere. */
 	cancel() {
-		if (current === null && outline === null) return;
-		current = null;
-		outline = null;
-		notify();
+		if (current === null && outline === null && held === null) return;
+		drop();
 	},
 	/** Ends a pending request made in another scope than `scope` (a row's, in another comparison). */
 	cancelOutside(scope: string) {
-		if (current?.scope === undefined || current.scope === scope) return;
-		current = null;
-		outline = null;
-		notify();
+		const scoped = current ?? held?.focus;
+		if (scoped?.scope === undefined || scoped.scope === scope) return;
+		drop();
 	},
 	/** The last message outlined. */
 	outline: () => outline,
@@ -158,6 +200,7 @@ export const threadFocus = {
 	/** Forgets everything (tests). */
 	reset() {
 		current = null;
+		held = null;
 		requestPath = null;
 		outline = null;
 		notify();
@@ -269,9 +312,14 @@ export function useFocusCard(
 	// request names it any more), which must not cancel them; only
 	// unmounting does.
 	const frames = useRef<number[]>([]);
+	// This card, as the store knows who took a request.
+	const owner = useRef({});
 	useEffect(
 		() => () => {
 			for (const f of frames.current) cancelAnimationFrame(f);
+			// Gone right after taking it (moved elsewhere): the copy that
+			// shows it now takes it again.
+			threadFocus.release(owner.current);
 		},
 		[],
 	);
@@ -281,7 +329,7 @@ export function useFocusCard(
 		if (!hit || threadFocus.get()?.seq !== hit.seq || !onScreen(ref.current))
 			return;
 		open?.(hit);
-		threadFocus.taken(hit.seq);
+		threadFocus.taken(hit.seq, owner.current);
 		if (!scroll) return;
 		// After what opening it draws; not once a newer request came.
 		const outer = requestAnimationFrame(() => {
@@ -290,10 +338,22 @@ export function useFocusCard(
 				if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
 				// A message named: it, centred (its outline), not the card's top.
 				const message = hit.message
-					? document.querySelector(`[data-message-id="${hit.message}"]`)
+					? el.querySelector(`[data-message-id="${hit.message}"]`)
 					: null;
-				if (message) message.scrollIntoView?.({ block: "center" });
-				else scrollUnder(el);
+				if (message) {
+					message.scrollIntoView?.({ block: "center" });
+					return;
+				}
+				scrollUnder(el);
+				// The stack may still settle (the opened file's header sticks,
+				// a bar wraps): once more, if the card ended up under it.
+				const again = requestAnimationFrame(() => {
+					if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
+					if (el.getBoundingClientRect().top < stickyBottom(el) - 1) {
+						scrollUnder(el);
+					}
+				});
+				frames.current = [again];
 			});
 			frames.current = [inner];
 		});
