@@ -82,22 +82,26 @@ export function useDrawerPush(): boolean {
  * the chip, Refresh, Settings and Find stay in reach. Followed on scroll
  * and resize, once a frame.
  */
-function usePinnedTopBottom(on: boolean): number {
-	const [bottom, setBottom] = useState(0);
+function usePinnedTop(
+	on: boolean,
+	panel: React.RefObject<HTMLElement | null>,
+): void {
 	useLayoutEffect(() => {
-		if (!on) return;
+		const el = panel.current;
+		if (!on || !el) return;
 		let frame = 0;
+		// Straight onto the element: no render per scroll frame, never a frame late.
 		const measure = () => {
 			frame = 0;
 			let b = 0;
-			for (const el of document.querySelectorAll<HTMLElement>(
+			for (const pinned of document.querySelectorAll<HTMLElement>(
 				"[data-pinned-top], [data-app-header]",
 			)) {
-				if (el.hidden) continue;
-				b = Math.max(b, el.getBoundingClientRect().bottom);
+				if (pinned.hidden) continue;
+				b = Math.max(b, pinned.getBoundingClientRect().bottom);
 			}
-			const next = Math.max(0, Math.round(b));
-			setBottom((was) => (was === next ? was : next));
+			const top = `${Math.max(0, Math.round(b))}px`;
+			if (el.style.top !== top) el.style.top = top;
 		};
 		const schedule = () => {
 			if (!frame) frame = requestAnimationFrame(measure);
@@ -109,19 +113,19 @@ function usePinnedTopBottom(on: boolean): number {
 			typeof ResizeObserver === "undefined"
 				? null
 				: new ResizeObserver(schedule);
-		for (const el of document.querySelectorAll(
+		for (const pinned of document.querySelectorAll(
 			"[data-pinned-top], [data-app-header]",
 		)) {
-			observer?.observe(el);
+			observer?.observe(pinned);
 		}
 		return () => {
 			cancelAnimationFrame(frame);
 			window.removeEventListener("scroll", schedule);
 			window.removeEventListener("resize", schedule);
 			observer?.disconnect();
+			el.style.removeProperty("top");
 		};
-	}, [on]);
-	return bottom;
+	}, [on, panel]);
 }
 
 function useDrawerMode(): "push" | "overlay" | "phone" | null {
@@ -198,7 +202,8 @@ function Drawer() {
 	const phone = !useMedia(NOT_PHONE);
 	const push = useMedia(DRAWER_PUSH);
 	// Over the page (a narrower desktop): below its pinned top, never over the header's buttons.
-	const pinnedTop = usePinnedTopBottom(!phone && !push);
+	const panel = useRef<HTMLElement>(null);
+	usePinnedTop(!phone && !push, panel);
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
 	const viewer =
 		useQuery({ ...sessionQuery, enabled: false }).data?.viewer ?? "you";
@@ -217,7 +222,6 @@ function Drawer() {
 		onSettled: () =>
 			client.invalidateQueries({ queryKey: agentStatusQuery.queryKey }),
 	});
-	const panel = useRef<HTMLElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const box = useRef<HTMLTextAreaElement>(null);
 	useSeenWriter(thread, true, scroller);
@@ -303,11 +307,7 @@ function Drawer() {
 			aria-label="Whole review conversation"
 			tabIndex={-1}
 			onKeyDown={onKeyDown}
-			style={
-				phone
-					? undefined
-					: { width: DRAWER_WIDTH, ...(push ? {} : { top: pinnedTop }) }
-			}
+			style={phone ? undefined : { width: DRAWER_WIDTH }}
 			className={`fixed z-40 flex flex-col bg-surface outline-none ${
 				phone
 					? "inset-0"

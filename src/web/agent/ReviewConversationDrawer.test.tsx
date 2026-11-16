@@ -9,7 +9,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useMemo } from "react";
+import { Profiler, useMemo } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
@@ -269,6 +269,58 @@ describe("ReviewConversationDrawer", () => {
 		await user.click(within(d).getByRole("button", { name: "Agent status" }));
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("overlaid, it follows the header on scroll without re-rendering (its top set on the element)", async () => {
+		// A desktop narrower than the push breakpoint: overlaid.
+		vi.stubGlobal("matchMedia", (query: string) => ({
+			matches: query.includes("640px"),
+			media: query,
+			addEventListener: () => {},
+			removeEventListener: () => {},
+		}));
+		vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => {
+			f(0);
+			return 1;
+		});
+		const header = document.createElement("header");
+		header.setAttribute("data-app-header", "");
+		let bottom = 135;
+		header.getBoundingClientRect = () => new DOMRect(0, 0, 800, bottom);
+		document.body.append(header);
+		try {
+			openReviewDrawer();
+			const client = new QueryClient();
+			client.setQueryData(overviewQuery.queryKey, {
+				writes: "on",
+			} as PrOverview);
+			client.setQueryData(sessionQuery.queryKey, {
+				viewer: "octo",
+				patchsets: [],
+			} as unknown as SessionInfo);
+			client.setQueryData(agentStatusQuery.queryKey, status);
+			client.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [review()],
+			});
+			let commits = 0;
+			render(
+				<QueryClientProvider client={client}>
+					<Profiler id="drawer" onRender={() => commits++}>
+						<ReviewConversationDrawer />
+					</Profiler>
+				</QueryClientProvider>,
+			);
+			const d = screen.getByTestId("review-conversation");
+			expect(d).toHaveAttribute("data-mode", "overlay");
+			expect(d.style.top).toBe("135px");
+			const before = commits;
+			bottom = 45;
+			await act(async () => window.dispatchEvent(new Event("scroll")));
+			expect(d.style.top).toBe("45px");
+			expect(commits).toBe(before);
+		} finally {
+			header.remove();
+		}
 	});
 
 	it("Escape and the close button close it; focus goes back to the chip", async () => {
