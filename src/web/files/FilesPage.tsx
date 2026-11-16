@@ -110,6 +110,7 @@ import {
 	type FocusWorld,
 	focusPlan,
 	githubRows,
+	listedConversations,
 	type PanelRow,
 } from "./threadRows";
 import { useSince } from "./useSince";
@@ -963,13 +964,22 @@ export function FilesPage() {
 	const id = useReviewId();
 	const [landing, setLanding] = useState<Landing | null>(null);
 	const landingSeq = useRef(0);
+	const landingClient = useQueryClient();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
 	useEffect(() => {
 		if (!active || !data || !search.path) return;
 		threadFocus.cancel();
 		// An agent conversation's link: its card opens once it shows.
 		if (search.conversation) {
-			requestConversationOpen(search.conversation, search.message);
+			// Its card: its review thread's for a conversation on one.
+			const asked = landingClient
+				.getQueryData(agentThreadsQuery.queryKey)
+				?.threads.find((t) => t.id === search.conversation);
+			const card =
+				asked?.anchor.subject === "thread" && !asked.orphaned
+					? asked.anchor.thread
+					: undefined;
+			requestConversationOpen(search.conversation, search.message, card);
 		}
 		const file = landingFile(data.files, search);
 		landingSeq.current += 1;
@@ -1301,6 +1311,10 @@ export function FilesPage() {
 	const aiRows = useMemo(() => {
 		if (noAgent) return [];
 		if (!agentThreads) return null;
+		// A conversation on a review thread waits for GitHub's threads: it
+		// shows only while its thread is listed here (none when they failed:
+		// no card of theirs shows).
+		if (!listedThreads && threadsFailed === null) return null;
 		// On an earlier patch set, as the diff shows them: those asked on
 		// it or before the next one started.
 		const kept =
@@ -1310,24 +1324,30 @@ export function FilesPage() {
 						(t) =>
 							t.anchor.commit === agentHead || Date.parse(t.at) < threadsCutoff,
 					);
-		return agentRows(kept, agentShownById, shownById);
+		return agentRows(
+			listedConversations(
+				kept,
+				new Set((listedThreads ?? []).map((t) => t.id)),
+			),
+			agentShownById,
+			shownById,
+		);
 	}, [
 		noAgent,
 		agentThreads,
+		listedThreads,
+		threadsFailed,
 		threadsCutoff,
 		agentHead,
 		agentShownById,
 		shownById,
 	]);
 	const peopleFailed = threadsFailed !== null;
-	// A Threads row's card still pending is no longer asked for once the
-	// page hides, or another comparison or read shows.
+	// A Threads row's card still pending is no longer asked for once
+	// another comparison or read shows (a link's waits: it may be what
+	// changed the comparison). Leaving the page drops any (threadFocus).
 	const comparisonKey = `${data?.revision}|${threads?.readId}|${JSON.stringify(placingTo)}`;
-	useEffect(() => {
-		if (!active) threadFocus.cancel();
-	}, [active]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: once per comparison or read.
-	useEffect(() => () => threadFocus.cancel(), [comparisonKey]);
+	useEffect(() => threadFocus.cancelOutside(comparisonKey), [comparisonKey]);
 	// Where the conversations' cards are, for a row's pick.
 	const focusWorld = useMemo<FocusWorld>(() => {
 		const shownFiles = new Set(files.map((f) => f.index));
@@ -1335,7 +1355,6 @@ export function FilesPage() {
 			fileOf: (path) =>
 				data ? landingFile(data.files, { path })?.index : undefined,
 			hidden: (index) => !shownFiles.has(index),
-			githubListed: new Set((listedThreads ?? []).map((t) => t.id)),
 			githubAfter: new Set([
 				...outside.map((o) => o.thread.id),
 				...(unplacedOnError ?? []).map((t) => t.id),
@@ -1351,7 +1370,6 @@ export function FilesPage() {
 	}, [
 		files,
 		data,
-		listedThreads,
 		outside,
 		unplacedOnError,
 		agentOutsideShown,
@@ -1372,7 +1390,9 @@ export function FilesPage() {
 		threadFocus.cancel();
 		if (plan.unhide) setEyesOnly(false);
 		if (plan.open !== null && plan.open !== openIndex) openOnly(plan.open);
-		if (plan.request) threadFocus.request(plan.request);
+		if (plan.request) {
+			threadFocus.request({ ...plan.request, scope: comparisonKey });
+		}
 	};
 	const tree = data && (
 		<FileTree

@@ -49,12 +49,10 @@ export function ThreadBlock(props: {
 			if (resolved) onResolved(thread, from);
 		});
 	const agent = useThreadAgent(thread, { onToggle });
-	// Asked for by the Threads tab: scrolled into view, its agent
-	// conversation open when that was the row.
+	// Asked for (threadFocus): in view; its agent conversation, when asked
+	// for too, opens by itself (useThreadAgent).
 	const card = useRef<HTMLElement>(null);
-	useFocusCard(thread.id, card, (f) => {
-		if (f.conversation) agent?.show();
-	});
+	useFocusCard(thread.id, card);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<article

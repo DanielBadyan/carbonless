@@ -10,6 +10,7 @@ import {
 	type FocusWorld,
 	focusPlan,
 	githubRows,
+	listedConversations,
 	listedRows,
 	plainText,
 } from "./threadRows";
@@ -384,7 +385,6 @@ describe("focusPlan", () => {
 	const world = (more: Partial<FocusWorld> = {}): FocusWorld => ({
 		fileOf: (path) => ({ "src/cache.ts": 0, "src/a.ts": 1 })[path],
 		hidden: () => false,
-		githubListed: new Set(["RT1"]),
 		githubAfter: new Set(),
 		agentAfter: new Set(),
 		pending: false,
@@ -431,13 +431,6 @@ describe("focusPlan", () => {
 	});
 
 	it("leaves nothing pending when no card can show it", () => {
-		// A conversation on a review thread this view doesn't list: its
-		// file opens, nothing is asked for.
-		expect(focusPlan(onThread, world({ githubListed: new Set() }))).toEqual({
-			open: 0,
-			unhide: false,
-			request: null,
-		});
 		// No file, not after the files, nothing on its way.
 		const nowhere = world({ fileOf: () => undefined });
 		expect(focusPlan(gh, nowhere).request).toBeNull();
@@ -445,5 +438,36 @@ describe("focusPlan", () => {
 		expect(focusPlan(gh, { ...nowhere, pending: true }).request).toEqual({
 			id: "RT1",
 		});
+	});
+});
+
+describe("listedConversations", () => {
+	it("lists a conversation on a review thread only while that thread is listed; span questions and orphans always", () => {
+		const onThread = conversation({ id: "A1" });
+		const orphan = conversation({ id: "A2", orphaned: true });
+		const question = span({ id: "S1" });
+		const all = [onThread, orphan, question];
+		expect(listedConversations(all, new Set(["RT1"])).map((t) => t.id)).toEqual(
+			["A1", "A2", "S1"],
+		);
+		// Its thread not in this view (published after the viewed patch
+		// set, deleted here): no row, nothing counted.
+		const shown = listedConversations(all, new Set());
+		expect(shown.map((t) => t.id)).toEqual(["A2", "S1"]);
+		const rows = agentRows(shown, new Map(), new Map());
+		expect(rows).toHaveLength(2);
+		expect(threadsCount([], rows, { people: false, ai: false })).toEqual({
+			state: "open",
+			n: 2,
+		});
+	});
+
+	it("an orphan is its own card, not its gone thread's", () => {
+		const [row] = agentRows(
+			[conversation({ id: "A2", orphaned: true })],
+			new Map(),
+			new Map(),
+		);
+		expect(row?.focus).toEqual({ id: "A2" });
 	});
 });

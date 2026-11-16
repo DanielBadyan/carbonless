@@ -23,13 +23,13 @@ import type { AgentMessage, AgentThread, AgentView } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { ApiError, sessionQuery } from "../api";
 import type { ComparisonBase, Viewing } from "../files/comparison";
+import { useFocusWhere } from "../files/threadFocus";
 import {
 	agentThreadsQuery,
 	postAgentSeen,
 	useAgentOn,
 	withThread,
 } from "./api";
-import { useConversationLanding } from "./conversationLinks";
 
 /** The comparison a message is sent in; the server fills left/right. */
 export type SendView = Omit<AgentView, "left" | "right">;
@@ -289,8 +289,6 @@ export interface ThreadAgent {
 	open: boolean;
 	toggle: () => void;
 	close: () => void;
-	/** Opens it without moving the focus (the Threads tab's row showed it). */
-	show: () => void;
 	/** The agent button: focus comes back to it on close. */
 	buttonRef: RefObject<HTMLButtonElement | null>;
 	/** The composer's input: focus goes to it on open. */
@@ -347,13 +345,15 @@ export function useThreadAgent(
 		if (to === "composer") composerRef.current?.focus();
 		else if (to === "button") buttonRef.current?.focus();
 	}, [open]);
-	// A link to this conversation: its panel opens (AgentMessageItems takes the landing).
-	const { landing } = useConversationLanding(conversation?.id);
-	useEffect(() => {
-		if (!landing) return;
-		setFolded(false);
-		setOpen(true);
-	}, [landing]);
+	// Asked for (a link to this conversation, a Threads tab row): its panel
+	// opens; the card takes the request, AgentMessageItems its outline.
+	useFocusWhere(
+		(f) => conversation !== undefined && f.conversation === conversation.id,
+		() => {
+			setFolded(false);
+			setOpen(true);
+		},
+	);
 	const toggle = useCallback(() => {
 		setFolded(false);
 		setOpen((o) => {
@@ -370,10 +370,6 @@ export function useThreadAgent(
 			if (o) focus.current = "button";
 			return false;
 		});
-	}, []);
-	const show = useCallback(() => {
-		setFolded(false);
-		setOpen(true);
 	}, []);
 	// The caller's onToggle is usually a fresh closure: kept in a ref, so
 	// the context value changes only when what it says does.
@@ -394,7 +390,6 @@ export function useThreadAgent(
 						open,
 						toggle,
 						close,
-						show,
 						buttonRef,
 						composerRef,
 						onToggle: hasOnToggle ? onToggle : undefined,
@@ -407,7 +402,6 @@ export function useThreadAgent(
 			open,
 			toggle,
 			close,
-			show,
 			hasOnToggle,
 			onToggle,
 		],

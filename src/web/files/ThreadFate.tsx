@@ -62,7 +62,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
-import { useFocusAmong, useFocusCard } from "./threadFocus";
+import { useFocusCard } from "./threadFocus";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -445,13 +445,6 @@ export function UnplacedRow(props: {
 	const showMore = useCallback(() => setMore(true), []);
 	// Its agent conversation: opening it shows the composer row too.
 	const agent = useThreadAgent(thread, { onOpen: showMore });
-	// The Threads tab asked for its agent conversation: it opens.
-	useFocusAmong(
-		(id) => id === thread.id,
-		(f) => {
-			if (f.conversation) agent?.show();
-		},
-	);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<UnplacedShell

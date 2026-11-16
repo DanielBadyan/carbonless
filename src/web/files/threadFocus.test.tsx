@@ -2,8 +2,15 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requestConversationOpen } from "../agent/conversationLinks";
 import { PageActive } from "../pageActive";
-import { threadFocus, useFocusAmong, useFocusCard } from "./threadFocus";
+import {
+	threadFocus,
+	useFocusAmong,
+	useFocusCard,
+	useFocusWhere,
+	useOutlinedMessage,
+} from "./threadFocus";
 
 function Card(props: {
 	id: string;
@@ -29,7 +36,7 @@ function Holder(props: { ids: string[]; onOpen: (id: string) => void }) {
 
 let scrollTo: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-	threadFocus.cancel();
+	threadFocus.reset();
 	// Drawn: jsdom lays nothing out.
 	vi.spyOn(Element.prototype, "getClientRects").mockImplementation(
 		() => [{}] as unknown as DOMRectList,
@@ -46,7 +53,7 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
-	threadFocus.cancel();
+	threadFocus.reset();
 });
 
 describe("threadFocus", () => {
@@ -164,5 +171,103 @@ describe("threadFocus", () => {
 		rerender(<Holder ids={["A", "B"]} onOpen={onOpen} />);
 		expect(onOpen).toHaveBeenCalledTimes(1);
 		expect(onOpen).toHaveBeenCalledWith("B");
+	});
+
+	it("a link to a conversation goes through the same request: its card takes it, a hidden copy doesn't", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const hidden = vi.fn();
+		const shown = vi.fn();
+		render(
+			<>
+				<div hidden>
+					<Card id={A} onOpen={hidden} />
+				</div>
+				<Card id={A} onOpen={shown} />
+			</>,
+		);
+		act(() => requestConversationOpen(A));
+		expect(hidden).not.toHaveBeenCalled();
+		expect(shown).toHaveBeenCalledTimes(1);
+		expect(scrollTo).toHaveBeenCalledTimes(1);
+		expect(threadFocus.get()).toBeNull();
+	});
+
+	it("a link to a conversation on a review thread: that thread's card, its panel opens", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const panel = vi.fn();
+		function Panel() {
+			useFocusWhere((f) => f.conversation === A, panel);
+			return null;
+		}
+		const card = vi.fn();
+		render(
+			<>
+				<Card id="RT1" onOpen={card} />
+				<Panel />
+			</>,
+		);
+		act(() => requestConversationOpen(A, undefined, "RT1"));
+		expect(card).toHaveBeenCalledTimes(1);
+		expect(panel).toHaveBeenCalledTimes(1);
+	});
+
+	it("the message a link names is outlined once its card took it, once", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+			const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+			function Messages() {
+				return <p data-lit={useOutlinedMessage([{ id: M }]) ?? ""} />;
+			}
+			const { container, rerender } = render(
+				<>
+					<Card id={A} />
+					<Messages />
+				</>,
+			);
+			act(() => requestConversationOpen(A, M));
+			const lit = () => container.querySelector("p")?.dataset.lit;
+			expect(lit()).toBe(M);
+			act(() => vi.advanceTimersByTime(2000));
+			expect(lit()).toBe("");
+			// A later mount doesn't light it again.
+			rerender(
+				<>
+					<Card id={A} />
+					<Messages key="again" />
+				</>,
+			);
+			expect(lit()).toBe("");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a request is dropped once the reviewer moves to another page", () => {
+		window.history.replaceState(null, "", "/r/RV1/files");
+		try {
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			window.history.pushState(null, "", "/r/RV1");
+			const onOpen = vi.fn();
+			render(<Card id="T1" onOpen={onOpen} />);
+			expect(onOpen).not.toHaveBeenCalled();
+		} finally {
+			window.history.replaceState(null, "", "/");
+		}
+	});
+
+	it("a row's request in another comparison is dropped; a link's waits", () => {
+		act(() => {
+			threadFocus.request({ id: "T1", scope: "ps1" });
+		});
+		threadFocus.cancelOutside("ps1");
+		expect(threadFocus.get()?.id).toBe("T1");
+		threadFocus.cancelOutside("ps2");
+		expect(threadFocus.get()).toBeNull();
+		act(() => requestConversationOpen("01k9e6m2q8x4v7c3n5b0h1j2aa"));
+		threadFocus.cancelOutside("ps3");
+		expect(threadFocus.get()).not.toBeNull();
 	});
 });

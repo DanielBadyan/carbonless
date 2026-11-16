@@ -188,7 +188,7 @@ export function agentRows(
 				: askedPlace(t);
 		// On a GitHub thread: that thread's card, its conversation open.
 		const focus =
-			a.subject === "thread"
+			a.subject === "thread" && !t.orphaned
 				? { id: a.thread, conversation: t.id }
 				: { id: t.id };
 		return {
@@ -234,8 +234,6 @@ export interface FocusWorld {
 	fileOf: (path: string) => number | undefined;
 	/** The "needs eyes" filter hides file `index`. */
 	hidden: (index: number) => boolean;
-	/** The review threads listed in this view (the rows' own). */
-	githubListed: ReadonlySet<string>;
 	/** Review threads whose cards are listed after the files (not in the comparison, unplaced on a failure). */
 	githubAfter: ReadonlySet<string>;
 	/** Agent threads whose cards are listed after the files. */
@@ -258,12 +256,6 @@ export interface FocusPlan {
 export function focusPlan(row: PanelRow, w: FocusWorld): FocusPlan {
 	const none = { open: null, unhide: false, request: null };
 	const onGithub = row.key.startsWith("gh:") || !!row.focus.conversation;
-	// A conversation on a review thread this view doesn't list (published
-	// after the viewed patch set): no card holds it here.
-	if (onGithub && !w.githubListed.has(row.focus.id)) {
-		const file = w.fileOf(row.path);
-		return { ...none, open: file ?? null, unhide: false };
-	}
 	const after = onGithub ? w.githubAfter : w.agentAfter;
 	if (after.has(row.focus.id)) return { ...none, request: row.focus };
 	const file = w.fileOf(row.path);
@@ -271,4 +263,22 @@ export function focusPlan(row: PanelRow, w: FocusWorld): FocusPlan {
 		return { open: file, unhide: w.hidden(file), request: row.focus };
 	}
 	return w.pending ? { ...none, request: row.focus } : none;
+}
+
+/**
+ * The agent conversations this view lists: one on a review thread only
+ * while that thread is listed here (an earlier patch set leaves out those
+ * published after it; one deleted here is gone), as its card is where the
+ * conversation shows. Span questions (orphans too) always.
+ */
+export function listedConversations(
+	threads: readonly AgentThread[],
+	githubListed: ReadonlySet<string>,
+): AgentThread[] {
+	return threads.filter(
+		(t) =>
+			t.anchor.subject !== "thread" ||
+			t.orphaned === true ||
+			githubListed.has(t.anchor.thread),
+	);
 }
