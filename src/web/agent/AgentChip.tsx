@@ -11,15 +11,10 @@ import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
-import {
-	closeReviewDrawer,
-	isReviewDrawerOpen,
-	openReviewDrawer,
-	toggleReviewDrawer,
-	useReviewDrawerOpen,
-} from "./drawerStore";
+import { toggleReviewDrawer, useReviewDrawerOpen } from "./drawerStore";
 import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
+import { unseenMessages } from "./threadAgent";
 
 /**
  * Spawned (not joined) and the runner not up yet: starting when an agent is
@@ -115,16 +110,30 @@ export function useAgentSync(
 }
 
 /**
- * Whether pressing the chip toggles the review conversation's drawer: an
- * ACP agent configured, a session joined, or the conversation already
- * there (an MCP-only reviewer whose session left can still read it).
- * Otherwise it opens the agent setup.
+ * Whether pressing the chip (or Shift+A) toggles the review conversation's
+ * drawer: an ACP agent configured or a session joined. Otherwise (no agent,
+ * even with a conversation already there) it opens the agent setup.
  */
-export const chipOpensDrawer = (
+export const chipOpensDrawer = (status: AgentStatus | undefined): boolean =>
+	Boolean(status?.configured) || Boolean(status?.joined);
+
+/**
+ * A press (the chip's tap or Shift+A) before the first status read: held
+ * until the status lands, then the drawer or the setup (chipOpensDrawer),
+ * never one swapped for the other. A second press cancels it, and a failed
+ * read spends it: nothing opens later, out of the blue.
+ */
+let earlyPress = false;
+
+/** Presses the chip: the drawer or the setup, or, before the first status read, holds the press. */
+export function pressAgentChip(
 	status: AgentStatus | undefined,
-	conversation: boolean,
-): boolean =>
-	Boolean(status?.configured) || Boolean(status?.joined) || conversation;
+	pending: boolean,
+): void {
+	if (pending) earlyPress = !earlyPress;
+	else if (chipOpensDrawer(status)) toggleReviewDrawer();
+	else openAgentSetup();
+}
 
 /** The chip's icon colour: the status dot's, as text (agentDot). */
 export function agentInk(status: AgentStatus): string {
@@ -188,14 +197,15 @@ export function useAgentChipPlace(asOf: boolean): boolean {
  * own column pinned right (in the sticky row's right end once scrolled):
  * the sparkle alone, coloured by its status, in a bordered circle; the
  * name and detail in the tooltip. One size in every state (CHIP_BOX).
- * The conversation's message count sits on the lower right once it has
- * any (a joined session's plug inside it, before the number; the plug
- * alone without messages), an unread dot top right while an answer is
- * unseen, and it looks pressed while the drawer is open. Pressing it
- * toggles the drawer (chipOpensDrawer), else opens the agent setup. Until
- * the overview says whether there is an agent, and on its first read, a
- * spinner in the icon's place; no count until the threads are read
- * (never a 0). None where the review has no agent (--viewer, --as-of).
+ * The number of the conversation's unseen answers sits on the lower right
+ * while there are any (a joined session's plug inside it, before the
+ * number; the plug alone otherwise), and it looks pressed while the drawer
+ * is open. Pressing it toggles the drawer (chipOpensDrawer), else opens
+ * the agent setup; a press before the first status read waits for it
+ * (pressAgentChip). Until the overview says whether there is an agent, and
+ * on its first read, a spinner in the icon's place; no number until the
+ * threads are read (never a 0). None where the review has no agent
+ * (--viewer, --as-of).
  */
 export function AgentChip({
 	dismissKey,
@@ -213,22 +223,23 @@ export function AgentChip({
 	useAgentSync(client, status.data);
 	const conversation = useReviewConversation();
 	const drawerOpen = useReviewDrawerOpen();
-	// A tap before the first status read: the drawer (its spinner) while
-	// it is read, then what the status says (the setup, for nothing set up).
-	const early = useRef(false);
+	// A press held before the first status read: acted on once it lands.
 	const statusData = status.data;
-	const hasConversation = conversation.thread !== undefined;
-	const conversationKnown = !conversation.loading;
-	// Spent once the drawer it opened closes, or the read fails: never a
-	// setup later, out of the blue.
-	if (early.current && (!drawerOpen || status.isError)) early.current = false;
 	useEffect(() => {
-		if (!early.current || !statusData || !conversationKnown) return;
-		early.current = false;
-		if (chipOpensDrawer(statusData, hasConversation)) return;
-		closeReviewDrawer();
-		openAgentSetup();
-	}, [statusData, hasConversation, conversationKnown]);
+		if (!earlyPress || !statusData) return;
+		earlyPress = false;
+		pressAgentChip(statusData, false);
+	}, [statusData]);
+	// A failed read spends it, as leaving the review does.
+	useEffect(() => {
+		if (status.isError) earlyPress = false;
+	}, [status.isError]);
+	useEffect(
+		() => () => {
+			earlyPress = false;
+		},
+		[],
+	);
 	if (!place) return null;
 	if (!on) {
 		// Whether there is an agent isn't known yet: its place, spinning.
@@ -253,20 +264,17 @@ export function AgentChip({
 			: "Loading your agent";
 	const joined = data?.via === "mcp" && Boolean(data.joined);
 	const thread = conversation.thread;
-	// Only once the threads are read: never a 0 while they load.
-	const count = thread?.messages.length ?? 0;
-	const unread = Boolean(thread?.unread);
-	// While the first status read is out, a tap toggles the drawer (its
-	// spinner), and the status then decides (above).
-	const drawer =
-		status.isPending || chipOpensDrawer(data, thread !== undefined);
+	// The agent's answers not yet seen; only once the threads are read
+	// (never a 0 while they load), and only while unseen.
+	const count = thread?.unread ? unseenMessages(thread).length : 0;
+	// Until the first status read, neither: a press is held (above).
+	const drawer = !status.isPending && chipOpensDrawer(data);
 	const pressed = drawerOpen && drawer;
 	// Both jobs (the conversation, the agent), then the status.
 	const name = [
 		"Review conversation",
 		`Your agent: ${tip}`,
-		count > 0 ? plural(count, "message") : "",
-		unread ? "unread" : "",
+		count > 0 ? `${count} unread` : "",
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -288,18 +296,7 @@ export function AgentChip({
 					aria-busy={status.isPending || undefined}
 					aria-expanded={drawer ? pressed : undefined}
 					aria-controls={drawer ? "review-conversation" : undefined}
-					onClick={() => {
-						if (status.isPending) {
-							if (isReviewDrawerOpen()) {
-								early.current = false;
-								closeReviewDrawer();
-							} else {
-								early.current = true;
-								openReviewDrawer();
-							}
-						} else if (drawer) toggleReviewDrawer();
-						else openAgentSetup();
-					}}
+					onClick={() => pressAgentChip(data, status.isPending)}
 					className={`group ${CHIP_BOX} rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
 				>
 					<span
@@ -349,13 +346,6 @@ export function AgentChip({
 									{plug}
 								</span>
 							)
-						)}
-						{unread && (
-							<span
-								aria-hidden
-								data-testid="agent-chip-unread"
-								className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
-							/>
 						)}
 					</span>
 				</button>

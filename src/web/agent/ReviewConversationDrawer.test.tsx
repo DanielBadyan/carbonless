@@ -121,6 +121,8 @@ function show(
 		/** The agent threads as read; undefined: the read is asked (fetch). */
 		threads?: AgentThread[];
 		filesView?: SendView;
+		/** The agent status as read; null: not read yet. */
+		status?: AgentStatus | null;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -139,7 +141,9 @@ function show(
 			{ number: 2, head: "h2" },
 		],
 	} as unknown as SessionInfo);
-	client.setQueryData(agentStatusQuery.queryKey, status);
+	if (opts.status !== null) {
+		client.setQueryData(agentStatusQuery.queryKey, opts.status ?? status);
+	}
 	if (opts.threads) {
 		client.setQueryData(agentThreadsQuery.queryKey, { threads: opts.threads });
 	}
@@ -354,6 +358,23 @@ describe("ReviewConversationDrawer", () => {
 		await user.keyboard("{Shift>}A{/Shift}");
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 		expect(screen.getByTestId("agent-chip")).toHaveFocus();
+	});
+
+	it("nothing set up, a review conversation already there: Shift+A opens the setup, never the drawer", async () => {
+		const { user } = show({
+			threads: [review({ unread: true })],
+			status: { ...status, state: "off", configured: false, agent: undefined },
+		});
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("setup")).toHaveTextContent("open");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("Shift+A before the first status read opens nothing (the chip acts once it lands)", async () => {
+		const { user } = show({ threads: [review()], status: null });
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 	});
 
 	it("Retry on a failed read shows it is reading again: the spinner in the alert's place", async () => {

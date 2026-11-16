@@ -19,6 +19,7 @@ import {
 	row,
 	selectText,
 	setupDialog,
+	spawnAgent,
 	statusDialog,
 	test,
 } from "./agent-ui";
@@ -1185,16 +1186,17 @@ test("the chip has its own column pinned right: right of the number, its right e
 	await shot(page, "agent-chip-header", isMobile);
 });
 
-test("at 360px with a review conversation, the chip's count badge stays on screen, at the top and docked: no sideways scroll", async ({
+test("at 360px with an unread answer, the chip's count badge stays on screen, at the top and docked: no sideways scroll", async ({
 	page,
 	pr,
 	agentCrb,
 }) => {
 	await page.setViewportSize({ width: 360, height: 760 });
 	await pr(fixture);
-	// Nothing spawned: the question stays one message.
+	// Asked, then answered while no one looks: one unread answer.
 	const s = await agentCrb({ spawn: false });
 	await askReviewByApi(s.url, "What is the risk in this PR?");
+	await spawnAgent(s.url);
 	await page.goto(s.url);
 	const badge = page.getByTestId("agent-chip-count");
 	await expect(badge).toHaveText("1");

@@ -18,6 +18,7 @@ import {
 } from "../../shared/agent";
 import type { PrOverview } from "../../shared/types";
 import { ApiError, overviewQuery } from "../api";
+import { ShortcutsProvider } from "../shortcuts";
 import {
 	AgentChip,
 	agentDot,
@@ -32,6 +33,7 @@ import {
 	agentThreadsQuery,
 } from "./api";
 import { closeReviewDrawer, useReviewDrawerOpen } from "./drawerStore";
+import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
 import {
 	closeAgentSetup,
 	useAgentSetupOpen,
@@ -156,11 +158,6 @@ describe("the chip's tap", () => {
 			{ ...joined(), configured: false },
 			[],
 		],
-		[
-			"nothing set up, but a review conversation exists",
-			{ state: "off", configured: false, agent: undefined },
-			[review(2)],
-		],
 	])("%s: toggles the drawer, never the setup", async (_n, more, threads) => {
 		const { user } = chipOver(status(more), vi.fn(), threads);
 		const chip = screen.getByTestId("agent-chip");
@@ -176,18 +173,25 @@ describe("the chip's tap", () => {
 		expect(chip).toHaveAttribute("aria-expanded", "false");
 	});
 
-	it("nothing set up and no conversation: opens the agent setup, no drawer", async () => {
-		const { user } = chipOver(
-			status({ state: "off", configured: false, agent: undefined }),
-			vi.fn(),
-			[spanThread()],
-		);
-		const chip = screen.getByTestId("agent-chip");
-		expect(chip).not.toHaveAttribute("aria-expanded");
-		await user.click(chip);
-		expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
-	});
+	it.each<[string, AgentThread[]]>([
+		["no conversation", [spanThread()]],
+		["a review conversation already there", [review(2, { unread: true })]],
+	])(
+		"nothing set up, %s: opens the agent setup, no drawer",
+		async (_n, threads) => {
+			const { user } = chipOver(
+				status({ state: "off", configured: false, agent: undefined }),
+				vi.fn(),
+				threads,
+			);
+			const chip = screen.getByTestId("agent-chip");
+			expect(chip).not.toHaveAttribute("aria-expanded");
+			expect(chip).not.toHaveAttribute("aria-controls");
+			await user.click(chip);
+			expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		},
+	);
 
 	it.each<[string, AgentStatus, string, string]>([
 		["a configured agent", status(), "open", "closed"],
@@ -198,7 +202,7 @@ describe("the chip's tap", () => {
 			"invite",
 		],
 	])(
-		"tapped before the first status read, %s: the drawer while it is read, then what the status says",
+		"tapped before the first status read, %s: nothing while it is read, then what the status says",
 		async (_n, answer, drawer, setup) => {
 			const held = heldJson();
 			vi.stubGlobal(
@@ -231,15 +235,30 @@ describe("the chip's tap", () => {
 			const user = userEvent.setup();
 			const chip = screen.getByTestId("agent-chip");
 			expect(chip).toHaveAttribute("aria-busy", "true");
+			// Every drawer state seen: one swapped for the setup never shows.
+			const seen = new Set<string>();
+			const watch = new MutationObserver(() =>
+				seen.add(screen.getByTestId("drawer").textContent ?? ""),
+			);
+			watch.observe(screen.getByTestId("drawer"), {
+				childList: true,
+				characterData: true,
+				subtree: true,
+			});
 			await user.click(chip);
-			// Never the setup for a reviewer whose agent is set up.
+			// Held: neither opens before the status says which.
 			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
-			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(chip).not.toHaveAttribute("aria-expanded");
 			await act(async () => held.release(answer));
 			await waitFor(() =>
 				expect(screen.getByTestId("setup")).toHaveTextContent(setup),
 			);
-			expect(screen.getByTestId("drawer")).toHaveTextContent(drawer);
+			await waitFor(() =>
+				expect(screen.getByTestId("drawer")).toHaveTextContent(drawer),
+			);
+			watch.disconnect();
+			if (drawer === "closed") expect(seen.has("open")).toBe(false);
 		},
 	);
 
@@ -274,23 +293,79 @@ describe("the chip's tap", () => {
 		return { held, client, user: userEvent.setup() };
 	}
 
-	it("tapped twice while the status is read: the drawer toggles, and says so", async () => {
-		const { user } = heldChip();
-		const chip = screen.getByTestId("agent-chip");
-		await user.click(chip);
-		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
-		expect(chip).toHaveAttribute("aria-expanded", "true");
-		await user.click(chip);
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
-		expect(chip).toHaveAttribute("aria-expanded", "false");
-	});
+	it.each<[string, AgentStatus]>([
+		["a configured agent", status()],
+		[
+			"nothing set up",
+			status({ state: "off", configured: false, agent: undefined }),
+		],
+	])(
+		"tapped twice while the status is read, %s: the second cancels the first, nothing opens",
+		async (_n, answer) => {
+			const { held, user } = heldChip();
+			const chip = screen.getByTestId("agent-chip");
+			await user.click(chip);
+			await user.click(chip);
+			await act(async () => held.release(answer));
+			await waitFor(() => expect(chip).not.toHaveAttribute("aria-busy"));
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		},
+	);
 
-	it("an early tap's drawer closed before the status lands: nothing set up opens no setup later", async () => {
-		const { held } = heldChip();
-		await userEvent.click(screen.getByTestId("agent-chip"));
-		act(() => closeReviewDrawer());
+	it("Shift+A before the first status read, nothing set up: held like a tap, then the setup, never the drawer", async () => {
+		const held = heldJson();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string) =>
+				String(input).includes("agent/threads")
+					? new Response(JSON.stringify({ threads: [review(2)] }))
+					: held.response,
+			),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		client.setQueryData(overviewQuery.queryKey, { writes: "on" } as PrOverview);
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [review(2)] });
+		function SetupState() {
+			return (
+				<p data-testid="setup">{useAgentSetupOpen() ? "open" : "closed"}</p>
+			);
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<ShortcutsProvider>
+					<AgentChip />
+					<ReviewConversationDrawer />
+					<SetupState />
+					<DrawerState />
+				</ShortcutsProvider>
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
 		await act(async () =>
 			held.release(
+				status({ state: "off", configured: false, agent: undefined }),
+			),
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("setup")).toHaveTextContent("open"),
+		);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("an early tap, then the chip leaves (another review): nothing opens later", async () => {
+		const { held } = heldChip();
+		await userEvent.click(screen.getByTestId("agent-chip"));
+		cleanup();
+		const { held: again } = heldChip();
+		held.release(status());
+		await act(async () =>
+			again.release(
 				status({ state: "off", configured: false, agent: undefined }),
 			),
 		);
@@ -361,11 +436,10 @@ describe("the chip's tap", () => {
 	});
 });
 
-describe("the chip's count and unread dot", () => {
-	it("no badge before the conversation has messages, nor without one", () => {
-		chipOver(status(), vi.fn(), [spanThread()]);
+describe("the chip's unread count", () => {
+	it("no badge without a conversation, an empty one, or one all seen: never the total", () => {
+		chipOver(status(), vi.fn(), [{ ...spanThread(), unread: true }]);
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
-		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
 			named("Claude Agent 0.100.0"),
 		);
@@ -373,48 +447,69 @@ describe("the chip's count and unread dot", () => {
 		chipOver(status(), vi.fn(), [review(0)]);
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
 		expect(screen.getByTestId("agent-chip")).not.toHaveTextContent("0");
+		cleanup();
+		// Six messages, all seen: nothing.
+		chipOver(status(), vi.fn(), [review(6, { seenUpTo: "m6" })]);
+		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
+		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
+			named("Claude Agent 0.100.0"),
+		);
+		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 	});
 
-	it("the count on the lower right once there are messages; code threads aren't counted", () => {
-		chipOver(status(), vi.fn(), [spanThread(), review(6)]);
+	it("the unseen answers' number on the lower right; code threads aren't counted", () => {
+		// m1–m6, answers m2, m4, m6; seen up to m2: two unseen answers.
+		chipOver(status(), vi.fn(), [
+			{ ...spanThread(), unread: true },
+			review(6, { unread: true, seenUpTo: "m2" }),
+		]);
 		const badge = screen.getByTestId("agent-chip-count");
-		expect(badge).toHaveTextContent(/^6$/);
+		expect(badge).toHaveTextContent(/^2$/);
 		expect(badge.className).toContain("-bottom-");
 		expect(badge.className).toContain("-right-");
 		expect(badge.className).toContain("bg-agent");
 		expect(badge.className).toContain("text-agent-ink");
 		expect(badge.className).toContain("border-agent-edge");
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
-			named("Claude Agent 0.100.0 · 6 messages"),
+			named("Claude Agent 0.100.0 · 2 unread"),
 		);
+		// No separate dot: the number says unread.
+		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 	});
 
-	it("an unseen answer: the unread dot top right, and the name says so", () => {
-		chipOver(status(), vi.fn(), [review(2, { unread: true })]);
-		const dot = screen.getByTestId("agent-chip-unread");
-		expect(dot.className).toContain("bg-accent");
-		expect(dot.className).toContain("-top-");
-		expect(dot.className).toContain("-right-");
+	it("seen: the number goes", async () => {
+		const { client } = chipOver(status(), vi.fn(), [
+			review(4, { unread: true }),
+		]);
+		expect(screen.getByTestId("agent-chip-count")).toHaveTextContent(/^2$/);
+		act(() =>
+			client.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [review(4, { unread: false, seenUpTo: "m4" })],
+			}),
+		);
+		await waitFor(() =>
+			expect(screen.queryByTestId("agent-chip-count")).toBeNull(),
+		);
 		expect(screen.getByTestId("agent-chip")).toHaveAccessibleName(
-			named("Claude Agent 0.100.0 · 2 messages · unread"),
+			named("Claude Agent 0.100.0"),
 		);
 	});
 
-	it("a joined session: the plug alone with no messages, inside the badge before the number with some", () => {
-		chipOver(status(joined()), vi.fn(), []);
+	it("a joined session: the plug alone with nothing unread, inside the badge before the number with some", () => {
+		chipOver(status(joined()), vi.fn(), [review(3)]);
 		expect(screen.getByTestId("agent-chip-plug")).toBeInTheDocument();
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
 		cleanup();
-		chipOver(status(joined()), vi.fn(), [review(3)]);
+		chipOver(status(joined()), vi.fn(), [review(4, { unread: true })]);
 		const badge = screen.getByTestId("agent-chip-count");
-		expect(badge).toHaveTextContent(/^3$/);
+		expect(badge).toHaveTextContent(/^2$/);
 		const plug = within(badge).getByTestId("agent-chip-plug");
 		// Before the number.
 		expect(badge.firstElementChild).toBe(plug);
 		expect(screen.getAllByTestId("agent-chip-plug")).toHaveLength(1);
 	});
 
-	it("while the agent threads are read: no badge and no 0; then the count", async () => {
+	it("while the agent threads are read: no badge and no 0; then the unread count", async () => {
 		const held = heldJson();
 		vi.stubGlobal(
 			"fetch",
@@ -440,12 +535,11 @@ describe("the chip's count and unread dot", () => {
 			),
 		);
 		expect(screen.queryByTestId("agent-chip-count")).toBeNull();
-		expect(screen.queryByTestId("agent-chip-unread")).toBeNull();
 		expect(chip).not.toHaveTextContent("0");
 		expect(chip).toHaveAccessibleName(named("Claude Agent 0.100.0"));
-		held.release({ threads: [review(2)] });
+		held.release({ threads: [review(2, { unread: true })] });
 		await waitFor(() =>
-			expect(screen.getByTestId("agent-chip-count")).toHaveTextContent("2"),
+			expect(screen.getByTestId("agent-chip-count")).toHaveTextContent("1"),
 		);
 	});
 });

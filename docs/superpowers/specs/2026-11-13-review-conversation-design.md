@@ -63,8 +63,8 @@ session's work; nothing here may block it.
   `agent-edge` border), streaming text, activity line with Stop, the "new"
   rule above unread answers, Markdown through the same sanitiser, code
   links (`path:line`) that jump to the code, the "Ask agent…" composer.
-- **The chip is the one entry point** and shows status, message count and
-  unread at a glance.
+- **The chip is the one entry point** and shows status and unread answers
+  at a glance.
 - **Never in the way.** The drawer opens only on the reviewer's tap.
 
 ## Non-goals
@@ -111,17 +111,16 @@ tabs, title pill), it is likewise the rightmost item **(call)**. It keeps its sp
 colour (`agentDot`/`agentInk`: grey off/elsewhere, yellow starting/busy,
 green ready, red failing) and its tooltip (`agentTip`). It gains:
 
-- the review conversation's **message count**, once it has any messages,
-  as a small badge on the circle's lower right corner (`agent-ink` on the
+- the number of the review conversation's **unread answers** (agent
+  messages the reviewer has not seen; owner QA 2026-11-16: "only for
+  *unread* messages, not a total count"), while there are any, as a small badge on the circle's lower right corner (`agent-ink` on the
   `agent` wash inside `agent-edge`), so the chip keeps its size and
   nothing jumps **(call)**. That is the plug badge's corner today: for a
   joined session the plug moves into the count badge, before the number
-  (the plug alone while there are no messages) **(call)**. The header's reserved place,
+  (the plug alone while nothing is unread) **(call)**. The header's reserved place,
   `useAgentChipPlace` and the `agent-chip-pending` placeholder, move with
   the chip to the right column. No name text is added: the
   name stays in the tooltip **(call)**;
-- an **unread dot** (`accent`) while the conversation has an agent message
-  the reviewer has not seen;
 - a **pressed** look (the `agent` wash inside `agent-edge`) while the drawer
   is open, and `aria-expanded` / `aria-controls` on the drawer.
 
@@ -129,18 +128,20 @@ Tap:
 
 | Agent | Tap |
 |---|---|
-| an ACP agent is configured, or a session is joined, or this review already has a review conversation | toggles the drawer |
-| none of these | opens agent setup |
+| an ACP agent is configured, or a session is joined | toggles the drawer |
+| neither (even with a review conversation already there) | opens agent setup |
 
-**(call)** "Set up" means any of the three, so an MCP-only reviewer whose
-session has left can still read their conversation (and a question asked
-then waits for the next agent, as every agent thread does). Today a joined
+Owner QA 2026-11-16: "if there's no agent associated, it should open the
+setup modal instead of the side bar"; Shift+A does the same. A tap before
+the first status read is held (the chip's spinner) and acted on once the
+status lands, so the drawer never opens only to be swapped for the setup;
+a second tap cancels it and a failed read spends it. Today a joined
 session's chip opens a popover with Disconnect (`chipPopover`); the drawer
 replaces it, and Disconnect stays one tap away as the modal's Detach, via
 the drawer's status button.
 
 The accessible name says both jobs, e.g. "Review conversation · Claude
-Code ready · 1 unread" **(call: wording)**. Same chip on phone.
+Code ready · 1 unread" **(call: wording)**, never a total count. Same chip on phone.
 
 ### The drawer
 
@@ -360,7 +361,7 @@ Unit:
   third-party text sanitised (a hostile comment body is fenced), GitHub
   unreadable said as such, never an empty list.
 - web: chip states (not configured → setup; configured → toggles the
-  drawer; count; unread dot; pressed; accessible name); the drawer
+  drawer; unread count; pressed; accessible name); the drawer
   (empty state focuses the composer, opens at the end / at "new", marks
   seen, status button opens the modal, Escape closes; while the read is
   held: spinner, no empty composer state, no 0 count); the review thread
@@ -368,7 +369,7 @@ Unit:
 
 Playwright (desktop and phone), with the fake ACP agent:
 - configured agent: tap chip → drawer → ask → streamed answer → close →
-  unread dot on the chip after a later answer → reopen at "new";
+  unread count on the chip after a later answer → reopen at "new";
 - a code link in the answer jumps to Files changed with the drawer open
   (desktop) / closed (phone);
 - status button opens Your agent; not configured: chip opens setup;

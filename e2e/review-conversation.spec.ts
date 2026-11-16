@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
 import {
+	askReviewByApi,
 	bar,
 	CALC,
 	chip,
@@ -9,6 +10,7 @@ import {
 	openFile,
 	reviewDrawer,
 	selectText,
+	setupDialog,
 	spawnAgent,
 	statusDialog,
 	test,
@@ -127,7 +129,8 @@ test("tap the chip, ask, the answer streams in; closed, a later answer lights th
 		"2",
 	);
 	await seen;
-	await expect(chip(page).getByTestId("agent-chip-unread")).toHaveCount(0);
+	// Seen: no number on the chip (never the total).
+	await expect(chip(page).getByTestId("agent-chip-count")).toHaveCount(0);
 	await shot(page, "review-conversation", isMobile);
 	// The next answer arrives while the drawer is closed: never marked seen.
 	await page.route(/\/agent\/threads\/[^/]+\/seen$/, () => {});
@@ -135,8 +138,9 @@ test("tap the chip, ask, the answer streams in; closed, a later answer lights th
 	await drawer.getByRole("button", { name: "Close" }).click();
 	await expect(reviewDrawer(page)).toHaveCount(0);
 	await expect(chip(page)).toBeFocused();
-	await expect(chip(page).getByTestId("agent-chip-unread")).toBeVisible();
-	await expect(chip(page).getByTestId("agent-chip-count")).toHaveText("4");
+	// One answer unseen: 1, not the 4 messages.
+	await expect(chip(page).getByTestId("agent-chip-count")).toHaveText("1");
+	await expect(chip(page)).toHaveAccessibleName(/ · 1 unread$/);
 	// Reopened: the new rule right above the unseen answer.
 	await chip(page).click();
 	const rule = reviewDrawer(page).getByTestId("agent-new-divider");
@@ -178,6 +182,28 @@ test("no agent attached: the drawer still opens, the question waits, and is answ
 		"Here now.",
 	]);
 	await expect(drawer.getByTestId("agent-waiting")).toHaveCount(0);
+});
+
+test("no agent, a review conversation already there: the chip and Shift+A open the setup, never the drawer", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ configured: false });
+	await askReviewByApi(s.url, "What is the risk in this PR?");
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	await chip(page).click();
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	if (isMobile) return;
+	await page.keyboard.press("Escape");
+	await expect(setupDialog(page)).toHaveCount(0);
+	await page.locator("body").press("Shift+A");
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(reviewDrawer(page)).toHaveCount(0);
 });
 
 test("a hostile answer renders inert and never leaves the review", async ({

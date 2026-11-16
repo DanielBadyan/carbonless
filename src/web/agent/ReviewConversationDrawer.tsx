@@ -21,7 +21,7 @@ import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { newClientId } from "../threads/newThreads";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { chipOpensDrawer } from "./AgentChip";
+import { chipOpensDrawer, pressAgentChip } from "./AgentChip";
 import { AgentMessageItems, agentName, useAnswering } from "./AgentThreadCard";
 import { askReview, replyAgent, useAgentWrites } from "./agentWrites";
 import { agentStatusQuery, postAgentCancel, useAgentOn } from "./api";
@@ -169,18 +169,19 @@ export function ReviewConversationDrawer() {
 	const open = useReviewDrawerOpen();
 	const on = useAgentOn();
 	const status = useQuery({ ...agentStatusQuery, enabled: false });
-	const conversation = useReviewConversation();
-	const opensDrawer = chipOpensDrawer(
-		status.data,
-		conversation.thread !== undefined,
-	);
+	const opensDrawer = chipOpensDrawer(status.data);
 	useShortcut({
 		keys: DRAWER_KEYS,
 		label: "Whole review conversation",
 		group: "Global",
-		when: () => on && opensDrawer,
+		when: () => on,
 		run: (e) => {
 			e.preventDefault();
+			if (status.isPending || !opensDrawer) {
+				// The chip's press: the setup, or held for the first status read.
+				pressAgentChip(status.data, status.isPending);
+				return;
+			}
 			// Closed from inside: focus goes back to the chip, as Close does.
 			const inside = document
 				.getElementById("review-conversation")
