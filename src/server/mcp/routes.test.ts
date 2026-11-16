@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	prView,
+	release,
 	reviewThread,
 	threadComment,
 } from "../../../test/fake-gh/scenario";
@@ -381,6 +382,69 @@ describe("/mcp", () => {
 			const o = await api("/overview?maxAge=0");
 			expect(o.statusCode, o.body).toBe(200);
 		};
+
+		it("the reviewer's own ask on a GitHub thread doesn't wait for a fresh GitHub read", async () => {
+			await withThread();
+			const o = await api("/overview");
+			const readId = (o.json() as { readId: string }).readId;
+			const listed = await api(`/threads?read=${readId}&stage=summary`);
+			expect(listed.statusCode, listed.body).toBe(200);
+			const gh = (listed.json() as { threads: { id: string }[] }).threads[0]
+				?.id as string;
+			// GitHub's thread list is held, and the read the page has is old.
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({ login: "rev", text: "Fix this" }),
+								]),
+							],
+						},
+					},
+				},
+				hold: ["threads"],
+			});
+			vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+			try {
+				vi.setSystemTime(Date.now() + 31_000);
+				const res = await api("/agent/threads", "POST", {
+					clientId: "h1",
+					text: "Is this fixed?",
+					thread: gh,
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				expect((res.json() as AgentThread).anchor).toMatchObject({
+					subject: "thread",
+					thread: gh,
+				});
+			} finally {
+				vi.useRealTimers();
+				release(process.env.CRB_FAKE_GH ?? "", "threads");
+			}
+		});
+
+		it("agent reads past the window never push out the read the page is on", async () => {
+			await withThread();
+			const o = await api("/overview");
+			const readId = (o.json() as { readId: string }).readId;
+			const client = await connect();
+			const a = await join(client);
+			vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+			try {
+				for (let i = 0; i < 4; i++) {
+					vi.setSystemTime(Date.now() + 31_000);
+					const r = await call(client, "review", { token: a.token });
+					expect(r.error, JSON.stringify(r.value)).toBe(false);
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+			const listed = await api(`/threads?read=${readId}&stage=summary`);
+			expect(listed.statusCode, listed.body).toBe(200);
+		});
 
 		it("review reads GitHub's threads at most 30 s old, says when, and a burst within that costs one read", async () => {
 			await withThread();
@@ -986,6 +1050,80 @@ describe("/mcp", () => {
 				subject: "line",
 				commit: h1,
 				line: 26,
+			});
+		});
+
+		it("open from a review question checks LEFT lines at the viewed head's own merge base, as progress numbers them", async () => {
+			const git = (cwd: string, ...args: string[]) =>
+				execFileSync("git", args, {
+					cwd,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const repo = pr.repo.path;
+			// Patch set 1 on the fixture's head (merge base B0).
+			const first = await view();
+			await mark(first, [{ key: keyOf(first, "a.txt", 2), state: "reviewed" }]);
+			// main moves on: two lines on top of a.txt (B1). The PR is rebased
+			// onto it and now changes only its last line (H2).
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			const commitOn = (parent: string, text: string, message: string) => {
+				const work = `${repo}-work-${message.replace(/\W/g, "")}`;
+				git(repo, "worktree", "add", "--quiet", "--detach", work, parent);
+				try {
+					execFileSync("sh", ["-c", 'printf "%s" "$1" > a.txt', "sh", text], {
+						cwd: work,
+					});
+					git(work, "commit", "--quiet", "-am", message);
+					return git(work, "rev-parse", "HEAD");
+				} finally {
+					git(repo, "worktree", "remove", "--force", work);
+				}
+			};
+			const b1 = commitOn(
+				pr.mergeBase,
+				`top 1\ntop 2\n${lines.join("\n")}\n`,
+				"base moves",
+			);
+			const changed = [...lines];
+			changed[29] = "line 30 changed";
+			const h2 = commitOn(
+				b1,
+				`top 1\ntop 2\n${changed.join("\n")}\n`,
+				"rebased",
+			);
+			pr.moveMain(b1);
+			git(repo, "update-ref", "refs/pull/12/head", h2);
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: h2, baseRefName: "main" }) },
+				},
+			});
+			expect((await api("/refresh", "POST")).statusCode).toBe(200);
+			// Still on patch set 1 (merge base B0); the reviewer views H2.
+			expect((await view()).patchset).toBe(1);
+			await askReview({
+				view: { target: { head: h2 }, from: { branch: true } },
+			});
+			const client = await connect();
+			const a = await join(client);
+			await call(client, "next", { token: a.token });
+			const p = await progressOf(client, a.token);
+			expect(p.comparison).toMatchObject({ base: b1, head: h2 });
+			const left = p.files.find((f) => f.path === "a.txt")?.unreviewed.LEFT;
+			expect(left).toEqual([[32, 32]]);
+			const opened = await call(client, "open", {
+				token: a.token,
+				text: "The old last line.",
+				code: { path: "a.txt", side: "LEFT", line: 32 },
+			});
+			expect(opened.error, JSON.stringify(opened.value)).toBe(false);
+			const t = (await threads()).find((x) => x.id === opened.value.thread);
+			expect(t?.anchor).toMatchObject({
+				subject: "line",
+				commit: h2,
+				side: "LEFT",
+				line: 32,
 			});
 		});
 

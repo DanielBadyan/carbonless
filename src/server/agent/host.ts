@@ -1129,7 +1129,7 @@ export class AgentHost {
 			existing = await this.#openThreadTarget(r.thread, threads);
 			if (!existing) {
 				try {
-					anchor = await this.#threadAnchor(r.thread);
+					anchor = await this.#threadAnchor(r.thread, AGENT_GITHUB_MAX_AGE_MS);
 				} catch (error) {
 					// The reviewer asked there meanwhile: one conversation per
 					// thread, so the agent's message continues theirs.
@@ -1253,16 +1253,24 @@ export class AgentHost {
 				: null;
 		const review = facts.review();
 		// A review question: the comparison progress reads (#comparisonView).
-		const view = reviewQuestion ? await this.#comparisonView() : undefined;
-		const pinned = view
-			? resolveView(
-					{ target: view.target, from: { branch: true } },
-					this.github.patchsets(),
-					this.github.base(),
-				)
-			: null;
-		const head = pinned?.right ?? seen?.head ?? review.head.commit;
-		const mergeBase = pinned?.left ?? seen?.mergeBase ?? review.mergeBase;
+		// A review question: the very coverage read progress numbers its
+		// lines in (head and merge base), so LEFT lines match it.
+		let pinned: { head: string; base: string } | null = null;
+		const { coverage } = this.#facts();
+		if (reviewQuestion && coverage) {
+			const view = await this.#comparisonView();
+			pinned = await Promise.resolve()
+				.then(() => coverage(view?.target))
+				.then(
+					(c) =>
+						OID.test(c.head) && OID.test(c.base)
+							? { head: c.head, base: c.base }
+							: null,
+					() => null,
+				);
+		}
+		const head = pinned?.head ?? seen?.head ?? review.head.commit;
+		const mergeBase = pinned?.base ?? seen?.mergeBase ?? review.mergeBase;
 		const files = await facts.prFacts().then(
 			(p) => p.files,
 			() => null,
@@ -1448,8 +1456,9 @@ export class AgentHost {
 	}
 
 	/** The anchor of a new conversation on GitHub thread `id`; see open(). */
-	async #threadAnchor(id: string): Promise<AgentAnchor> {
-		const rt = await this.github.thread(id, AGENT_GITHUB_MAX_AGE_MS);
+	async #threadAnchor(id: string, maxAgeMs?: number): Promise<AgentAnchor> {
+		// The agent's open reads GitHub fresh; the reviewer's ask any read.
+		const rt = await this.github.thread(id, maxAgeMs);
 		if (!rt || rt.id === "" || rt.unavailable === "deleted") {
 			throw new AgentRequestError(`No GitHub thread ${id} to ask about`);
 		}

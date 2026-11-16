@@ -288,6 +288,8 @@ export class Session {
 	#reads: OverviewRead[] = [];
 	/** Every read not settled yet, kept or not: close() stops them all. */
 	readonly #live = new Set<OverviewRead>();
+	/** The read overview() last served the page (its route): never pushed out by newer reads. */
+	#served: OverviewRead | null = null;
 	/** Reads a Refresh replaced: their threads still serve, their overview not. */
 	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
@@ -1423,6 +1425,8 @@ export class Session {
 	 */
 	overview(
 		maxAgeMs = Number.POSITIVE_INFINITY,
+		/** The page asks (its route): the read is kept while newer ones come. */
+		forPage = false,
 	): Promise<Omit<PrOverview, "servedAt">> {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
@@ -1430,7 +1434,9 @@ export class Session {
 		// Asked at once, never waited for: it is in by the time GitHub's
 		// overview is, or the next one says (true until it is known).
 		this.#commentLeftNow();
-		return this.#pickRead(maxAgeMs).overview.then((o) => ({
+		const read = this.#pickRead(maxAgeMs);
+		if (forPage) this.#served = read;
+		return read.overview.then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -1923,8 +1929,14 @@ export class Session {
 		// Until it has settled, whether kept or not (close() stops it).
 		this.#live.add(read);
 		void read.settled.then(() => this.#live.delete(read));
-		// The newest few, so a page still showing an older one gets its threads.
-		this.#reads = [...this.#reads, read].slice(-KEPT_READS);
+		// The newest few, so a page still showing an older one gets its threads;
+		// and the one the page was last served, which an agent's fresh reads
+		// (a burst every 30 s) must not push out.
+		const all = [...this.#reads, read];
+		const kept = all.slice(-KEPT_READS);
+		const page = this.#served;
+		if (page && all.includes(page) && !kept.includes(page)) kept.unshift(page);
+		this.#reads = kept;
 		read.overview.catch(() => {
 			this.#reads = this.#reads.filter((r) => r !== read);
 		});

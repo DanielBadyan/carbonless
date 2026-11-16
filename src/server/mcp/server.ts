@@ -487,7 +487,7 @@ export function createMcpServer(
 		"progress",
 		{
 			description:
-				"What the reviewer has reviewed, read-only: the comparison on screen with their latest message in the review conversation (else the review's default), its base and head commits, and per changed file the reviewed, unreviewed and crossed-off lines (inclusive ranges; LEFT in the base's numbering, RIGHT in the head's), with the page's line counts.",
+				"What the reviewer has reviewed, read-only: the comparison of the question you hold (else of the reviewer's latest message in the review conversation, else the review's default), its base and head commits, and per changed file the reviewed, unreviewed and crossed-off lines (inclusive ranges; LEFT in the base's numbering, RIGHT in the head's), with the page's line counts.",
 			inputSchema: TOKEN,
 		},
 		({ token }) =>

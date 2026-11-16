@@ -477,6 +477,7 @@ export async function buildApp(
 					}
 					const overview = await sessionOf(request).overview(
 						maxAge === undefined ? undefined : Number(maxAge),
+						true,
 					);
 					// The server's clock: the page judges the age by it, not its own.
 					return { ...overview, servedAt: new Date().toISOString() };
