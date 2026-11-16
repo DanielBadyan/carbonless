@@ -10,7 +10,7 @@ import {
 	progress,
 	sideBySide,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
 /**
  * CAR-156: one git hunk of a change (lines 4-5), a whitespace-only change
@@ -111,6 +111,15 @@ test("change / whitespace-only / change in one hunk is three clusters; Ignore wh
 	await expect(boxes(section).nth(0)).toBeChecked();
 	await expect(boxes(section).nth(1)).not.toBeChecked();
 	await expect(boxes(section).nth(2)).toBeChecked();
+
+	// The Overview's progress follows the switch too, with the same `~`.
+	await page.goto(reviewPage(s.url, ""));
+	const files = page.getByRole("link", { name: /Review files/ });
+	await expect(files).toContainText("2 / 3 clusters");
+	await expect(leftOut(page)).toHaveCount(0);
+	await ignoreWhitespace(page, true);
+	await expect(files).toContainText("2 / 2 clusters · 100%");
+	await expect(leftOut(page)).toBeVisible();
 });
 
 test.describe("a review started before the split", () => {

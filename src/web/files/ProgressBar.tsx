@@ -109,7 +109,7 @@ function UnitPicker(props: { unit: Unit; onChange: (unit: Unit) => void }) {
  * The `~` after the counts while "Ignore whitespace" leaves whitespace-only
  * clusters out of them: its name and tooltip say how many.
  */
-function WhitespaceLeftOut({ count }: { count: number }) {
+export function WhitespaceLeftOut({ count }: { count: number }) {
 	const label = `${count} whitespace-only ${count === 1 ? "cluster" : "clusters"} not counted`;
 	return (
 		<Tooltip content={label} describe={false}>

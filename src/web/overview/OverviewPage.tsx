@@ -39,6 +39,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { countedProgress } from "../../shared/progress";
 import {
 	type CodeRow,
 	type CodeWindow,
@@ -62,6 +63,7 @@ import {
 	sessionQuery,
 } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
+import { WhitespaceLeftOut } from "../files/ProgressBar";
 import {
 	ChangedSince,
 	OpenedOnChip,
@@ -115,6 +117,7 @@ import {
 } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
+import { ignoreWhitespace } from "../viewSettings";
 import { createImageRefresher } from "./imageRefresh";
 import {
 	Badge,
@@ -351,20 +354,32 @@ function ExternalLink(props: {
 function ReviewFilesButton() {
 	const { review, data } = useReviewView();
 	const id = useReviewId();
+	// As the Files page's bar counts: "Ignore whitespace" on leaves
+	// whitespace-only clusters out, and the `~` says how many.
+	const ignoreWs = ignoreWhitespace.use();
+	const counted = useMemo(
+		() => (ignoreWs && data ? countedProgress(data.files) : null),
+		[ignoreWs, data],
+	);
 	return (
 		<div className="flex flex-col items-center gap-3">
-			<Link
-				to="/r/$id/files"
-				params={{ id }}
-				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
-			>
-				Review files
-				{data && (
-					<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
-						{progressText(data.progress)}
-					</span>
+			<div className="flex items-center gap-1">
+				<Link
+					to="/r/$id/files"
+					params={{ id }}
+					className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
+				>
+					Review files
+					{data && (
+						<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
+							{progressText(counted?.progress ?? data.progress)}
+						</span>
+					)}
+				</Link>
+				{(counted?.leftOut ?? 0) > 0 && (
+					<WhitespaceLeftOut count={counted?.leftOut ?? 0} />
 				)}
-			</Link>
+			</div>
 			{review.isPending && <Spinner label="Loading review progress" />}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>

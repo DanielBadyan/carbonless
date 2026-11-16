@@ -538,8 +538,9 @@ usual and counts again when the switch is off, which counts everything
 exactly as before. While any is left out, the bar shows a `~` whose name
 and tooltip say how many ("3 whitespace-only clusters not counted"). This
 is no AI decision: nothing is marked reviewed, and turning the switch off
-shows what is still unreviewed. The since view, Home, the Overview and
-the verdict count every cluster.
+shows what is still unreviewed. The Overview's progress counts the same
+way, with the same `~`; the since view, Home and the verdict count every
+cluster.
 
 The view still pairs whitespace-equal lines as quiet `~` rows
 (`src/web/files/whitespace.ts`), over the whole display hunk, context
