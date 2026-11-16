@@ -69,9 +69,10 @@ session's work; nothing here may block it.
 
 ## Non-goals
 
-- The agent writing into GitHub thread conversations, opening span
-  threads, or suggesting resolutions from this conversation (other
-  session; CAR-92, CAR-80).
+- The agent writing into GitHub thread conversations or suggesting
+  resolutions from this conversation (CAR-92). Opening conversations on
+  code or GitHub threads while answering *is* in scope since 2026-11-16
+  (CAR-80's `open`; below).
 - Several conversations, renaming, clearing, archiving.
 - Pushing or sharing the conversation: private to the reviewer like every
   agent thread, never pushed (as the review buddy spec).
@@ -285,6 +286,24 @@ review conversation uses that path and nothing else:
   `2026-11-13-spawned-agent-mcp-design.md`): whichever lands first adds a
   tool, the other reuses it. Read-only, scoped to the agent's review,
   like every MCP tool.
+- **Settled in implementation (2026-11-16).** CAR-80 (#112) already gives
+  `review` the PR's GitHub threads (id, path, line, side, resolved,
+  outdated, comments through `sanitizeThirdParty`, an explicit error when
+  GitHub can't be read). For an agent's call the read is at most 30 s old
+  and `review` says when it was made (`threadsReadAt`); the reviewer's own
+  asks and the page keep any read. One new tool, **`progress`** (owner:
+  "sure. as long as it's read only"): for the comparison of the question
+  the agent holds (else the review conversation's latest human message's
+  `view`, else the default), its base and head commits and, per changed
+  file, reviewed / unreviewed / crossed-off line ranges per side, the same
+  coverage and counts the page shows; an unknown state counts as
+  unreviewed, a failure is an explicit error, it writes nothing. And
+  **`open`** works from a review question (owner: "yes definitely. that's
+  a major goal"): the agent opens conversations on code (pinned to that
+  same comparison) or on GitHub threads and cites them in its answer,
+  which the drawer shows as links; it can't open another review
+  conversation. The preamble names `review`, `threads`, `progress` and
+  `open`.
 - crb never moves the checkout for this question (CAR-149 decision 8);
   the agent checks out what it needs.
 
