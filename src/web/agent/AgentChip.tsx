@@ -13,6 +13,7 @@ import { Tooltip } from "../Tooltip";
 import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
 import {
 	closeReviewDrawer,
+	isReviewDrawerOpen,
 	openReviewDrawer,
 	toggleReviewDrawer,
 	useReviewDrawerOpen,
@@ -218,6 +219,9 @@ export function AgentChip({
 	const statusData = status.data;
 	const hasConversation = conversation.thread !== undefined;
 	const conversationKnown = !conversation.loading;
+	// Spent once the drawer it opened closes, or the read fails: never a
+	// setup later, out of the blue.
+	if (early.current && (!drawerOpen || status.isError)) early.current = false;
 	useEffect(() => {
 		if (!early.current || !statusData || !conversationKnown) return;
 		early.current = false;
@@ -252,7 +256,10 @@ export function AgentChip({
 	// Only once the threads are read: never a 0 while they load.
 	const count = thread?.messages.length ?? 0;
 	const unread = Boolean(thread?.unread);
-	const drawer = chipOpensDrawer(data, thread !== undefined);
+	// While the first status read is out, a tap toggles the drawer (its
+	// spinner), and the status then decides (above).
+	const drawer =
+		status.isPending || chipOpensDrawer(data, thread !== undefined);
 	const pressed = drawerOpen && drawer;
 	// Both jobs (the conversation, the agent), then the status.
 	const name = [
@@ -283,8 +290,13 @@ export function AgentChip({
 					aria-controls={drawer ? "review-conversation" : undefined}
 					onClick={() => {
 						if (status.isPending) {
-							early.current = true;
-							openReviewDrawer();
+							if (isReviewDrawerOpen()) {
+								early.current = false;
+								closeReviewDrawer();
+							} else {
+								early.current = true;
+								openReviewDrawer();
+							}
 						} else if (drawer) toggleReviewDrawer();
 						else openAgentSetup();
 					}}

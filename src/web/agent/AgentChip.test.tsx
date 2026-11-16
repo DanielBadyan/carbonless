@@ -243,6 +243,85 @@ describe("the chip's tap", () => {
 		},
 	);
 
+	/** The chip with its first status read held. */
+	function heldChip() {
+		const held = heldJson();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string) =>
+				String(input).includes("agent/threads")
+					? new Response(JSON.stringify({ threads: [] }))
+					: held.response,
+			),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		client.setQueryData(overviewQuery.queryKey, { writes: "on" } as PrOverview);
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [] });
+		function SetupState() {
+			return (
+				<p data-testid="setup">{useAgentSetupOpen() ? "open" : "closed"}</p>
+			);
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<AgentChip />
+				<SetupState />
+				<DrawerState />
+			</QueryClientProvider>,
+		);
+		return { held, client, user: userEvent.setup() };
+	}
+
+	it("tapped twice while the status is read: the drawer toggles, and says so", async () => {
+		const { user } = heldChip();
+		const chip = screen.getByTestId("agent-chip");
+		await user.click(chip);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(chip).toHaveAttribute("aria-expanded", "true");
+		await user.click(chip);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(chip).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("an early tap's drawer closed before the status lands: nothing set up opens no setup later", async () => {
+		const { held } = heldChip();
+		await userEvent.click(screen.getByTestId("agent-chip"));
+		act(() => closeReviewDrawer());
+		await act(async () =>
+			held.release(status({ state: "off", configured: false, agent: undefined })),
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy"),
+		);
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("an early tap, then a failed status read: a later read opens no setup", async () => {
+		const { held, client } = heldChip();
+		await userEvent.click(screen.getByTestId("agent-chip"));
+		await act(async () => held.release({ error: "down" }, 500));
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy"),
+		);
+		// A later poll says nothing is set up: the tap is long spent.
+		await act(async () =>
+			client.setQueryData(
+				agentStatusQuery.queryKey,
+				status({ state: "off", configured: false, agent: undefined }),
+			),
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-chip")).toHaveAttribute(
+				"data-state",
+				"off",
+			),
+		);
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+	});
+
 	it("pressed while the drawer is open: the agent wash inside agent-edge", async () => {
 		const { user } = chipOver(status(), vi.fn(), []);
 		expect(face().className).toContain("border-line-strong");
