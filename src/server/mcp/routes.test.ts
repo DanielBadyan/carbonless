@@ -357,14 +357,14 @@ describe("/mcp", () => {
 
 	describe("open", () => {
 		/** The PR with one GitHub thread on a.txt line 2, whose opener is hostile. */
-		const withThread = async () => {
+		const withThread = async (resolved = false) => {
 			pr.scenario({
 				prs: {
 					12: {
 						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
 						graphql: {
 							reviewThreads: [
-								reviewThread({ path: "a.txt", line: 2 }, [
+								reviewThread({ path: "a.txt", line: 2, isResolved: resolved }, [
 									threadComment({
 										login: "rev",
 										text: "Fix this",
@@ -381,6 +381,64 @@ describe("/mcp", () => {
 			const o = await api("/overview?maxAge=0");
 			expect(o.statusCode, o.body).toBe(200);
 		};
+
+		it("review reads GitHub's threads at most 30 s old, says when, and a burst within that costs one read", async () => {
+			await withThread();
+			const client = await connect();
+			const a = await join(client);
+			const gh = (r: Tool) =>
+				r.value.review as {
+					threads: { resolved: boolean }[];
+					threadsReadAt: string;
+				};
+			const reads = () => (pr.ghLog().match(/reviewThreads/g) ?? []).length;
+			const first = gh(await call(client, "review", { token: a.token }));
+			expect(first.threads[0]?.resolved).toBe(false);
+			expect(Number.isNaN(Date.parse(first.threadsReadAt))).toBe(false);
+			// Resolved on GitHub after that read.
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2, isResolved: true }, [
+									threadComment({ login: "rev", text: "Fix this" }),
+								]),
+							],
+						},
+					},
+				},
+			});
+			vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+			try {
+				vi.setSystemTime(Date.now() + 31_000);
+				const before = reads();
+				const later = gh(await call(client, "review", { token: a.token }));
+				expect(later.threads[0]?.resolved).toBe(true);
+				expect(Date.parse(later.threadsReadAt)).toBeGreaterThan(
+					Date.parse(first.threadsReadAt),
+				);
+				const one = reads() - before;
+				expect(one).toBeGreaterThan(0);
+				// Past the window again: five calls at once, one read.
+				vi.setSystemTime(Date.now() + 31_000);
+				const burst = reads();
+				const all = await Promise.all(
+					Array.from({ length: 5 }, () =>
+						call(client, "review", { token: a.token }),
+					),
+				);
+				for (const r of all) expect(gh(r).threads[0]?.resolved).toBe(true);
+				expect(reads() - burst).toBe(one);
+				// Within the window: no read at all.
+				const quiet = reads();
+				await call(client, "review", { token: a.token });
+				expect(reads()).toBe(quiet);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 
 		it("review lists the PR's GitHub threads, bodies sanitised; the instructions name open", async () => {
 			await withThread();
@@ -656,11 +714,70 @@ describe("/mcp", () => {
 			);
 		};
 
-		it("refuses a token of no review, or of another review", async () => {
+		it("refuses a token of no review, or of another review; each review's token reads only its own", async () => {
+			// A second real review (PR #13) on the same fake GitHub, another head.
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const head13 = git(
+				"commit-tree",
+				`${pr.head()}^{tree}`,
+				"-p",
+				pr.head(),
+				"-m",
+				"PR 13",
+			);
+			git("update-ref", "refs/pull/13/head", head13);
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: pr.head(), baseRefName: "main" }) },
+					13: {
+						view: prView({
+							number: 13,
+							headRefOid: head13,
+							baseRefName: "main",
+						}),
+					},
+				},
+			});
+			const { id: id13 } = await registry.open({ pr: "acme/widget#13" });
+			expect(id13).not.toBe(id);
+			await askReview();
 			const client = await connect();
 			const a = await join(client);
-			const other = `${"0".repeat(26)}.${a.token.split(".")[1]}`;
-			for (const token of ["nope", other]) {
+			// Joined to #13 too, by its own approval.
+			const asked = await call(client, "attach", {
+				review: `http://${host}/r/${id13}`,
+				name: "other",
+			});
+			const ok = await app.inject({
+				method: "POST",
+				url: `/api/r/${id13}/agent/join/${asked.value.request}`,
+				headers: { host },
+				payload: { approve: true },
+			});
+			expect(ok.statusCode, ok.body).toBe(200);
+			const b = (
+				await call(client, "attach", {
+					review: `http://${host}/r/${id13}`,
+					name: "other",
+					request: asked.value.request,
+				})
+			).value as { token: string };
+			const mine = await progressOf(client, a.token);
+			const theirs = await progressOf(client, b.token);
+			expect(mine.comparison.head).toBe(pr.head());
+			expect(theirs.comparison.head).toBe(head13);
+			// #12's secret on #13's id, and the reverse: neither review's.
+			const secretOf = (t: string) => t.split(".")[1];
+			const crossed = [
+				`${id13}.${secretOf(a.token)}`,
+				`${id}.${secretOf(b.token)}`,
+			];
+			for (const token of ["nope", ...crossed]) {
 				const r = await call(client, "progress", { token });
 				expect(r).toMatchObject({
 					error: true,
@@ -778,6 +895,98 @@ describe("/mcp", () => {
 				reviewed: { LEFT: [], RIGHT: [[1, 1]] },
 			});
 			expect(p.lines).toEqual(second.progress.lines);
+		});
+
+		it("a {head} view reads as the page's /review?head= does, writing nothing", async () => {
+			const asked = await askReview({
+				view: { target: { head: pr.head() }, from: { branch: true } },
+			});
+			const client = await connect();
+			const a = await join(client);
+			const stored = await refs();
+			let p = await progressOf(client, a.token);
+			expect(p.comparison).toMatchObject({
+				base: pr.mergeBase,
+				head: pr.head(),
+				source: "message",
+			});
+			expect(p.lines).toEqual(
+				(await view(`?head=${pr.head()}`)).progress.lines,
+			);
+			expect(await refs()).toBe(stored);
+			// A head pushed since, not fetched yet.
+			const h2 = pr.moveHead({ "b.txt": "b\n" });
+			const res = await api(`/agent/threads/${asked.id}/messages`, "POST", {
+				clientId: "r2",
+				text: "And the new push?",
+				view: { target: { head: h2 }, from: { branch: true } },
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const posted = await refs();
+			p = await progressOf(client, a.token);
+			expect(p.comparison).toMatchObject({ head: h2, source: "message" });
+			expect(p.files.map((f) => f.path)).toContain("b.txt");
+			expect(p.lines).toEqual((await view(`?head=${h2}`)).progress.lines);
+			expect(await refs()).toBe(posted);
+		});
+
+		it("the held question's view is the comparison: progress and open read patch set 1 while 2 exists, whatever is asked after", async () => {
+			const first = await view();
+			await mark(first, [{ key: keyOf(first, "a.txt", 2), state: "reviewed" }]);
+			const h1 = pr.head();
+			// Patch set 2 moves line 26 down by two lines.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed again";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			expect((await api("/refresh", "POST")).statusCode).toBe(200);
+			const atHead = await view(`?head=${h2}`);
+			await mark(atHead, [
+				{
+					key: keyOf(atHead, "a.txt", atHead.files[0]?.clusters[0]?.newStart),
+					state: "reviewed",
+				},
+			]);
+			expect((await view()).patchset).toBe(2);
+			const asked = await askReview({
+				view: { target: { patchset: 1 }, from: { branch: true } },
+			});
+			const client = await connect();
+			const a = await join(client);
+			const q = (await call(client, "next", { token: a.token })).value as {
+				thread: string;
+				replyTo: string;
+			};
+			expect(q.thread).toBe(asked.id);
+			// The reviewer asks again, now on patch set 2.
+			const res = await api(`/agent/threads/${asked.id}/messages`, "POST", {
+				clientId: "r2",
+				text: "And on patch set 2?",
+				view: { target: { patchset: 2 }, from: { branch: true } },
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const p = await progressOf(client, a.token);
+			expect(p.comparison).toMatchObject({
+				head: h1,
+				patchset: 1,
+				source: "message",
+			});
+			const a26 = p.files.find((f) => f.path === "a.txt");
+			expect(a26?.unreviewed.RIGHT).toEqual([[26, 26]]);
+			const opened = await call(client, "open", {
+				token: a.token,
+				text: "This line.",
+				code: { path: "a.txt", line: 26 },
+			});
+			expect(opened.error, JSON.stringify(opened.value)).toBe(false);
+			const t = (await threads()).find((x) => x.id === opened.value.thread);
+			expect(t?.anchor).toMatchObject({
+				subject: "line",
+				commit: h1,
+				line: 26,
+			});
 		});
 
 		it("an injected file name comes back sanitised", async () => {

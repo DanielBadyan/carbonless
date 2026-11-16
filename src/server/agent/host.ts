@@ -228,6 +228,8 @@ export interface SessionReviewFacts {
 	threadsTruncated?: boolean;
 	/** GitHub's threads couldn't be read (why, one line). */
 	threadsError?: string;
+	/** When the GitHub read the threads come from started (ISO). */
+	threadsReadAt?: string;
 }
 
 /** A GitHub review thread as the `review` tool lists it (bodies sanitised and capped). */
@@ -242,6 +244,13 @@ export interface SessionGithubThread {
 	/** Only the opening comment is listed: the others couldn't be read now. */
 	commentsPartial?: boolean;
 }
+
+/**
+ * How old a GitHub read `review` and `open`'s thread checks may use (ms):
+ * a recent or running read is reused, an older one replaced, so "was it
+ * resolved?" is answered from GitHub as of at most this long ago.
+ */
+export const AGENT_GITHUB_MAX_AGE_MS = 30_000;
 
 /** At most this many GitHub threads in `review`. */
 export const MAX_SESSION_THREADS = 200;
@@ -319,13 +328,14 @@ export class AgentConflictError extends Error {
 /** What the host reads of the review's GitHub threads and patch sets. */
 export type AgentGithub = Pick<
 	ReviewAgentSource,
-	"threads" | "thread" | "patchsets"
+	"threads" | "thread" | "patchsets" | "threadsAt"
 > & {
 	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
 	base(): string;
 	/** The comments (author, markdown) of these threads, by id; absent: openers only. */
 	comments?(
 		ids: string[],
+		maxAgeMs?: number,
 	): Promise<Map<string, { author: string; body: string }[]>>;
 };
 
@@ -807,17 +817,29 @@ export class AgentHost {
 
 	/** The PR's live GitHub threads for `review`, sanitised and capped. */
 	async #sessionThreads(): Promise<
-		Pick<SessionReviewFacts, "threads" | "threadsTruncated" | "threadsError">
+		Pick<
+			SessionReviewFacts,
+			"threads" | "threadsTruncated" | "threadsError" | "threadsReadAt"
+		>
 	> {
 		let listed: ReviewThread[];
+		let at: string | undefined;
 		try {
-			listed = [...liveGithubThreads(await this.github.threads()).values()];
+			// At most AGENT_GITHUB_MAX_AGE_MS old: "resolved" is GitHub's now.
+			const read = this.github.threadsAt
+				? await this.github.threadsAt(AGENT_GITHUB_MAX_AGE_MS)
+				: { threads: await this.github.threads(AGENT_GITHUB_MAX_AGE_MS) };
+			listed = [...liveGithubThreads(read.threads).values()];
+			at = "at" in read ? read.at : undefined;
 		} catch (error) {
 			return { threadsError: oneError(error) };
 		}
 		const kept = listed.slice(0, MAX_SESSION_THREADS);
 		const all = await (
-			this.github.comments?.(kept.map((t) => t.id)) ?? Promise.resolve(null)
+			this.github.comments?.(
+				kept.map((t) => t.id),
+				AGENT_GITHUB_MAX_AGE_MS,
+			) ?? Promise.resolve(null)
 		).catch(() => null);
 		const s = sanitizeThirdParty;
 		const cap = (body: string) => {
@@ -843,6 +865,7 @@ export class AgentHost {
 		});
 		return {
 			threads,
+			...(at ? { threadsReadAt: at } : {}),
 			...(listed.length > kept.length ? { threadsTruncated: true } : {}),
 		};
 	}
@@ -1190,7 +1213,7 @@ export class AgentHost {
 	): Promise<AgentThreadFold | undefined> {
 		let listed: ReviewThread[];
 		try {
-			listed = await this.github.threads();
+			listed = await this.github.threads(AGENT_GITHUB_MAX_AGE_MS);
 		} catch (error) {
 			throw new ThreadUnavailableError(
 				`GitHub's threads can't be read now (${oneError(error)}): don't open on a thread; mention it in your reply`,
@@ -1229,8 +1252,17 @@ export class AgentHost {
 				? this.#seen
 				: null;
 		const review = facts.review();
-		const head = seen?.head ?? review.head.commit;
-		const mergeBase = seen?.mergeBase ?? review.mergeBase;
+		// A review question: the comparison progress reads (#comparisonView).
+		const view = reviewQuestion ? await this.#comparisonView() : undefined;
+		const pinned = view
+			? resolveView(
+					{ target: view.target, from: { branch: true } },
+					this.github.patchsets(),
+					this.github.base(),
+				)
+			: null;
+		const head = pinned?.right ?? seen?.head ?? review.head.commit;
+		const mergeBase = pinned?.left ?? seen?.mergeBase ?? review.mergeBase;
 		const files = await facts.prFacts().then(
 			(p) => p.files,
 			() => null,
@@ -1336,15 +1368,12 @@ export class AgentHost {
 				`The reviewer's progress can't be read now (${why}): say so, don't guess it`,
 			);
 		if (!coverage) throw fail("this review has no coverage");
-		const conversation = (await this.store.read()).find(
-			(t) => t.anchor.subject === "review",
-		);
-		const view = conversation?.messages.findLast((m) => m.by === "human")?.view;
+		const view = await this.#comparisonView();
 		let read: SessionCoverage;
 		try {
 			read = await coverage(view?.target);
 		} catch (error) {
-			throw fail(oneError(error));
+			throw fail(sanitizeThirdParty(oneError(error)));
 		}
 		if (!OID.test(read.base) || !OID.test(read.head)) {
 			throw fail("no commit ids");
@@ -1360,6 +1389,26 @@ export class AgentHost {
 			files: read.view.files.map(progressFile),
 			lines: { total, reviewed, crossedOff },
 		};
+	}
+
+	/**
+	 * "The comparison" for `progress` and a review question's `open`: the
+	 * view of the reviewer's message the held question answers (none: the
+	 * default); with no question held, the view of the latest human
+	 * message in the review conversation; else none (the default).
+	 */
+	async #comparisonView(): Promise<AgentView | undefined> {
+		const threads = await this.store.read();
+		const handed = this.join.handedOut();
+		if (handed?.asked) {
+			const asked = threads
+				.find((t) => t.id === handed.thread)
+				?.messages.find((m) => m.id === handed.asked);
+			if (asked) return asked.view;
+		}
+		return threads
+			.find((t) => t.anchor.subject === "review")
+			?.messages.findLast((m) => m.by === "human")?.view;
 	}
 
 	/** Every thread, for a joined session. */
@@ -1400,7 +1449,7 @@ export class AgentHost {
 
 	/** The anchor of a new conversation on GitHub thread `id`; see open(). */
 	async #threadAnchor(id: string): Promise<AgentAnchor> {
-		const rt = await this.github.thread(id);
+		const rt = await this.github.thread(id, AGENT_GITHUB_MAX_AGE_MS);
 		if (!rt || rt.id === "" || rt.unavailable === "deleted") {
 			throw new AgentRequestError(`No GitHub thread ${id} to ask about`);
 		}
@@ -1736,10 +1785,14 @@ export interface ReviewAgentSource {
 	snapshot(): Snapshot;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
-	/** The PR's review threads as last read from GitHub (their summaries). */
-	threads(): Promise<ReviewThread[]>;
+	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
+	threads(maxAgeMs?: number): Promise<ReviewThread[]>;
+	/** As threads, with when that read started (ISO). */
+	threadsAt?(
+		maxAgeMs: number,
+	): Promise<{ threads: ReviewThread[]; at: string }>;
 	/** One review thread, null when GitHub doesn't list it; a deleted one says so (`unavailable`). */
-	thread(id: string): Promise<ReviewThread | null>;
+	thread(id: string, maxAgeMs?: number): Promise<ReviewThread | null>;
 	/** The reviewer's patch sets (`startedAt` in ms). */
 	patchsets(): readonly {
 		number: number;
@@ -1759,9 +1812,10 @@ export interface ReviewAgentSource {
 	 * no longer lists it (or it was deleted).
 	 */
 	githubThread(id: string, view: AgentView): Promise<AgentThreadRead | null>;
-	/** These threads' comments (author, markdown) from the current read, by id. */
+	/** These threads' comments (author, markdown) from a read at most `maxAgeMs` old (default: any), by id. */
 	comments?(
 		ids: string[],
+		maxAgeMs?: number,
 	): Promise<Map<string, { author: string; body: string }[]>>;
 	/** The coverage the page shows for a comparison (`progress`). */
 	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
@@ -1949,8 +2003,9 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		store,
 		code,
 		github: {
-			threads: () => src.threads(),
-			thread: (id) => src.thread(id),
+			threads: (maxAgeMs) => src.threads(maxAgeMs),
+			thread: (id, maxAgeMs) => src.thread(id, maxAgeMs),
+			...(src.threadsAt ? { threadsAt: src.threadsAt.bind(src) } : {}),
 			patchsets: () => src.patchsets(),
 			base: () => src.snapshot().base,
 			...(src.comments ? { comments: src.comments } : {}),

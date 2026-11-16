@@ -389,9 +389,13 @@ export class Session {
 					},
 					async () => "",
 				),
-			threads: async () => (await this.#agentGithub()).threads,
-			thread: async (id) => {
-				const { read, threads } = await this.#agentGithub();
+			threads: async (maxAgeMs) => (await this.#agentGithub(maxAgeMs)).threads,
+			threadsAt: async (maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
+				return { threads, at: new Date(read.started).toISOString() };
+			},
+			thread: async (id, maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
 				const found = threads.find((t) => t.id === id);
 				if (!found) return null;
 				// Deleted since the list was read: its comments say so.
@@ -406,8 +410,8 @@ export class Session {
 				await this.checkHead();
 			},
 			prAuthor: async () => (await this.overview()).author,
-			comments: async (ids) => {
-				const { read } = await this.#agentGithub();
+			comments: async (ids, maxAgeMs) => {
+				const { read } = await this.#agentGithub(maxAgeMs);
 				const out = new Map<string, { author: string; body: string }[]>();
 				for (const t of (await read.comments(ids)).threads) {
 					if (t.unavailable) continue;
@@ -466,15 +470,17 @@ export class Session {
 	}
 
 	/**
-	 * The review threads of the read the overview serves (their summaries,
-	 * this session's own writes applied), as the agent joins them.
+	 * The review threads of a read at most `maxAgeMs` old (their summaries,
+	 * this session's own writes applied), as the agent joins them; by
+	 * default the read the overview serves, of any age.
 	 */
-	async #agentGithub(): Promise<{
+	async #agentGithub(maxAgeMs = Number.POSITIVE_INFINITY): Promise<{
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
-		const read = this.#pickRead(Number.POSITIVE_INFINITY);
+		// A recent or running read is reused (#pickRead): a burst reads once.
+		const read = this.#pickRead(maxAgeMs);
 		return { read, threads: (await read.threads("summary")).threads };
 	}
 
