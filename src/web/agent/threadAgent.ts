@@ -160,20 +160,20 @@ export const SendViewProvider = SendViewContext.Provider;
 const PublishSendView = createContext<((view: SendView | null) => void) | null>(
 	null,
 );
+const PublishedSendView = createContext<SendView | null>(null);
 
 /**
- * The review layout's comparison to send: what Files changed publishes
- * (usePublishSendView), so the review conversation's drawer, outside the
- * page, sends the comparison picked there from any tab. Null (the
- * Overview's placements comparison, useSendView) until Files changed has
- * shown.
+ * Files changed's comparison, published for the review conversation's
+ * drawer (outside the page): useDrawerSendView reads it from any tab. Its
+ * own context, so no card elsewhere (the Overview's) sends it: they keep
+ * useSendView's own.
  */
 export function SendViewHost(props: { children: ReactNode }) {
 	const [view, setView] = useState<SendView | null>(null);
 	return createElement(
 		PublishSendView.Provider,
 		{ value: setView },
-		createElement(SendViewContext.Provider, { value: view }, props.children),
+		createElement(PublishedSendView.Provider, { value: view }, props.children),
 	);
 }
 
@@ -188,6 +188,16 @@ export function usePublishSendView(view: SendView | null): void {
 		if (!publish) return;
 		return () => publish(null);
 	}, [publish]);
+}
+
+/**
+ * The review conversation's view: Files changed's comparison (the last
+ * picked there, from any tab), else useSendView's.
+ */
+export function useDrawerSendView(): SendView {
+	const published = useContext(PublishedSendView);
+	const fallback = useSendView();
+	return published ?? fallback;
 }
 
 /**

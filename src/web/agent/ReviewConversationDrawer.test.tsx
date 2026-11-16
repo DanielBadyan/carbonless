@@ -29,6 +29,7 @@ import {
 	type SendView,
 	SendViewHost,
 	usePublishSendView,
+	useSendView,
 } from "./threadAgent";
 import { stubIntersection } from "./threadAgentFixtures";
 
@@ -277,6 +278,34 @@ describe("ReviewConversationDrawer", () => {
 			text: "Anything off?",
 			view: filesView,
 		});
+	});
+
+	it("Files changed's published comparison is the drawer's only: a card elsewhere still sends the latest patch set", () => {
+		function CardView() {
+			return <p data-testid="card-view">{JSON.stringify(useSendView())}</p>;
+		}
+		const client = new QueryClient();
+		client.setQueryData(sessionQuery.queryKey, {
+			viewer: "octo",
+			snapshotHead: "h2",
+			patchsets: [
+				{ number: 1, head: "h1" },
+				{ number: 2, head: "h2" },
+			],
+		} as unknown as SessionInfo);
+		render(
+			<QueryClientProvider client={client}>
+				<SendViewHost>
+					<FilesComparison
+						view={{ target: { patchset: 1 }, from: { branch: true } }}
+					/>
+					<CardView />
+				</SendViewHost>
+			</QueryClientProvider>,
+		);
+		expect(
+			JSON.parse(screen.getByTestId("card-view").textContent ?? ""),
+		).toEqual({ target: { patchset: 2 }, from: { branch: true } });
 	});
 
 	it("a follow-up goes to the conversation as a message", async () => {

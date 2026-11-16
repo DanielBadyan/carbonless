@@ -36,8 +36,8 @@ import {
 	unseenMessages,
 	useAgentDraft,
 	useAgentThreadsFailed,
+	useDrawerSendView,
 	useSeenWriter,
-	useSendView,
 } from "./threadAgent";
 
 /** From here up the drawer pushes the page narrower; below, it overlays (a phone: full screen). */
@@ -348,7 +348,7 @@ function Composer(props: {
 }) {
 	const client = useQueryClient();
 	const [text, setText] = useAgentDraft(DRAFT_KEY);
-	const view = useSendView();
+	const view = useDrawerSendView();
 	const { box } = props;
 	const tooLong = bytes(text) > MAX_AGENT_TEXT;
 	const blank = !text.trim();
