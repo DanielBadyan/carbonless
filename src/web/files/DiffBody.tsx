@@ -23,6 +23,7 @@ import {
 	useState,
 } from "react";
 import type { AgentThread } from "../../shared/agent";
+import { inGitOrder } from "../../shared/diffHunk";
 import {
 	contains,
 	covers,
@@ -141,7 +142,7 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { type DiffRow, hunkView } from "./whitespace";
 import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
@@ -3779,7 +3780,11 @@ function HunkRows(props: {
 	const { view } = shape;
 	// Each line's index in the hunk: GitHub's order (codeSpan.ts spanOfRange, linePicks.ts pickRange).
 	const orderOf = useMemo(() => {
-		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
+		// The view keeps each cluster's lines together; GitHub lists a run's
+		// removed lines first (inGitOrder).
+		const order = new Map(
+			inGitOrder(hunk.lines).map((l, i) => [l, i] as const),
+		);
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
 	// The hunk's runs and their rows (hunkView, cached per hunk: the
@@ -3994,7 +3999,12 @@ function HunkRows(props: {
 						</tbody>
 					);
 				}
-				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
+				// Whitespace only: the server's flag (a git hunk's whitespace-only
+				// run is a cluster of its own, CAR-156), the clusters progress
+				// leaves out with the switch on. A change cluster whose lines'
+				// twins sit elsewhere (a context line, another hunk) shows its `~`
+				// rows open: it still counts.
+				if (state && ignoreWhitespace && cluster?.whitespaceOnly) {
 					// A bubble, a pick, a landed-on line or the find's current hit
 					// (once a step showed it: typing never changes the layout)
 					// must never be hidden by the setting: the cluster stays open

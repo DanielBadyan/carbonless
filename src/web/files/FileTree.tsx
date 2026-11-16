@@ -13,6 +13,7 @@ import { agentBubbleLabel } from "../agent/AgentBubble";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
+import { ignoreWhitespace } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
 	buildTree,
@@ -35,6 +36,8 @@ import {
 } from "./status";
 import { bubbleLabel, waitingLabel, waitsOnYou } from "./ThreadBubble";
 import {
+	countedFile,
+	countedFolder,
 	describeFileProgress,
 	describeFolderProgress,
 	fileUnitProgress,
@@ -347,7 +350,10 @@ function FileItem(props: {
 	/** An agent message in the file is unseen: the accent dot. */
 	agentUnread?: boolean;
 }) {
-	const { file, unit, threads, mark, eyes } = props;
+	const { file: raw, unit, threads, mark, eyes } = props;
+	// Its progress and state as counted: "Ignore whitespace" on leaves its
+	// whitespace-only clusters out (countedFile). The change count is all of it.
+	const file = countedFile(raw, ignoreWhitespace.use());
 	const agentThreads = props.agentThreads ?? [];
 	const asked =
 		agentThreads.length > 0
@@ -423,7 +429,7 @@ function FileItem(props: {
 								</TipLine>
 							)}
 							<TipProgressLines
-								changes={file}
+								changes={raw}
 								counts={p.counts}
 								incomplete={p.clustersLeft > 0}
 								progress={legendProgress(p, numbers)}
@@ -509,7 +515,7 @@ function FileItem(props: {
 							</span>
 						)}
 						{props.agentUnread && AGENT_UNREAD}
-						<ChangeCount file={file} />
+						<ChangeCount file={raw} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>
@@ -553,7 +559,16 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const files = filesIn(folder);
 	// Only renamed files' old paths inside: a faded ghost with no numbers.
 	const ghost = files.length === 0;
-	const p = folderUnitProgress(files, unit);
+	// Counted as the page's bar counts (countedFolder); the change count is
+	// all of it.
+	const counted = folderUnitProgress(
+		countedFolder(files, ignoreWhitespace.use()),
+		unit,
+	);
+	const p = {
+		...counted,
+		clusters: files.flatMap((f) => f.clusters),
+	};
 	const numbers = ghost ? "" : describeFolderProgress(p, unit);
 	const found = files.reduce(
 		(sum, f) => sum + (props.find?.counts.get(f.index) ?? 0),

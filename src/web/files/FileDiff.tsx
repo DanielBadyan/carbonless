@@ -50,6 +50,7 @@ import {
 } from "../threads/newThreads";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
+import { ignoreWhitespace } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
 	DiffBody,
@@ -80,6 +81,7 @@ import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
+	countedFile,
 	describeFileProgress,
 	fileUnitProgress,
 	formatFileProgress,
@@ -620,6 +622,11 @@ export function FileDiff(props: {
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
 		saveStates(revision, file.path, changes);
+	// The file as its state reads (status, finished, closing): with "Ignore
+	// whitespace" on, without its whitespace-only clusters (countedFile).
+	// The since view keeps its own.
+	const ignoreWs = ignoreWhitespace.use();
+	const shown = props.counted ? file : countedFile(file, ignoreWs);
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page
@@ -634,7 +641,7 @@ export function FileDiff(props: {
 	const mark = (changes: StateChange[]) => {
 		// An earlier patch set, as reviewed, takes no marks.
 		if (readOnly || marksIgnored()) return;
-		const closing = expanded && finishes(file.clusters, changes, sinceOnly);
+		const closing = expanded && finishes(shown.clusters, changes, sinceOnly);
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
@@ -749,8 +756,8 @@ export function FileDiff(props: {
 	const path = displayPath(file);
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
-	const status = fileStatus(file);
-	const sentence = describeFileProgress(props.counted ?? file, props.unit);
+	const status = fileStatus(shown);
+	const sentence = describeFileProgress(props.counted ?? shown, props.unit);
 	const summary = [
 		sentence.startsWith(status) ? null : status,
 		lineCount(file),
@@ -1093,14 +1100,14 @@ export function FileDiff(props: {
 				ignoreMarksUntil === undefined ? undefined : Math.ceil(ignoreMarksUntil)
 			}
 			className={`overflow-clip rounded-lg border bg-surface ${
-				file.done ? "border-ok-fill/50" : "border-line"
+				shown.done ? "border-ok-fill/50" : "border-line"
 			}`}
 		>
 			{/* The ▸ button is the keyboard's way; a click anywhere else opens a closed file too. */}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: see above. */}
 			<header
 				ref={headerEl}
-				data-finished={file.done || undefined}
+				data-finished={shown.done || undefined}
 				onClick={(event) => {
 					if (expanded || !opensFile(event)) return;
 					setExpanded(true);
@@ -1110,7 +1117,7 @@ export function FileDiff(props: {
 				// reviewed or crossed off): an opaque green wash and a green left
 				// edge, so unreviewed files stand out while scrolling.
 				className={`@container border-b border-line px-1.5 ${
-					file.done
+					shown.done
 						? "bg-ok-wash shadow-[inset_3px_0_0_var(--color-ok-fill)]"
 						: "bg-raised"
 				} ${
@@ -1132,7 +1139,7 @@ export function FileDiff(props: {
 								<PathScroller
 									text={path}
 									marks={props.pathFind}
-									fade={file.done ? "from-ok-wash" : "from-raised"}
+									fade={shown.done ? "from-ok-wash" : "from-raised"}
 									kind={
 										file.status === "renamed"
 											? "Renamed"
@@ -1175,7 +1182,7 @@ export function FileDiff(props: {
 								{expanded ? "▾" : "▸"}
 							</button>
 							<span className="flex shrink-0 @lg:order-2">
-								<StatusIcon file={file} hover={summaryTrigger} />
+								<StatusIcon file={shown} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
 								{!expanded && (agentMine.length > 0 || agentLoading) && (
@@ -1218,7 +1225,7 @@ export function FileDiff(props: {
 								/>
 							</div>
 							<FileProgress
-								file={props.counted ?? file}
+								file={props.counted ?? shown}
 								unit={props.unit}
 								summary={summary}
 								trigger={summaryTrigger}

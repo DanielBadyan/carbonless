@@ -106,6 +106,7 @@ import { useSince } from "./useSince";
 const NO_THREADS: ReviewThread[] = [];
 const NO_AGENT_THREADS: AgentThread[] = [];
 
+import { countedProgress } from "../../shared/progress";
 import { requestConversationOpen } from "../agent/conversationLinks";
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncStale } from "./useSetStates";
@@ -866,7 +867,12 @@ export function FilesPage() {
 		];
 		const next = nextFile(candidates, index, (f) =>
 			fileLeft(
-				f.clusters,
+				// "Ignore whitespace" on: whitespace-only clusters aren't left.
+				ignoreWs && since === null
+					? f.clusters.filter(
+							(c: { whitespaceOnly?: true }) => !c.whitespaceOnly,
+						)
+					: f.clusters,
 				since === null || !sinceAnswer
 					? undefined
 					: {
@@ -1291,15 +1297,28 @@ export function FilesPage() {
 		() => (sinceAnswer && data ? unitsOf(sinceAnswer, data) : []),
 		[sinceAnswer, data],
 	);
+	// "Ignore whitespace" on: the full diff counts without whitespace-only
+	// clusters (countedProgress), and the bar says how many it left out.
+	const counted = useMemo(
+		() =>
+			ignoreWs && data && !sinceAnswer ? countedProgress(data.files) : null,
+		[ignoreWs, data, sinceAnswer],
+	);
 	const viewProgress = useMemo(
-		() => (sinceAnswer ? sinceProgress(units) : (data?.progress ?? null)),
-		[sinceAnswer, units, data],
+		() =>
+			sinceAnswer
+				? sinceProgress(units)
+				: (counted?.progress ?? data?.progress ?? null),
+		[sinceAnswer, units, data, counted],
 	);
 	// The since view never shows the full diff's numbers: its own empty
 	// state, or its failure.
 	const progressInstead =
 		since === null
-			? undefined
+			? // Ignore whitespace on, and nothing but whitespace-only clusters.
+				counted && counted.progress.clusters.total === 0 && counted.leftOut > 0
+				? ("empty" as const)
+				: undefined
 			: sinceAnswer && units.length === 0
 				? ("empty" as const)
 				: sinceView.error
@@ -1421,6 +1440,7 @@ export function FilesPage() {
 									<ProgressBar
 										ref={bar}
 										progress={viewProgress ?? data.progress}
+										whitespaceLeftOut={counted?.leftOut}
 										pending={progressPending}
 										instead={progressInstead}
 										unit={unit}
