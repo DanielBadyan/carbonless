@@ -1,5 +1,7 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Cluster, Snapshot } from "../../shared/types.js";
+import { cutClusters } from "../diff/snapshot.js";
 import { buildReviewView } from "./coverage.js";
 import { type CrbEvent, newEvent } from "./events.js";
 import { foldProgress } from "./fold.js";
@@ -310,5 +312,117 @@ describe("withSplitCarries", () => {
 		expect(withSplitCarries(plain, snapshot(), "dan")).toEqual(
 			foldProgress(plain),
 		);
+	});
+});
+
+describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
+	type Mark = "r" | "x" | "-";
+	const word = fc.constantFrom("a", "b", "c", "", "}");
+	const spaced = fc
+		.tuple(word, fc.constantFrom("", " ", "\t", "  "), fc.boolean())
+		.map(([w, ws, after]) => (after ? `${w}${ws}` : `${ws}${w}`));
+	const hunkArb = fc.record({
+		removed: fc.array(spaced, { minLength: 1, maxLength: 7 }),
+		added: fc.array(spaced, { minLength: 1, maxLength: 7 }),
+		whole: fc.option(fc.constantFrom("reviewed", "crossed-off" as const)),
+		marks: fc.array(fc.constantFrom<Mark>("r", "x", "-"), {
+			minLength: 14,
+			maxLength: 14,
+		}),
+	});
+	const keyOf = (i: number) => (i + 2).toString(16).padStart(64, "0");
+
+	/** Each piece line's effective state, as the view shows it. */
+	function check(
+		removed: string[],
+		added: string[],
+		whole: "reviewed" | "crossed-off" | null,
+		lineMarks: Mark[],
+	): boolean {
+		const n = removed.length;
+		const hunk: Omit<Cluster, "key"> = {
+			kind: "lines",
+			oldStart: 10,
+			oldCount: n,
+			newStart: 10,
+			newCount: added.length,
+			removed,
+			added,
+			lines: n + added.length,
+		};
+		// As buildSnapshot cuts and keys them; the hunk alone keys as H.
+		const clusters = cutClusters([hunk], (cs) =>
+			cs.length === 1 && cs[0] === hunk ? [H] : cs.map((_, i) => keyOf(i)),
+		);
+		if (clusters.length < 2) return true;
+		const snap = snapshot();
+		(snap.files[0] as Snapshot["files"][number]).clusters = clusters;
+		const hl = lineMarks.slice(0, hunk.lines);
+		const ranges = (want: Mark) => {
+			const out: [number, number][] = [];
+			hl.forEach((v, i) => {
+				if (v !== want) return;
+				const last = out.at(-1);
+				if (last && last[1] === i) last[1]++;
+				else out.push([i, i + 1]);
+			});
+			return out;
+		};
+		const events: CrbEvent[] = [started()];
+		if (whole) {
+			events.push(mark(H, whole));
+			hl.fill(whole === "reviewed" ? "r" : "x");
+		} else {
+			for (const [state, m] of [
+				["reviewed", "r"],
+				["crossed-off", "x"],
+			] as const) {
+				const r = ranges(m);
+				if (r.length > 0) events.push(lines(H, state, r));
+			}
+		}
+		const { view } = carry(events, snap);
+		const has = (r: [number, number][] | undefined, i: number) =>
+			(r ?? []).some(([a, b]) => a <= i && i < b);
+		return (view.files[0]?.clusters ?? []).every((c) => {
+			const split = c.split as NonNullable<Cluster["split"]>;
+			const rn = c.removed.length;
+			for (let i = 0; i < c.lines; i++) {
+				const h = i < rn ? split.removedAt + i : n + split.addedAt + i - rn;
+				const got: Mark =
+					c.state === "crossed-off"
+						? "x"
+						: c.state === "reviewed"
+							? has(c.crossedLines, i)
+								? "x"
+								: "r"
+							: has(c.reviewedLines, i)
+								? "r"
+								: has(c.crossedLines, i)
+									? "x"
+									: "-";
+				if (got !== hl[h]) return false;
+			}
+			return true;
+		});
+	}
+
+	it("marks each piece line exactly as its hunk line was marked: one-sided pieces, unequal offsets, partial marks", () => {
+		fc.assert(
+			fc.property(hunkArb, ({ removed, added, whole, marks }) =>
+				check(removed, added, whole, marks),
+			),
+			{ numRuns: 3000 },
+		);
+	});
+
+	it("a deletion-only piece before a whitespace-only one: only the lines marked", () => {
+		// Pieces: -gone | ~ b1,b2 | +new: removedAt 0,1,3 / addedAt 0,0,2.
+		const removed = ["gone", "  b1", "  b2"];
+		const added = ["b1", "b2", "new"];
+		// Hunk lines: 0 gone, 1-2 b1 b2 (old), 3-4 b1 b2 (new), 5 new.
+		const marks: Mark[] = ["-", "r", "-", "x", "r", "r"];
+		expect(check(removed, added, null, marks)).toBe(true);
+		expect(check(removed, added, "crossed-off", marks)).toBe(true);
 	});
 });
