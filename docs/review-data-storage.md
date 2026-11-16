@@ -627,7 +627,10 @@ reading it), the engine carries them onto the pieces
 `src/server/review/splitCarry.ts`): one `split-carried` event (`by:
 "auto"`) in the reviewer's progress ref, for that patch set, any patch set,
 earlier read-only ones too, since it adds no mark the reviewer didn't
-make. For each piece that holds no state of its own whose hunk's key holds
+make. Never in a view of the past (as of a cutoff) or on a pinned head:
+those dev modes don't write it, and their old marks read unreviewed. When
+two opens race, the one that loses the compare-and-swap reads again and
+writes nothing. For each piece that holds no state of its own whose hunk's key holds
 one (and is no cluster of the snapshot):
 
 - a whole mark (`reviewed`, or `crossed-off` with its reason) goes onto the
