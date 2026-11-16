@@ -11,6 +11,7 @@ import {
 	fixture,
 	openAgentModal,
 	openFile,
+	reviewDrawer,
 	setupDialog,
 	spawnAgent,
 	statusDialog,
@@ -332,7 +333,8 @@ test("Detach in the status modal: the toast says it left, the question waits, th
 	await chip(page).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
 	await expect(statusDialog(page)).toHaveCount(0);
-	await chip(page).click();
+	// Closed again (on a phone the full-screen drawer covers the chip).
+	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
 	await openAgentModal(page);
 	const status = statusDialog(page);
 	await expect(status.getByTestId("agent-status-card")).toContainText(

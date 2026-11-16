@@ -232,6 +232,22 @@ describe("ReviewConversationDrawer", () => {
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 	});
 
+	it("on a phone: full screen, and the status button swaps it for the agent modal", async () => {
+		vi.stubGlobal("matchMedia", (query: string) => ({
+			matches: false,
+			media: query,
+			addEventListener: () => {},
+			removeEventListener: () => {},
+		}));
+		openReviewDrawer();
+		const { user } = show({ threads: [review()] });
+		const d = screen.getByRole("dialog", { name: "Whole review conversation" });
+		expect(d).toHaveAttribute("data-mode", "phone");
+		await user.click(within(d).getByRole("button", { name: "Agent status" }));
+		expect(screen.getByTestId("setup")).toHaveTextContent("open");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
 	it("Escape and the close button close it; focus goes back to the chip", async () => {
 		openReviewDrawer();
 		const { user } = show({ threads: [] });

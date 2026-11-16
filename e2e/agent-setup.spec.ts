@@ -13,6 +13,7 @@ import {
 	fixture,
 	openAgentModal,
 	openFile,
+	reviewDrawer,
 	setupDialog,
 	statusDialog,
 	test,
@@ -81,7 +82,8 @@ test("a new review opens on Setup Review Agent", async ({
 	await chip(page).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
 	await expect(setupDialog(page)).toHaveCount(0);
-	await chip(page).click();
+	// Closed again (on a phone the full-screen drawer covers the chip).
+	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await openAgentModal(page);
 	const d = setupDialog(page);

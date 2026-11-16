@@ -246,7 +246,11 @@ function Drawer() {
 							{...trigger}
 							aria-label="Agent status"
 							data-testid="review-conversation-status"
-							onClick={openAgentSetup}
+							onClick={() => {
+								// A phone shows one layer at a time: the modal takes the drawer's place.
+								if (phone) closeReviewDrawer();
+								openAgentSetup();
+							}}
 							className={`ml-auto ${ICON_BUTTON}`}
 						>
 							<PulseIcon size={18} aria-hidden />
