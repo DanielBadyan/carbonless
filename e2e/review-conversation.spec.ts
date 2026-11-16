@@ -509,3 +509,35 @@ test("the Overview's agent row opens Your agent; on a desktop the chip closes th
 	await expect(reviewDrawer(page)).toHaveCount(0);
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 });
+
+test("at 700px a toast ends left of the overlaid drawer", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a desktop width");
+	await page.setViewportSize({ width: 700, height: 720 });
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "ok" }] },
+	});
+	await page.goto(s.url);
+	// New commits: the head toast (bottom left).
+	p.moveHead({ message: "more", files: { [CALC]: "export const v1 = 1;\n" } });
+	await page.reload();
+	const toast = page.getByTestId("head-toast");
+	// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
+	await expect(toast).toBeVisible({ timeout: 30_000 });
+	await chip(page).click();
+	const drawer = reviewDrawer(page);
+	await expect(drawer).toHaveAttribute("data-mode", "overlay");
+	const d = (await drawer.boundingBox())?.x ?? 0;
+	await expect
+		.poll(async () => {
+			const b = await toast.boundingBox();
+			return (b?.x ?? 0) + (b?.width ?? 0);
+		})
+		.toBeLessThanOrEqual(d);
+	await toast.getByRole("button", { name: "View" }).click({ trial: true });
+});
