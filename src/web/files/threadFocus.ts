@@ -1,6 +1,7 @@
 import {
 	type RefObject,
 	useEffect,
+	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
@@ -39,6 +40,8 @@ export interface ThreadFocus {
 export interface Outline {
 	message: string;
 	seq: number;
+	/** When its card took it (ms): it lights only for OUTLINE_MS after. */
+	at: number;
 }
 
 let current: ThreadFocus | null = null;
@@ -53,6 +56,14 @@ const notify = () => {
 const currentPath = () =>
 	typeof window === "undefined" ? "" : window.location.pathname;
 
+/** Drops the request (and any outline) once the path isn't the request's. */
+function leftPage() {
+	if (current === null || requestPath === currentPath()) return;
+	current = null;
+	outline = null;
+	notify();
+}
+
 /** The request still pending here, or null (dropped once the path changed). */
 function pending(): ThreadFocus | null {
 	const snapshot = current;
@@ -60,15 +71,33 @@ function pending(): ThreadFocus | null {
 	if (requestPath !== currentPath()) {
 		// Read during render: dropped just after it, so coming back to that
 		// page never brings it back.
-		queueMicrotask(() => {
-			if (current !== snapshot || requestPath === currentPath()) return;
-			current = null;
-			notify();
-		});
+		queueMicrotask(leftPage);
 		return null;
 	}
 	return snapshot;
 }
+
+/**
+ * Every move to another page drops the request, whether or not anything
+ * reads it while there: the router moves by the history API, and back and
+ * forward by popstate. Wrapped once per window.
+ */
+function watchMoves() {
+	if (typeof window === "undefined") return;
+	const w = window as Window & { __crbThreadFocusMoves?: true };
+	if (w.__crbThreadFocusMoves) return;
+	w.__crbThreadFocusMoves = true;
+	for (const name of ["pushState", "replaceState"] as const) {
+		const original = history[name];
+		history[name] = function (this: History, ...args) {
+			const result = original.apply(this, args);
+			leftPage();
+			return result;
+		} as History[typeof name];
+	}
+	window.addEventListener("popstate", leftPage);
+}
+watchMoves();
 
 export const threadFocus = {
 	request(target: {
@@ -86,6 +115,8 @@ export const threadFocus = {
 			...(target.scope !== undefined ? { scope: target.scope } : {}),
 		};
 		requestPath = currentPath();
+		// A newer request: an earlier one's outline, not yet seen, is not.
+		outline = null;
 		notify();
 		return current;
 	},
@@ -94,20 +125,24 @@ export const threadFocus = {
 	/** Ends request `seq`: its card took it; its message, if any, is outlined. */
 	taken(seq: number) {
 		if (current?.seq !== seq) return;
-		if (current.message) outline = { message: current.message, seq };
+		if (current.message) {
+			outline = { message: current.message, seq, at: Date.now() };
+		}
 		current = null;
 		notify();
 	},
 	/** Ends any pending request: the reviewer went elsewhere. */
 	cancel() {
-		if (current === null) return;
+		if (current === null && outline === null) return;
 		current = null;
+		outline = null;
 		notify();
 	},
 	/** Ends a pending request made in another scope than `scope` (a row's, in another comparison). */
 	cancelOutside(scope: string) {
 		if (current?.scope === undefined || current.scope === scope) return;
 		current = null;
+		outline = null;
 		notify();
 	},
 	/** The last message outlined. */
@@ -209,16 +244,37 @@ export function useFocusCard(
 	id: string | undefined,
 	ref: RefObject<Element | null>,
 	open?: (focus: ThreadFocus) => void,
-	options: { scroll?: boolean } = {},
+	options: {
+		scroll?: boolean;
+		/**
+		 * Whether it can serve the request yet: a review thread's card whose
+		 * agent conversation, asked for too, isn't known yet (the agent
+		 * threads still on their way) leaves it pending until it is.
+		 */
+		ready?: (focus: ThreadFocus) => boolean;
+	} = {},
 ) {
 	const scroll = options.scroll !== false;
+	const ready = options.ready;
 	const active = usePageActive();
 	// Only a request for this card re-renders it.
 	const hit = useSyncExternalStore(threadFocus.subscribe, () => {
 		const focus = threadFocus.get();
-		return active && focus && id && focus.id === id ? focus : null;
+		return active && focus && id && focus.id === id && (!ready || ready(focus))
+			? focus
+			: null;
 	});
 	const seq = hit?.seq ?? 0;
+	// The scroll's frames: taking the request re-renders the card (no
+	// request names it any more), which must not cancel them; only
+	// unmounting does.
+	const frames = useRef<number[]>([]);
+	useEffect(
+		() => () => {
+			for (const f of frames.current) cancelAnimationFrame(f);
+		},
+		[],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per request that names this card.
 	useEffect(() => {
 		// Still asked for: no other copy took it, nothing cancelled it.
@@ -228,18 +284,20 @@ export function useFocusCard(
 		threadFocus.taken(hit.seq);
 		if (!scroll) return;
 		// After what opening it draws; not once a newer request came.
-		let inner = 0;
 		const outer = requestAnimationFrame(() => {
-			inner = requestAnimationFrame(() => {
+			const inner = requestAnimationFrame(() => {
 				const el = ref.current;
 				if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
-				scrollUnder(el);
+				// A message named: it, centred (its outline), not the card's top.
+				const message = hit.message
+					? document.querySelector(`[data-message-id="${hit.message}"]`)
+					: null;
+				if (message) message.scrollIntoView?.({ block: "center" });
+				else scrollUnder(el);
 			});
+			frames.current = [inner];
 		});
-		return () => {
-			cancelAnimationFrame(outer);
-			cancelAnimationFrame(inner);
-		};
+		frames.current = [outer];
 	}, [seq]);
 }
 
@@ -260,7 +318,10 @@ export function useOutlinedMessage(
 		threadFocus.outline,
 	);
 	const mine =
-		active && landed && messages?.some((m) => m.id === landed.message)
+		active &&
+		landed &&
+		Date.now() - landed.at < OUTLINE_MS &&
+		messages?.some((m) => m.id === landed.message)
 			? landed
 			: null;
 	const [lit, setLit] = useState<Outline | null>(null);

@@ -1530,7 +1530,12 @@ function ThreadItem({
 	// once shown; the page brings it into view itself (its list, enough of
 	// it, then the card), the panel opens by itself.
 	const cardRef = useRef<HTMLLIElement>(null);
-	useFocusCard(thread.id || undefined, cardRef, undefined, { scroll: false });
+	useFocusCard(thread.id || undefined, cardRef, undefined, {
+		scroll: false,
+		// Its conversation, when asked for, once the agent threads say it's
+		// this thread's (a cold load reads them after GitHub's).
+		ready: (f) => !f.conversation || agent?.conversation?.id === f.conversation,
+	});
 	// State, not refs: either box can mount later than the card.
 	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
 	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);

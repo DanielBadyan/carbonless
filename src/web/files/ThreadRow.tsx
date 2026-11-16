@@ -52,7 +52,9 @@ export function ThreadBlock(props: {
 	// Asked for (threadFocus): in view; its agent conversation, when asked
 	// for too, opens by itself (useThreadAgent).
 	const card = useRef<HTMLElement>(null);
-	useFocusCard(thread.id, card);
+	useFocusCard(thread.id, card, undefined, {
+		ready: (f) => !f.conversation || agent?.conversation?.id === f.conversation,
+	});
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<article

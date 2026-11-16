@@ -270,4 +270,130 @@ describe("threadFocus", () => {
 		threadFocus.cancelOutside("ps3");
 		expect(threadFocus.get()).not.toBeNull();
 	});
+
+	it("a card waits for the conversation it's asked to open: taken once it is known (a cold link)", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const panel = vi.fn();
+		const took = vi.fn();
+		function ThreadCard(props: { conversation?: string }) {
+			const ref = useRef<HTMLDivElement>(null);
+			useFocusCard("RT1", ref, took, {
+				ready: (f) => !f.conversation || props.conversation === f.conversation,
+			});
+			useFocusWhere(
+				(f) =>
+					props.conversation !== undefined &&
+					f.conversation === props.conversation,
+				panel,
+			);
+			return <div ref={ref} />;
+		}
+		const { rerender } = render(<ThreadCard />);
+		act(() => requestConversationOpen(A, undefined, "RT1"));
+		// The agent threads not in yet: nothing takes it, it waits.
+		expect(took).not.toHaveBeenCalled();
+		expect(threadFocus.get()?.conversation).toBe(A);
+		rerender(<ThreadCard conversation={A} />);
+		expect(took).toHaveBeenCalledTimes(1);
+		expect(panel).toHaveBeenCalledTimes(1);
+		expect(threadFocus.get()).toBeNull();
+	});
+
+	it("with a message named, the message is centred, not the card's top scrolled under the stack", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+		const centred = vi.fn();
+		function WithMessage() {
+			const ref = useRef<HTMLDivElement>(null);
+			useFocusCard(A, ref);
+			return (
+				<div ref={ref}>
+					<p data-message-id={M} />
+				</div>
+			);
+		}
+		render(<WithMessage />);
+		const msg = document.querySelector(`[data-message-id="${M}"]`);
+		if (!msg) throw new Error("no message");
+		msg.scrollIntoView = centred;
+		act(() => requestConversationOpen(A, M));
+		expect(centred).toHaveBeenCalledWith({ block: "center" });
+		expect(scrollTo).not.toHaveBeenCalled();
+	});
+
+	it("an outline nobody showed is gone after a cancel, a newer request, or its moment", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+			const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+			function Messages() {
+				return <p data-lit={useOutlinedMessage([{ id: M }]) ?? ""} />;
+			}
+			const lit = (c: HTMLElement) => c.querySelector("p")?.dataset.lit;
+			// Taken (its card), no messages shown, then a cancel: the panel
+			// opened by hand later outlines nothing.
+			const card = render(<Card id={A} />);
+			act(() => requestConversationOpen(A, M));
+			act(() => threadFocus.cancel());
+			const one = render(<Messages />);
+			expect(lit(one.container)).toBe("");
+			one.unmount();
+			// Taken again, then a newer request.
+			act(() => requestConversationOpen(A, M));
+			act(() => {
+				threadFocus.request({ id: "other" });
+			});
+			const two = render(<Messages />);
+			expect(lit(two.container)).toBe("");
+			two.unmount();
+			act(() => threadFocus.cancel());
+			// Taken, and its moment passed.
+			act(() => requestConversationOpen(A, M));
+			act(() => vi.advanceTimersByTime(2001));
+			const three = render(<Messages />);
+			expect(lit(three.container)).toBe("");
+			card.unmount();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a row's request is gone after a move to another page and back, with nothing reading it meanwhile", () => {
+		window.history.replaceState(null, "", "/r/RV1/files");
+		try {
+			threadFocus.request({ id: "T1", scope: "ps1" });
+			window.history.pushState(null, "", "/r/RV1");
+			window.history.pushState(null, "", "/r/RV1/files");
+			expect(threadFocus.get()).toBeNull();
+			const onOpen = vi.fn();
+			render(<Card id="T1" onOpen={onOpen} />);
+			expect(onOpen).not.toHaveBeenCalled();
+		} finally {
+			window.history.replaceState(null, "", "/");
+		}
+	});
+
+	it("the scroll's frames survive the re-render that taking the request causes", () => {
+		const queue: FrameRequestCallback[] = [];
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			queue.push(cb);
+			return queue.length;
+		});
+		vi.stubGlobal("cancelAnimationFrame", (n: number) => {
+			queue[n - 1] = () => {};
+		});
+		const flush = () => {
+			for (const cb of queue.splice(0)) cb(0);
+		};
+		render(<Card id="T1" />);
+		act(() => {
+			threadFocus.request({ id: "T1" });
+		});
+		// Taken at once (the card re-rendered); the frames still to run.
+		expect(threadFocus.get()).toBeNull();
+		expect(scrollTo).not.toHaveBeenCalled();
+		act(flush);
+		act(flush);
+		expect(scrollTo).toHaveBeenCalledTimes(1);
+	});
 });
