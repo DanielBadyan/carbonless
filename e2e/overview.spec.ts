@@ -561,8 +561,19 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 	await expect(fileThread.locator("code").first()).toHaveText("src/file.ts");
 
 	const body = thread.getByTestId("thread-body");
-	const [c, b] = [await code.boundingBox(), await body.boundingBox()];
-	if (!c || !b) throw new Error("no boxes");
+	// Both boxes from one frame: read one after the other, anything that
+	// lands above the card in between (the page's later reads) moves the
+	// second one only.
+	const { c, b } = await thread.evaluate((el) => {
+		const box = (id: string) => {
+			const r = el
+				.querySelector(`[data-testid="${id}"]`)
+				?.getBoundingClientRect();
+			if (!r) throw new Error(`no ${id}`);
+			return { x: r.x, y: r.y, width: r.width, height: r.height };
+		};
+		return { c: box("thread-code"), b: box("thread-body") };
+	});
 	const phone = (page.viewportSize()?.width ?? 0) < 768;
 	if (phone) {
 		expect(b.y).toBeGreaterThanOrEqual(c.y + c.height);

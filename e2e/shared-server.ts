@@ -18,7 +18,7 @@ import {
 	writeRouter,
 } from "../test/fake-gh/scenario";
 import { fakeGhServerCalls } from "../test/fake-gh/server.mjs";
-import { type Served, startServe, stopChild } from "./crb-process";
+import { deadline, type Served, startServe, stopChild } from "./crb-process";
 import { crbEnv } from "./pr-setup";
 
 /*
@@ -235,13 +235,20 @@ export class SharedServer {
 		};
 		const parent = process.env.TRACEPARENT;
 		if (parent) headers.traceparent = parent;
-		const res = await fetch(`${new URL(served.url).origin}${path}`, {
-			method,
-			headers,
-			signal: AbortSignal.timeout(RESET_TIMEOUT_MS),
-		});
-		if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}`);
-		return res.json();
+		// A late-safe bound (crb-process.ts, deadline), the body read inside it.
+		const abort = new AbortController();
+		const cancel = deadline(RESET_TIMEOUT_MS, () => abort.abort());
+		try {
+			const res = await fetch(`${new URL(served.url).origin}${path}`, {
+				method,
+				headers,
+				signal: abort.signal,
+			});
+			if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}`);
+			return await res.json();
+		} finally {
+			cancel();
+		}
 	}
 
 	/**

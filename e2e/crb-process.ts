@@ -28,6 +28,31 @@ export const START_TIMEOUT_MS = 20_000;
  */
 const STOP_GRACE_MS = 10_000;
 
+/**
+ * How long a deadline that fired waits before it counts. A loaded machine
+ * can freeze a test process for many seconds (swapped out), mid-callback;
+ * by the time it runs on, a deadline may be overdue while what would have
+ * beaten it (the child's output, its exit, the server's answer) has
+ * arrived but not yet been read. Waiting for the next turns of the loop
+ * reads it first. What matters is that wait, not its length.
+ */
+const LATE_LOOK_MS = 100;
+
+/**
+ * Calls `expire` once `ms` have passed and what arrived until then has been
+ * read (LATE_LOOK_MS). Returns the cancel, for an outcome that came first.
+ */
+export function deadline(ms: number, expire: () => void): () => void {
+	let look: NodeJS.Timeout | undefined;
+	const timer = setTimeout(() => {
+		look = setTimeout(expire, LATE_LOOK_MS);
+	}, ms);
+	return () => {
+		clearTimeout(timer);
+		clearTimeout(look);
+	};
+}
+
 export interface CrbExit {
 	code: number | null;
 	/** Milliseconds from SIGTERM to exit. */
@@ -79,7 +104,7 @@ export function startServe(
 	return new Promise<Served>((done, fail) => {
 		// A start that missed its time is killed: no one else holds it to
 		// stop it (the caller never got a Served), and it would outlive the run.
-		const timer = setTimeout(() => {
+		const cancel = deadline(timeoutMs, () => {
 			child.kill("SIGKILL");
 			fail(
 				new CrbStartTimeout(
@@ -87,23 +112,23 @@ export function startServe(
 					`crb serve printed no URL in time:\n${output}`,
 				),
 			);
-		}, timeoutMs);
+		});
 		const onData = (chunk: Buffer) => {
 			output += chunk.toString();
 			const match = output.match(/carbonless listening on (http:\/\/\S+)/);
 			if (match?.[1]) {
-				clearTimeout(timer);
+				cancel();
 				done({ child, url: match[1], output: () => output, env });
 			}
 		};
 		child.stdout?.on("data", onData);
 		child.stderr?.on("data", onData);
 		child.once("exit", (code) => {
-			clearTimeout(timer);
+			cancel();
 			fail(new CrbExitError(code, output));
 		});
 		child.once("error", (error) => {
-			clearTimeout(timer);
+			cancel();
 			fail(new Error(`could not start crb serve: ${error.message}`));
 		});
 	});
@@ -130,16 +155,16 @@ export function runCli(
 		output += chunk.toString();
 	});
 	return new Promise((done, fail) => {
-		const timer = setTimeout(() => {
+		const cancel = deadline(START_TIMEOUT_MS, () => {
 			child.kill("SIGKILL");
 			fail(new Error(`crb ${args.join(" ")} did not finish:\n${output}`));
-		}, START_TIMEOUT_MS);
+		});
 		child.once("close", (code) => {
-			clearTimeout(timer);
+			cancel();
 			done({ code, stdout, output });
 		});
 		child.once("error", (error) => {
-			clearTimeout(timer);
+			cancel();
 			fail(new Error(`could not run crb: ${error.message}`));
 		});
 	});
@@ -157,12 +182,12 @@ export function stopChild(child: ChildProcess): Promise<CrbExit | null> {
 	return new Promise((done, fail) => {
 		const started = Date.now();
 		let killed = false;
-		const force = setTimeout(() => {
+		const cancel = deadline(STOP_GRACE_MS, () => {
 			killed = true;
 			child.kill("SIGKILL");
-		}, STOP_GRACE_MS);
+		});
 		child.once("exit", (code) => {
-			clearTimeout(force);
+			cancel();
 			const ms = Date.now() - started;
 			if (killed) {
 				fail(new Error(`crb ignored SIGTERM for ${STOP_GRACE_MS} ms`));
