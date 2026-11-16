@@ -148,6 +148,8 @@ describe("Session", () => {
 			asOf: null,
 			pinnedHead: null,
 			patchsets: [],
+			// Counted in the background: unknown on the first read.
+			snapshotCommits: null,
 			lastSeen: null,
 			head: {
 				oid: pr.head(),
@@ -1652,6 +1654,36 @@ describe("Session", () => {
 			await vi.waitFor(() =>
 				expect(again.info().patchsets.map((p) => p.commits)).toEqual(expected),
 			);
+		});
+
+		it("before any patch set, counts the snapshot's commits over its merge base in the background, null until known", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			// The page read never waits for git: unknown at first.
+			expect(s.info().patchsets).toEqual([]);
+			expect(s.info().snapshotCommits).toBeNull();
+			const clone = clonePath("acme", "widget");
+			const expected = Number(
+				execFileSync(
+					"git",
+					[
+						"-C",
+						clone,
+						"rev-list",
+						"--count",
+						`${pr.mergeBase}..${s.snapshot().head}`,
+					],
+					{ env: testGitEnv() },
+				)
+					.toString()
+					.trim(),
+			);
+			expect(expected).toBeGreaterThan(0);
+			await vi.waitFor(() => expect(s.info().snapshotCommits).toBe(expected));
+			// Once a patch set exists, its own count stands for it.
+			await s.setStates(s.snapshot().revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			expect(s.info().snapshotCommits).toBeUndefined();
 		});
 
 		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {

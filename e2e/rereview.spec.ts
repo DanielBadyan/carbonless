@@ -665,15 +665,27 @@ test("a first review shows a dot for the PR's current position, viewed and up to
 	await page.getByTestId("ps-dot-snapshot").click();
 	const details = page.getByRole("dialog", { name: `${short} details` });
 	await expect(details).toContainText("Snapshot");
+	await expect(details).toContainText("PR head · not reviewed yet");
 	await expect(details).toContainText(short);
+	await page.keyboard.press("Escape");
+	await expect(details).toHaveCount(0);
+	// The branch → dot connector counts the PR's commits, like branch → PS1.
+	await expect(
+		page.getByTestId("ps-conn-snapshot").getByTestId("ps-conn-label"),
+	).toHaveText("1 commit", GIT_WAIT);
 	await expectNoPageOverflow(page);
-	const rail = await page.getByTestId("psrail").boundingBox();
-	const viewport = page.viewportSize();
-	expect((rail?.x ?? 0) + (rail?.width ?? 0)).toBeLessThanOrEqual(
-		viewport?.width ?? 0,
-	);
-	// A plain dot: no patch set was made for it.
-	expect(reviewRefs(s, p)).not.toContain("/patchsets/");
+	// The dot and the tail are both on screen, not scrolled out of the rail.
+	const width = page.viewportSize()?.width ?? 0;
+	for (const el of [page.getByTestId("ps-dot-snapshot"), tail(page)]) {
+		const box = await el.boundingBox();
+		expect(box).not.toBeNull();
+		expect((box?.x ?? -1) >= 0).toBe(true);
+		expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+	}
+	// A plain dot: no patch set was made for it, then or since.
+	await expect
+		.poll(() => reviewRefs(s, p), { timeout: 2_000 })
+		.not.toContain("/patchsets/");
 });
 
 test("a newer head fills the rail's last slot and shows the toast; nothing below the rail moves, nothing takes focus", async ({

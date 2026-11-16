@@ -232,6 +232,96 @@ describe("PatchsetGraph", () => {
 		expect(screen.queryByRole("button", { name: /^head/ })).toBeNull();
 	});
 
+	it("first review: the current dot's card says it is the PR's head; an older snapshot's doesn't", async () => {
+		const user = userEvent.setup();
+		const { rerender } = renderGraph(session([], oid("a")), {
+			viewing: { kind: "head", oid: oid("a") },
+			base: { kind: "branch" },
+		});
+		await user.click(screen.getByRole("button", { name: "snapshot aaaaaaa" }));
+		const card = screen.getByRole("dialog", { name: "aaaaaaa details" });
+		expect(card).toHaveTextContent("PR head · not reviewed yet");
+		// The head moved on: the snapshot is no longer the PR's head.
+		rerender(session([], oid("f")));
+		expect(
+			screen.getByRole("dialog", { name: "aaaaaaa details" }),
+		).not.toHaveTextContent("PR head");
+		expect(
+			screen.getByRole("dialog", { name: "aaaaaaa details" }),
+		).toHaveTextContent("Not reviewed yet");
+	});
+
+	it("first review: the branch → snapshot connector spins until the session counts the snapshot's commits, then shows them", () => {
+		const s = session([], oid("a"));
+		const { rerender } = renderGraph(
+			{ ...s, snapshotCommits: null },
+			{ viewing: { kind: "head", oid: oid("a") }, base: { kind: "branch" } },
+		);
+		const conn = () => screen.getByTestId("ps-conn-snapshot");
+		expect(within(conn()).getByTestId("ps-conn-counting")).toBeInTheDocument();
+		expect(within(conn()).queryByText(/commit/)).toBeNull();
+		rerender({ ...s, snapshotCommits: 4 });
+		expect(within(conn()).queryByTestId("ps-conn-counting")).toBeNull();
+		expect(within(conn()).getByTestId("ps-conn-label")).toHaveTextContent(
+			"4 commits",
+		);
+		expect(conn()).toHaveAccessibleName("main to aaaaaaa: 4 commits");
+		rerender({ ...s, snapshotCommits: { error: "boom" } });
+		expect(conn()).toHaveAccessibleName(
+			"main to aaaaaaa: couldn't count the commits",
+		);
+	});
+
+	it("first review: the snapshot's count comes in by the session poll, a spinner until then", async () => {
+		const s = session([], oid("a"));
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		renderGraph(
+			{ ...s, snapshotCommits: null },
+			{ viewing: { kind: "head", oid: oid("a") }, base: { kind: "branch" } },
+			undefined,
+			undefined,
+			async () => {
+				await gate;
+				return { ...s, snapshotCommits: 4 };
+			},
+		);
+		const conn = () => screen.getByTestId("ps-conn-snapshot");
+		await expectLoadingThen({
+			loading: () => within(conn()).queryByTestId("ps-conn-counting"),
+			empty: [() => within(conn()).queryByText(/^0/)],
+			release,
+			result: () => within(conn()).queryByText("4 commits"),
+		});
+	});
+
+	it("first review, then the head moves: the current dot stays viewed and the tail takes the head", () => {
+		const { rerender } = renderGraph(session([], oid("a")), {
+			viewing: { kind: "head", oid: oid("a") },
+			base: { kind: "branch" },
+		});
+		expect(tail()).toHaveAttribute("data-state", "up-to-date");
+		rerender(session([], oid("f")));
+		expect(node("snapshot").querySelector("[data-dot]")).toHaveAttribute(
+			"data-viewing",
+			"true",
+		);
+		expect(tail()).toHaveAttribute("data-state", "head");
+		expect(
+			within(tail()).getByRole("button", { name: "head fffffff" }),
+		).toBeInTheDocument();
+		const rail = screen.getByTestId("psrail");
+		const before = [...rail.querySelectorAll("[data-dot]")].filter(
+			(el) => !tail().contains(el),
+		);
+		expect(before.map((el) => (el as HTMLElement).dataset.dot)).toEqual([
+			"branch",
+			"snapshot",
+		]);
+	});
+
 	it("a newer head: the same slot holds the dashed connector with its count and the head dot", async () => {
 		renderGraph(session([1, 2], oid("f")), {
 			viewing: ps(2),

@@ -1152,6 +1152,13 @@ export interface SessionInfo {
 		commits: number | null | { error: string };
 	}[];
 	/**
+	 * Before any patch set, the snapshot's commits over its merge base (the
+	 * graph's branch → snapshot connector), as a patch set's `commits`: null
+	 * while counted in the background, why not once failed for good. Absent
+	 * once a patch set exists (its own count stands for it).
+	 */
+	snapshotCommits?: number | null | { error: string };
+	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.
 	 */
