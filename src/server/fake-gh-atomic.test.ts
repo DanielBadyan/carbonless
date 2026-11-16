@@ -1,11 +1,21 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
+import {
+	RENAME_BACKOFF,
+	renameRetrying,
+	writeFileAtomic,
+} from "../../test/fake-gh/atomic.mjs";
 
 const HELPER = pathToFileURL(
 	resolve(import.meta.dirname, "../../test/fake-gh/atomic.mjs"),
@@ -37,6 +47,83 @@ describe("writeFileAtomic", () => {
 		writeFileAtomic(path, '{"n":2}');
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ n: 2 });
 		expect(readdirSync(dir)).toEqual(["scenario.json"]);
+	});
+
+	/**
+	 * A rename that fails with `code` the first `times` calls, then renames,
+	 * as on Windows (`windows: true`), with the waits recorded, not slept.
+	 */
+	const busyRename = (code: string, times: number, windows = true) => {
+		const calls: string[] = [];
+		const waits: number[] = [];
+		return {
+			calls,
+			waits,
+			options: {
+				windows,
+				sleep: (ms: number) => {
+					waits.push(ms);
+				},
+				rename: (from: string, to: string) => {
+					calls.push(from);
+					if (calls.length <= times)
+						throw Object.assign(new Error(`${code}: rename`), { code });
+					renameSync(from, to);
+				},
+			},
+		};
+	};
+
+	// Windows can't rename over a file another process has open for a
+	// moment (the fake agent polling its scenario, a virus scanner): EPERM.
+	it.each(["EPERM", "EACCES", "EBUSY"])(
+		"on Windows, a rename that fails with %s while the file is busy is tried again",
+		(code) => {
+			const path = join(dir, "scenario.json");
+			writeFileAtomic(path, '{"n":1}');
+			const busy = busyRename(code, 2);
+			writeFileAtomic(path, '{"n":2}', busy.options);
+			expect(busy.calls).toHaveLength(3);
+			expect(busy.waits).toEqual(RENAME_BACKOFF.slice(0, 2));
+			expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ n: 2 });
+			expect(readdirSync(dir)).toEqual(["scenario.json"]);
+		},
+	);
+
+	it("on Windows, a rename that stays busy fails after a bounded number of tries, leaving the old file", () => {
+		const path = join(dir, "scenario.json");
+		writeFileAtomic(path, '{"n":1}');
+		const busy = busyRename("EPERM", Number.POSITIVE_INFINITY);
+		expect(() =>
+			renameRetrying(join(dir, "missing.tmp"), path, busy.options),
+		).toThrow(/EPERM/);
+		expect(busy.calls).toHaveLength(RENAME_BACKOFF.length + 1);
+		expect(busy.waits).toEqual(RENAME_BACKOFF);
+		// Through writeFileAtomic the temp file goes too.
+		expect(() =>
+			writeFileAtomic(path, '{"n":2}', busyRename("EBUSY", 99).options),
+		).toThrow(/EBUSY/);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ n: 1 });
+		expect(readdirSync(dir)).toEqual(["scenario.json"]);
+	});
+
+	it("elsewhere, EPERM, EACCES and EBUSY are real errors and fail at once", () => {
+		const path = join(dir, "scenario.json");
+		for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+			const busy = busyRename(code, 1, false);
+			expect(() => writeFileAtomic(path, "{}", busy.options)).toThrow(code);
+			expect(busy.calls).toHaveLength(1);
+			expect(busy.waits).toEqual([]);
+		}
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	it("any other rename error fails at once", () => {
+		const path = join(dir, "scenario.json");
+		const busy = busyRename("ENOENT", 1);
+		expect(() => writeFileAtomic(path, "{}", busy.options)).toThrow(/ENOENT/);
+		expect(busy.calls).toHaveLength(1);
+		expect(readdirSync(dir)).toEqual([]);
 	});
 
 	it("never lets a concurrent reader see a half-written file", async () => {
