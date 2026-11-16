@@ -22,6 +22,7 @@ import type { FilesSearch } from "../files/landing";
 import type { OverviewSearch } from "../overview/threadLink";
 import { usePageActive } from "../pageActive";
 import { codeLinkSearch } from "./codeLinks";
+import { openReviewDrawer } from "./drawerStore";
 
 /** An agent thread or message id: a lowercase ULID. */
 export const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
@@ -300,7 +301,8 @@ export function useGithubAuthors(): (id: string) => string | undefined {
 /**
  * Opens conversation `thread` (landing on `message`): navigates to its
  * page with its search, which asks for it to open there. False when it
- * can't be placed (its file isn't this review's).
+ * can't be placed (its file isn't this review's). The review conversation
+ * opens its drawer instead, on whatever page shows.
  */
 export function useOpenConversation(): (
 	thread: AgentThread,
@@ -310,6 +312,12 @@ export function useOpenConversation(): (
 	const { files, patchsets } = useLinkFacts();
 	return useCallback(
 		(thread: AgentThread, message?: string) => {
+			// The review conversation's place is its drawer, over any page.
+			if (thread.anchor.subject === "review") {
+				openReviewDrawer();
+				requestConversationOpen(thread.id, message);
+				return true;
+			}
 			const target = conversationSearch(thread, files, patchsets, message);
 			if (!target || !router) return false;
 			const id = router.state.matches

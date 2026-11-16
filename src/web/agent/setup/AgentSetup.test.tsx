@@ -19,6 +19,7 @@ import type {
 	AgentThread,
 } from "../../../shared/agent";
 import { mcpLine } from "../api";
+import { closeReviewDrawer, isReviewDrawerOpen } from "../drawerStore";
 import {
 	closeAgentSetup,
 	openAgentSetup,
@@ -983,7 +984,7 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		expect(count).toHaveAttribute("title", "2 threads waiting for the agent");
 	});
 
-	it("answering the review conversation shows 'Whole review' and the question, no link", async () => {
+	it("answering the review conversation shows 'Whole review' and the question; Whole review opens the drawer and closes the modal", async () => {
 		current = status({
 			state: "busy",
 			spawned: true,
@@ -1005,16 +1006,24 @@ describe("AgentSetup: Review Agent (connected)", () => {
 				],
 			},
 		];
-		const { dialog } = await opened();
-		expect(
-			await within(dialog).findByTestId("agent-answering-review"),
-		).toHaveTextContent(/^Whole review$/);
+		const { user, dialog } = await opened();
+		const row = await within(dialog).findByTestId("agent-answering-review");
+		expect(row).toHaveTextContent(/^Whole review$/);
 		expect(
 			within(dialog).getByTestId("agent-answering-question"),
 		).toHaveTextContent(/^“Were all comments resolved\?”$/);
 		expect(
 			within(dialog).queryByRole("status", { name: "Loading the thread" }),
 		).toBeNull();
+		expect(isReviewDrawerOpen()).toBe(false);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Whole review" }),
+		);
+		expect(isReviewDrawerOpen()).toBe(true);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-setup")).not.toHaveAttribute("open"),
+		);
+		closeReviewDrawer();
 	});
 
 	it("the thread link names path:line and the question, and closes the modal", async () => {

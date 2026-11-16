@@ -29,6 +29,7 @@ import {
 	postAgentStart,
 } from "../api";
 import { formatArgs } from "../args";
+import { openReviewDrawer } from "../drawerStore";
 import { BUTTON, CloseButton, ErrorLine, Footer, SECTION } from "./parts";
 
 /** Stop current's tooltip for a joined session: carbonless can't interrupt its turn. */
@@ -353,13 +354,18 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 								{thread && isSpanThread(thread) ? (
 									<ThreadLink thread={thread} onClose={onClose} />
 								) : thread ? (
-									// The review conversation: no line to link to.
-									<span
+									// The review conversation: its drawer, over this page.
+									<button
+										type="button"
 										data-testid="agent-answering-review"
-										className="font-medium text-ink"
+										onClick={() => {
+											onClose();
+											openReviewDrawer();
+										}}
+										className="font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 									>
 										Whole review
-									</span>
+									</button>
 								) : threads.isError ? (
 									<span className="text-bad">{threads.error.message}</span>
 								) : (

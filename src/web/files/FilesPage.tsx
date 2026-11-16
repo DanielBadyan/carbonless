@@ -31,7 +31,11 @@ import {
 	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
-import { comparisonView, SendViewProvider } from "../agent/threadAgent";
+import {
+	comparisonView,
+	SendViewProvider,
+	usePublishSendView,
+} from "../agent/threadAgent";
 import {
 	hunksQuery,
 	overviewQuery,
@@ -1374,6 +1378,8 @@ export function FilesPage() {
 		() => comparisonView(comparison.viewing, comparison.base),
 		[comparison.viewing, comparison.base],
 	);
+	// And the review conversation's drawer's, from any tab (kept while hidden).
+	usePublishSendView(sendView);
 	return (
 		<PeopleProvider threads={allThreads}>
 			<PlacementProvider value={placementInfo}>

@@ -10,6 +10,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	createContext,
+	createElement,
+	type ReactNode,
 	type RefObject,
 	useCallback,
 	useContext,
@@ -154,6 +156,39 @@ export function comparisonView(
 const SendViewContext = createContext<SendView | null>(null);
 /** Files changed's comparison (the URL's ps/head/from), for its cards. */
 export const SendViewProvider = SendViewContext.Provider;
+
+const PublishSendView = createContext<((view: SendView | null) => void) | null>(
+	null,
+);
+
+/**
+ * The review layout's comparison to send: what Files changed publishes
+ * (usePublishSendView), so the review conversation's drawer, outside the
+ * page, sends the comparison picked there from any tab. Null (the
+ * Overview's placements comparison, useSendView) until Files changed has
+ * shown.
+ */
+export function SendViewHost(props: { children: ReactNode }) {
+	const [view, setView] = useState<SendView | null>(null);
+	return createElement(
+		PublishSendView.Provider,
+		{ value: setView },
+		createElement(SendViewContext.Provider, { value: view }, props.children),
+	);
+}
+
+/** Files changed's comparison, published to SendViewHost (kept while the page is hidden). */
+export function usePublishSendView(view: SendView | null): void {
+	const publish = useContext(PublishSendView);
+	useEffect(() => {
+		if (!publish) return;
+		publish(view);
+	}, [publish, view]);
+	useEffect(() => {
+		if (!publish) return;
+		return () => publish(null);
+	}, [publish]);
+}
 
 /**
  * The view to send: Files changed's URL comparison, or the Overview's

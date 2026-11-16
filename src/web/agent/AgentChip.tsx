@@ -11,7 +11,12 @@ import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
-import { toggleReviewDrawer, useReviewDrawerOpen } from "./drawerStore";
+import {
+	closeReviewDrawer,
+	openReviewDrawer,
+	toggleReviewDrawer,
+	useReviewDrawerOpen,
+} from "./drawerStore";
 import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
 
@@ -207,6 +212,19 @@ export function AgentChip({
 	useAgentSync(client, status.data);
 	const conversation = useReviewConversation();
 	const drawerOpen = useReviewDrawerOpen();
+	// A tap before the first status read: the drawer (its spinner) while
+	// it is read, then what the status says (the setup, for nothing set up).
+	const early = useRef(false);
+	const statusData = status.data;
+	const hasConversation = conversation.thread !== undefined;
+	const conversationKnown = !conversation.loading;
+	useEffect(() => {
+		if (!early.current || !statusData || !conversationKnown) return;
+		early.current = false;
+		if (chipOpensDrawer(statusData, hasConversation)) return;
+		closeReviewDrawer();
+		openAgentSetup();
+	}, [statusData, hasConversation, conversationKnown]);
 	if (!place) return null;
 	if (!on) {
 		// Whether there is an agent isn't known yet: its place, spinning.
@@ -264,7 +282,10 @@ export function AgentChip({
 					aria-expanded={drawer ? pressed : undefined}
 					aria-controls={drawer ? "review-conversation" : undefined}
 					onClick={() => {
-						if (drawer) toggleReviewDrawer();
+						if (status.isPending) {
+							early.current = true;
+							openReviewDrawer();
+						} else if (drawer) toggleReviewDrawer();
 						else openAgentSetup();
 					}}
 					className={`group ${CHIP_BOX} rounded-full focus-visible:outline-2 focus-visible:outline-accent`}

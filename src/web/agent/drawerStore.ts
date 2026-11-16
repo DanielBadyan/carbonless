@@ -27,6 +27,9 @@ const subscribe = (l: () => void) => {
 };
 const getOpen = () => open;
 
+/** Whether the drawer is open now (outside React). */
+export const isReviewDrawerOpen = (): boolean => open;
+
 export function useReviewDrawerOpen(): boolean {
 	return useSyncExternalStore(subscribe, getOpen, getOpen);
 }

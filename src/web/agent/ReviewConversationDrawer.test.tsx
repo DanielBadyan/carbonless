@@ -1,0 +1,320 @@
+// @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useMemo } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { heldJson } from "../../../test/loading";
+import type { AgentStatus, AgentThread } from "../../shared/agent";
+import type { PrOverview, SessionInfo } from "../../shared/types";
+import { overviewQuery, sessionQuery } from "../api";
+import { resetAgentWrites } from "./agentWrites";
+import { agentStatusQuery, agentThreadsQuery } from "./api";
+import {
+	closeReviewDrawer,
+	openReviewDrawer,
+	useReviewDrawerOpen,
+} from "./drawerStore";
+import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
+import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
+import {
+	resetAgentDrafts,
+	type SendView,
+	SendViewHost,
+	usePublishSendView,
+} from "./threadAgent";
+import { stubIntersection } from "./threadAgentFixtures";
+
+const json = (body: unknown, status = 200) =>
+	new Response(JSON.stringify(body), { status });
+
+const status: AgentStatus = {
+	state: "ready",
+	configured: true,
+	agent: { name: "Fake Agent", version: "1" },
+	since: "2026-11-15T10:00:00Z",
+	waiting: 0,
+};
+
+const review = (more: Partial<AgentThread> = {}): AgentThread => ({
+	id: "01jrv000000000000000000000",
+	anchor: { subject: "review" },
+	openedBy: "human",
+	at: "2026-11-15T10:00:00Z",
+	messages: [
+		{ id: "m1", by: "human", at: "2026-11-15T10:00:00Z", text: "All fine?" },
+		{ id: "m2", by: "ai", at: "2026-11-15T10:01:00Z", text: "Mostly." },
+		{ id: "m3", by: "human", at: "2026-11-15T10:02:00Z", text: "And now?" },
+		{ id: "m4", by: "ai", at: "2026-11-15T10:03:00Z", text: "Now too." },
+	],
+	resolved: false,
+	waiting: false,
+	unread: false,
+	...more,
+});
+
+let posts: { path: string; body: Record<string, unknown> }[];
+/** A POST's answer; never answered unless a test says. */
+let answer: (path: string, body: Record<string, unknown>) => Promise<Response>;
+/** The agent threads read's answer, per call. */
+let threadsRead: () => Promise<Response>;
+
+beforeEach(() => {
+	posts = [];
+	answer = () => new Promise(() => {});
+	threadsRead = () => new Promise(() => {});
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string, init?: RequestInit) => {
+			const url = new URL(input, "http://crb");
+			const method = init?.method ?? "GET";
+			if (method === "GET") {
+				if (url.pathname.endsWith("/agent/threads")) return threadsRead();
+				return new Promise<Response>(() => {});
+			}
+			const body = JSON.parse(String(init?.body ?? "null"));
+			posts.push({ path: url.pathname, body });
+			return answer(url.pathname, body);
+		}),
+	);
+	Element.prototype.scrollIntoView = vi.fn();
+	stubIntersection(null);
+});
+
+afterEach(() => {
+	cleanup();
+	closeReviewDrawer();
+	closeAgentSetup();
+	resetAgentWrites();
+	resetAgentDrafts();
+	vi.unstubAllGlobals();
+});
+
+function States() {
+	return (
+		<>
+			<p data-testid="drawer">{useReviewDrawerOpen() ? "open" : "closed"}</p>
+			<p data-testid="setup">{useAgentSetupOpen() ? "open" : "closed"}</p>
+		</>
+	);
+}
+
+/** Files changed's comparison, published as the page does (kept while elsewhere). */
+function FilesComparison(props: { view: SendView }) {
+	const view = useMemo(() => props.view, [props.view]);
+	usePublishSendView(view);
+	return null;
+}
+
+function show(
+	opts: {
+		/** The agent threads as read; undefined: the read is asked (fetch). */
+		threads?: AgentThread[];
+		filesView?: SendView;
+	} = {},
+) {
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+	});
+	client.setQueryData(overviewQuery.queryKey, {
+		readId: "r1",
+		writes: "on",
+		pendingReview: null,
+	} as PrOverview);
+	client.setQueryData(sessionQuery.queryKey, {
+		viewer: "octo",
+		snapshotHead: "h2",
+		patchsets: [
+			{ number: 1, head: "h1" },
+			{ number: 2, head: "h2" },
+		],
+	} as unknown as SessionInfo);
+	client.setQueryData(agentStatusQuery.queryKey, status);
+	if (opts.threads) {
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: opts.threads });
+	}
+	render(
+		<QueryClientProvider client={client}>
+			<SendViewHost>
+				{opts.filesView && <FilesComparison view={opts.filesView} />}
+				<button type="button" data-testid="agent-chip">
+					chip
+				</button>
+				<ReviewConversationDrawer />
+				<States />
+			</SendViewHost>
+		</QueryClientProvider>,
+	);
+	return { client, user: userEvent.setup() };
+}
+
+const drawer = () =>
+	screen.getByRole("complementary", { name: "Whole review conversation" });
+const composer = () => screen.queryByRole("textbox", { name: "Ask agent" });
+
+describe("ReviewConversationDrawer", () => {
+	it("closed: nothing drawn", () => {
+		show({ threads: [] });
+		expect(screen.queryByTestId("review-conversation")).toBeNull();
+	});
+
+	it("while the threads are read: a spinner, never the empty composer", async () => {
+		const held = heldJson();
+		threadsRead = () => held.response;
+		openReviewDrawer();
+		show();
+		const d = drawer();
+		expect(d).toHaveAttribute("id", "review-conversation");
+		const busy = within(d).getByTestId("review-conversation-loading");
+		expect(busy).toHaveAttribute("aria-busy", "true");
+		expect(composer()).toBeNull();
+		expect(within(d).queryByRole("alert")).toBeNull();
+		await act(async () => held.release({ threads: [review()] }));
+		await waitFor(() => expect(composer()).toBeInTheDocument());
+		expect(within(d).queryByTestId("review-conversation-loading")).toBeNull();
+		expect(within(d).getAllByTestId("agent-message-ai")).toHaveLength(2);
+	});
+
+	it("a failed threads read: an error with Retry, neither the spinner nor the empty composer", async () => {
+		threadsRead = async () => json({ error: "boom" }, 500);
+		openReviewDrawer();
+		show();
+		const alert = await within(drawer()).findByRole("alert");
+		expect(alert).toHaveTextContent(/couldn't read/i);
+		expect(
+			within(drawer()).queryByTestId("review-conversation-loading"),
+		).toBeNull();
+		expect(composer()).toBeNull();
+		// Retry reads them again.
+		threadsRead = async () => json({ threads: [] });
+		await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+		await waitFor(() => expect(composer()).toBeInTheDocument());
+		expect(within(drawer()).queryByRole("alert")).toBeNull();
+	});
+
+	it("an empty conversation: just the composer, focused", () => {
+		openReviewDrawer();
+		show({ threads: [] });
+		expect(composer()).toHaveFocus();
+		expect(composer()).toHaveAttribute("placeholder", "Ask agent…");
+		expect(within(drawer()).queryByTestId("agent-message-human")).toBeNull();
+		expect(
+			within(drawer()).queryByTestId("review-conversation-count"),
+		).toBeNull();
+	});
+
+	it("with unread answers: the new rule above the first, scrolled to it", () => {
+		openReviewDrawer();
+		show({ threads: [review({ unread: true, seenUpTo: "m2" })] });
+		const rule = within(drawer()).getByTestId("agent-new-divider");
+		// The rule sits right above the first unseen answer.
+		expect(rule.nextElementSibling).toHaveAttribute("data-message-id", "m4");
+		expect(rule.scrollIntoView).toHaveBeenCalled();
+		expect(
+			within(drawer()).getByTestId("review-conversation-count"),
+		).toHaveTextContent("4");
+	});
+
+	it("the status button opens the agent modal", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [review()] });
+		const button = within(drawer()).getByRole("button", {
+			name: "Agent status",
+		});
+		await user.click(button);
+		expect(screen.getByTestId("setup")).toHaveTextContent("open");
+	});
+
+	it("Escape and the close button close it; focus goes back to the chip", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [] });
+		expect(composer()).toHaveFocus();
+		await user.keyboard("{Escape}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("agent-chip")).toHaveFocus();
+		act(() => openReviewDrawer());
+		await user.click(within(drawer()).getByRole("button", { name: "Close" }));
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("agent-chip")).toHaveFocus();
+	});
+
+	it("a question asked from the Overview carries Files changed's comparison", async () => {
+		openReviewDrawer();
+		const filesView: SendView = {
+			target: { patchset: 1 },
+			from: { branch: true },
+		};
+		const { user } = show({ threads: [], filesView });
+		await user.type(composer() as HTMLElement, "Anything off?");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.path).toMatch(/\/agent\/threads$/);
+		expect(posts[0]?.body).toMatchObject({
+			review: true,
+			text: "Anything off?",
+			view: filesView,
+		});
+	});
+
+	it("a follow-up goes to the conversation as a message", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [review()] });
+		await user.type(composer() as HTMLElement, "More?");
+		await user.click(screen.getByRole("button", { name: "Send to agent" }));
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.path).toMatch(
+			/\/agent\/threads\/01jrv000000000000000000000\/messages$/,
+		);
+		expect(composer()).toHaveValue("");
+	});
+
+	it("a refused send: its text once, with Retry; Retry sends it once, and it lands once", async () => {
+		openReviewDrawer();
+		answer = async () => json({ error: "Too many questions" }, 422);
+		const { user } = show({ threads: [] });
+		await user.type(composer() as HTMLElement, "Were they resolved?");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		const alert = await within(drawer()).findByRole("alert");
+		expect(alert).toHaveTextContent("Too many questions");
+		// Shown once: in the refused message, not back in the box.
+		expect(within(drawer()).getAllByText("Were they resolved?")).toHaveLength(
+			1,
+		);
+		expect(composer()).toHaveValue("");
+		const clientId = posts[0]?.body.clientId;
+		const landed = review({
+			messages: [
+				{
+					id: "m1",
+					by: "human",
+					at: "2026-11-15T10:00:00Z",
+					text: "Were they resolved?",
+				},
+			],
+			waiting: true,
+		});
+		answer = async () => json(landed);
+		await user.click(within(alert).getByRole("button", { name: "Retry" }));
+		await waitFor(() =>
+			expect(within(drawer()).queryByRole("alert")).toBeNull(),
+		);
+		expect(posts).toHaveLength(2);
+		expect(posts[1]?.body.clientId).toBe(clientId);
+		await waitFor(() =>
+			expect(within(drawer()).queryByTestId("agent-reply-pending")).toBeNull(),
+		);
+		expect(within(drawer()).getAllByText("Were they resolved?")).toHaveLength(
+			1,
+		);
+		expect(within(drawer()).getAllByTestId("agent-message-human")).toHaveLength(
+			1,
+		);
+	});
+});

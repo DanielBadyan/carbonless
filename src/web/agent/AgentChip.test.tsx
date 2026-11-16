@@ -189,6 +189,60 @@ describe("the chip's tap", () => {
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 	});
 
+	it.each<[string, AgentStatus, string, string]>([
+		["a configured agent", status(), "open", "closed"],
+		[
+			"nothing set up",
+			status({ state: "off", configured: false, agent: undefined }),
+			"closed",
+			"invite",
+		],
+	])(
+		"tapped before the first status read, %s: the drawer while it is read, then what the status says",
+		async (_n, answer, drawer, setup) => {
+			const held = heldJson();
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: string) =>
+					String(input).includes("agent/threads")
+						? new Response(JSON.stringify({ threads: [] }))
+						: held.response,
+				),
+			);
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			client.setQueryData(overviewQuery.queryKey, {
+				writes: "on",
+			} as PrOverview);
+			client.setQueryData(agentThreadsQuery.queryKey, { threads: [] });
+			function SetupState() {
+				const open = useAgentSetupOpen();
+				const tab = useAgentSetupTab();
+				return <p data-testid="setup">{open ? tab : "closed"}</p>;
+			}
+			render(
+				<QueryClientProvider client={client}>
+					<AgentChip />
+					<SetupState />
+					<DrawerState />
+				</QueryClientProvider>,
+			);
+			const user = userEvent.setup();
+			const chip = screen.getByTestId("agent-chip");
+			expect(chip).toHaveAttribute("aria-busy", "true");
+			await user.click(chip);
+			// Never the setup for a reviewer whose agent is set up.
+			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			await act(async () => held.release(answer));
+			await waitFor(() =>
+				expect(screen.getByTestId("setup")).toHaveTextContent(setup),
+			);
+			expect(screen.getByTestId("drawer")).toHaveTextContent(drawer);
+		},
+	);
+
 	it("pressed while the drawer is open: the agent wash inside agent-edge", async () => {
 		const { user } = chipOver(status(), vi.fn(), []);
 		expect(face().className).toContain("border-line-strong");

@@ -313,17 +313,29 @@ export async function ask(
 /** The header's agent chip. */
 export const chip = (page: Page) => page.getByTestId("agent-chip");
 
+/** The review conversation's drawer. */
+export const reviewDrawer = (page: Page) =>
+	page
+		.getByRole("complementary", { name: "Whole review conversation" })
+		.or(page.getByRole("dialog", { name: "Whole review conversation" }));
+
 /**
- * Opens the agent modal (setup or status) once an agent is configured or
- * joined, when the chip toggles the review conversation's drawer instead:
- * through the Overview's agent row (Files changed stays mounted behind the
- * tab, so a card or composer there is kept).
+ * Opens the agent modal (setup or status): once an agent is configured or
+ * joined, the chip toggles the review conversation's drawer, whose status
+ * button opens it; otherwise the chip opens the setup itself.
  */
 export async function openAgentModal(page: Page): Promise<void> {
-	await page.getByRole("link", { name: "Overview", exact: true }).click();
-	await page
-		.getByTestId("agent-overview-row")
-		.getByRole("button", { name: /^(Your agent: |Set up an agent$)/ })
+	const c = chip(page);
+	// The first status read in: the chip says which it does.
+	await expect(c).not.toHaveAttribute("aria-busy", "true");
+	const expanded = await c.getAttribute("aria-expanded");
+	if (expanded === null) {
+		await c.click();
+		return;
+	}
+	if (expanded === "false") await c.click();
+	await reviewDrawer(page)
+		.getByRole("button", { name: "Agent status" })
 		.click();
 }
 
