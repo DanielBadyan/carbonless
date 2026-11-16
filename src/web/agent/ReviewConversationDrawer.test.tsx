@@ -15,10 +15,12 @@ import { heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import { ShortcutsProvider } from "../shortcuts";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
 import {
 	closeReviewDrawer,
+	isReviewDrawerOpen,
 	openReviewDrawer,
 	useReviewDrawerOpen,
 } from "./drawerStore";
@@ -141,19 +143,28 @@ function show(
 	if (opts.threads) {
 		client.setQueryData(agentThreadsQuery.queryKey, { threads: opts.threads });
 	}
-	render(
+	const ui = (review: string) => (
 		<QueryClientProvider client={client}>
-			<SendViewHost>
-				{opts.filesView && <FilesComparison view={opts.filesView} />}
-				<button type="button" data-testid="agent-chip">
-					chip
-				</button>
-				<ReviewConversationDrawer />
-				<States />
-			</SendViewHost>
-		</QueryClientProvider>,
+			<ShortcutsProvider>
+				<SendViewHost>
+					{opts.filesView && <FilesComparison view={opts.filesView} />}
+					<button type="button" data-testid="agent-chip">
+						chip
+					</button>
+					<ReviewConversationDrawer key={review} />
+					<States />
+				</SendViewHost>
+			</ShortcutsProvider>
+		</QueryClientProvider>
 	);
-	return { client, user: userEvent.setup() };
+	const r = render(ui("RV1"));
+	return {
+		client,
+		user: userEvent.setup(),
+		/** The same App on another review (App keys the drawer by it). */
+		review: (id: string) => r.rerender(ui(id)),
+		unmount: r.unmount,
+	};
 }
 
 const drawer = () =>
@@ -244,6 +255,17 @@ describe("ReviewConversationDrawer", () => {
 		const { user } = show({ threads: [review()] });
 		const d = screen.getByRole("dialog", { name: "Whole review conversation" });
 		expect(d).toHaveAttribute("data-mode", "phone");
+		expect(d).toHaveAttribute("aria-modal", "true");
+		// Focus stays inside: Tab from the last control comes back to the first.
+		const send = within(d).getByRole("button", { name: "Send to agent" });
+		within(d).getByRole("textbox", { name: "Ask agent" }).focus();
+		await user.type(within(d).getByRole("textbox", { name: "Ask agent" }), "x");
+		send.focus();
+		await user.tab();
+		expect(d.contains(document.activeElement)).toBe(true);
+		within(d).getByRole("button", { name: "Agent status" }).focus();
+		await user.tab({ shift: true });
+		expect(d.contains(document.activeElement)).toBe(true);
 		await user.click(within(d).getByRole("button", { name: "Agent status" }));
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
@@ -260,6 +282,42 @@ describe("ReviewConversationDrawer", () => {
 		await user.click(within(drawer()).getByRole("button", { name: "Close" }));
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 		expect(screen.getByTestId("agent-chip")).toHaveFocus();
+	});
+
+	it("never outlives its review: leaving it (unmount) or another review closes it", () => {
+		openReviewDrawer();
+		const first = show({ threads: [] });
+		first.review("RV2");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.queryByTestId("review-conversation")).toBeNull();
+		act(() => openReviewDrawer());
+		first.unmount();
+		expect(isReviewDrawerOpen()).toBe(false);
+	});
+
+	it("Shift+A closes it from inside, focus back on the chip", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [review()] });
+		expect(drawer()).toHaveFocus();
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("agent-chip")).toHaveFocus();
+	});
+
+	it("Retry on a failed read shows it is reading again: the spinner in the alert's place", async () => {
+		threadsRead = async () => json({ error: "boom" }, 500);
+		openReviewDrawer();
+		const { user } = show();
+		const alert = await within(drawer()).findByRole("alert");
+		const held = heldJson();
+		threadsRead = () => held.response;
+		await user.click(within(alert).getByRole("button", { name: "Retry" }));
+		expect(
+			within(drawer()).getByTestId("review-conversation-loading"),
+		).toHaveAttribute("aria-busy", "true");
+		expect(within(drawer()).queryByRole("alert")).toBeNull();
+		await act(async () => held.release({ threads: [] }));
+		await waitFor(() => expect(composer()).toBeInTheDocument());
 	});
 
 	it("a question asked from the Overview carries Files changed's comparison", async () => {

@@ -73,20 +73,36 @@ const ICON_BUTTON =
  * desktop): App narrows the page, header included, by DRAWER_WIDTH.
  */
 export function useDrawerPush(): boolean {
+	return useDrawerMode() === "push";
+}
+
+/**
+ * Whether the drawer lies over the page (open, desktop narrower than
+ * DRAWER_PUSH): App narrows only the pinned top (the find bar, the
+ * header), so the chip, Refresh, Settings and Find stay in reach.
+ */
+export function useDrawerOverlay(): boolean {
+	return useDrawerMode() === "overlay";
+}
+
+function useDrawerMode(): "push" | "overlay" | "phone" | null {
 	const open = useReviewDrawerOpen();
 	const on = useAgentOn();
 	const wide = useMedia(DRAWER_PUSH);
-	const push = open && on && wide;
-	// Fixed things on the right (toasts, notices) keep clear of it.
+	const desktop = useMedia(NOT_PHONE);
+	const mode =
+		!open || !on ? null : wide ? "push" : desktop ? "overlay" : "phone";
+	const docked = mode === "push" || mode === "overlay";
+	// Fixed things on the right (toasts, notices, the Files button) keep clear of it.
 	useEffect(() => {
-		if (!push) return;
+		if (!docked) return;
 		const root = document.documentElement;
 		root.style.setProperty("--drawer-push", DRAWER_WIDTH);
 		return () => {
 			root.style.removeProperty("--drawer-push");
 		};
-	}, [push]);
-	return push;
+	}, [docked]);
+	return mode;
 }
 
 const focusChip = () =>
@@ -122,9 +138,18 @@ export function ReviewConversationDrawer() {
 		when: () => on && opensDrawer,
 		run: (e) => {
 			e.preventDefault();
+			// Closed from inside: focus goes back to the chip, as Close does.
+			const inside = document
+				.getElementById("review-conversation")
+				?.contains(document.activeElement);
 			toggleReviewDrawer();
+			if (inside) focusChip();
 		},
 	});
+	// Never outlives its review: leaving it (App unmounts) or another
+	// review (App keys this by the review) closes it, so coming back never
+	// opens it, or takes focus, by itself.
+	useEffect(() => () => closeReviewDrawer(), []);
 	if (!open || !on) return null;
 	return <Drawer />;
 }
@@ -192,9 +217,30 @@ function Drawer() {
 		focusChip();
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
-		if (e.key !== "Escape" || e.defaultPrevented) return;
-		e.preventDefault();
-		close();
+		if (e.defaultPrevented) return;
+		if (e.key === "Escape") {
+			e.preventDefault();
+			close();
+			return;
+		}
+		// A phone's drawer is modal: Tab keeps to it.
+		if (e.key !== "Tab" || !phone) return;
+		const focusable = [
+			...(panel.current?.querySelectorAll<HTMLElement>(
+				'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+			) ?? []),
+		];
+		const first = focusable[0];
+		const last = focusable.at(-1);
+		if (!first || !last) return;
+		const at = document.activeElement;
+		if (e.shiftKey && (at === first || at === panel.current)) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && at === last) {
+			e.preventDefault();
+			first.focus();
+		}
 	};
 	// A phone's full-screen drawer gives way to the code or conversation a link leads to.
 	const onClick = (e: MouseEvent<HTMLElement>) => {
@@ -210,7 +256,9 @@ function Drawer() {
 			id="review-conversation"
 			data-testid="review-conversation"
 			data-mode={phone ? "phone" : push ? "push" : "overlay"}
-			role={phone ? "dialog" : "complementary"}
+			{...(phone
+				? { role: "dialog", "aria-modal": true }
+				: { role: "complementary" })}
 			aria-label="Whole review conversation"
 			tabIndex={-1}
 			onKeyDown={onKeyDown}

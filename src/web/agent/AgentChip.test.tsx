@@ -290,7 +290,9 @@ describe("the chip's tap", () => {
 		await userEvent.click(screen.getByTestId("agent-chip"));
 		act(() => closeReviewDrawer());
 		await act(async () =>
-			held.release(status({ state: "off", configured: false, agent: undefined })),
+			held.release(
+				status({ state: "off", configured: false, agent: undefined }),
+			),
 		);
 		await waitFor(() =>
 			expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy"),

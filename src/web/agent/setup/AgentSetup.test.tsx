@@ -1009,6 +1009,8 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		const { user, dialog } = await opened();
 		const row = await within(dialog).findByTestId("agent-answering-review");
 		expect(row).toHaveTextContent(/^Whole review$/);
+		// A 40px tap target (principle 5), inline in the sentence.
+		expect(row.className).toContain("min-h-10");
 		expect(
 			within(dialog).getByTestId("agent-answering-question"),
 		).toHaveTextContent(/^“Were all comments resolved\?”$/);
@@ -1039,6 +1041,7 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		const link = await within(dialog).findByRole("link", {
 			name: /host\.ts:234/,
 		});
+		expect(link.className).toContain("min-h-10");
 		expect(
 			within(dialog).getByTestId("agent-answering-question"),
 		).toHaveTextContent(/^“Why is the backlog never awaited\?”$/);

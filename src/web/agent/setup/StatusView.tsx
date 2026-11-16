@@ -362,7 +362,7 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 											onClose();
 											openReviewDrawer();
 										}}
-										className="font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+										className="inline-flex min-h-10 items-center align-middle font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 									>
 										Whole review
 									</button>
@@ -455,7 +455,7 @@ function ThreadLink(props: { thread: SpanAgentThread; onClose(): void }) {
 			search={landingOf(props.thread)}
 			onClick={props.onClose}
 			aria-label={`${a.path}${line}`}
-			className="font-mono text-[13px] text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+			className="inline-flex min-h-10 items-center align-middle font-mono text-[13px] text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
 			{fileOf(a.path)}
 			{line}
