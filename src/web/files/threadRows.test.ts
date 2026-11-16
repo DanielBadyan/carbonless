@@ -329,21 +329,43 @@ describe("blurbs", () => {
 		});
 	});
 
-	it("one the agent opened says why it did, else its first message", () => {
-		const opened = span({
-			openedBy: "ai",
-			origin: { request: "Check the **cache** keys" },
+	it("one the agent opened: the reviewer's request it came from, else its first message", () => {
+		const asked = span({
+			id: "S0",
 			messages: [
-				{ id: "m1", by: "ai", at: "2026-11-11T10:00:00Z", text: "Found one." },
+				{
+					id: "q1",
+					by: "human",
+					at: "2026-11-11T09:00:00Z",
+					text: "Check the **cache** keys",
+				},
 			],
 		});
-		expect(agentBlurb(opened)).toEqual({
+		const opened = span({
+			id: "S9",
+			openedBy: "ai",
+			messages: [
+				{
+					id: "m1",
+					by: "ai",
+					at: "2026-11-11T10:00:00Z",
+					text: "Found one.",
+					origin: { thread: "S0", message: "q1" },
+				},
+			],
+		});
+		expect(agentBlurb(opened, [asked, opened])).toEqual({
 			kind: "text",
 			text: "Check the cache keys",
 		});
-		expect(agentBlurb({ ...opened, origin: undefined })).toEqual({
+		// Its request not among the threads: its own first message.
+		expect(agentBlurb(opened, [opened])).toEqual({
 			kind: "text",
 			text: "Found one.",
+		});
+		expect(agentRows([asked, opened], new Map(), new Map())[1]?.blurb).toEqual({
+			kind: "text",
+			text: "Check the cache keys",
 		});
 	});
 

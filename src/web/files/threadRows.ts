@@ -85,12 +85,23 @@ function githubBlurb(t: ReviewThread, contentFailed: boolean): Blurb {
 
 /**
  * An agent thread's blurb: the reviewer's first question; one the agent
- * opened, why it did (its first message else).
+ * opened, the reviewer's request it came from (`origin`, a message of
+ * another of `all`), else its first message.
  */
-export function agentBlurb(t: AgentThread): Blurb {
+export function agentBlurb(
+	t: AgentThread,
+	all: readonly AgentThread[] = [],
+): Blurb {
+	const request = (): string | undefined => {
+		const origin = t.messages.find((m) => m.origin)?.origin;
+		if (!origin) return undefined;
+		return all
+			.find((o) => o.id === origin.thread)
+			?.messages.find((m) => m.id === origin.message)?.text;
+	};
 	const source =
 		t.openedBy === "ai"
-			? (t.origin?.request ?? t.messages[0]?.text ?? "")
+			? (request() ?? t.messages[0]?.text ?? "")
 			: (t.messages.find((m) => m.by === "human")?.text ??
 				t.messages[0]?.text ??
 				"");
@@ -185,7 +196,7 @@ export function agentRows(
 			id: t.id,
 			...place,
 			focus,
-			blurb: agentBlurb(t),
+			blurb: agentBlurb(t, threads),
 			at: lastMessage?.at ?? t.at,
 			resolved: t.resolved,
 			last: { kind: "agent", by: lastMessage?.by ?? t.openedBy },
