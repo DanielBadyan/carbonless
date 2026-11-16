@@ -630,11 +630,14 @@ export class Session {
 		// Marks on whole hunks the snapshot now cuts at whitespace-only runs
 		// go onto the pieces, once (CAR-156); a failed write only leaves
 		// them unreviewed.
-		const progressNow = state.patchset
-			? await step("crb: split carries", () =>
-					reviews.carrySplits(reviewId, viewer, snapshot),
-				).catch(() => state)
-			: state;
+		// Never in a view of the past or a pinned head (dev modes that don't
+		// otherwise write): their old marks just read unreviewed there.
+		const progressNow =
+			state.patchset && !asOf && !pinned
+				? await step("crb: split carries", () =>
+						reviews.carrySplits(reviewId, viewer, snapshot),
+					).catch(() => state)
+				: state;
 		// The PR's head as fetched: the graph's head dot, with its commits
 		// over the patch set (none for a view that never moves on).
 		const headInfo =
@@ -1258,9 +1261,11 @@ export class Session {
 	): Promise<ReturnType<typeof answerRereview>> {
 		// The patch sets' snapshots first: building one may carry split
 		// marks onto its pieces (#carrySplits), which the states must hold.
-		for (const record of (await this.#progress()).patchsets) {
-			if (record.number <= since.number) await this.#snapshotOf(record);
-		}
+		await Promise.all(
+			(await this.#progress()).patchsets
+				.filter((record) => record.number <= since.number)
+				.map((record) => this.#snapshotOf(record)),
+		);
 		const progress = await this.#progress();
 		return answerRereview(
 			traced,
@@ -1997,6 +2002,7 @@ export class Session {
 	 */
 	async #carrySplits(snapshot: Snapshot): Promise<void> {
 		if (this.#splitsCarried.has(snapshot.revision)) return;
+		if (this.options.asOf || this.pinned) return;
 		try {
 			this.#noted(
 				await this.reviews.carrySplits(this.reviewId, this.viewer, snapshot),

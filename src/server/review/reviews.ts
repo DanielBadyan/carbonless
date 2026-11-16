@@ -534,30 +534,44 @@ export class ReviewService {
 		checkReviewId(reviewId);
 		checkSlug(slug);
 		const ref = progressRef(reviewId, slug);
-		const existing = await this.store.readEvents(ref);
-		const progress = foldProgress(existing);
-		const states = progress.statesByRevision.get(snapshot.revision);
-		if (!states || states.size === 0) return progress;
-		const entries = splitCarries(snapshot, states);
-		if (entries.length === 0) return progress;
-		const pieces = new Set(entries.map((e) => e.key)).size;
-		const number = progress.patchsets.find(
-			(p) => p.revision === snapshot.revision,
-		)?.number;
-		const event = newEvent(
-			"split-carried",
-			slug,
-			{ patchset: snapshot.revision, states: entries },
-			"auto",
-			stamper(existing)(),
-		);
-		await this.store.appendEvent(
-			ref,
-			`crb: carried marks onto ${pieces} split cluster${pieces === 1 ? "" : "s"} of PS${number}`,
-			event,
-			slug,
-		);
-		return this.getProgress(reviewId, slug);
+		for (let attempt = 1; ; attempt++) {
+			// The tip first, then the events: a fold newer than the parent only
+			// makes the compare-and-swap fail and compute again.
+			const tip = await this.store.tip(ref);
+			const existing = await this.store.readEvents(ref);
+			const progress = foldProgress(existing);
+			const states = progress.statesByRevision.get(snapshot.revision);
+			if (!states || states.size === 0) return progress;
+			const entries = splitCarries(snapshot, states);
+			if (entries.length === 0) return progress;
+			const pieces = new Set(entries.map((e) => e.key)).size;
+			const number = progress.patchsets.find(
+				(p) => p.revision === snapshot.revision,
+			)?.number;
+			const event = newEvent(
+				"split-carried",
+				slug,
+				{ patchset: snapshot.revision, states: entries },
+				"auto",
+				stamper(existing)(),
+			);
+			const commit = await this.store.commit(
+				tip,
+				`crb: carried marks onto ${pieces} split cluster${pieces === 1 ? "" : "s"} of PS${number}`,
+				[event],
+				slug,
+			);
+			try {
+				// Lost to another writer (another tab or process opening it too):
+				// read again, so a carry already written isn't written twice.
+				await this.store.transaction([{ ref, newOid: commit, oldOid: tip }]);
+				return this.getProgress(reviewId, slug);
+			} catch (error) {
+				if (!(error instanceof RefConflictError) || attempt >= START_TRIES) {
+					throw error;
+				}
+			}
+		}
 	}
 
 	/**

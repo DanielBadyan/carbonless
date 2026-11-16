@@ -1535,6 +1535,20 @@ describe("carrySplits (CAR-156)", () => {
 		);
 	});
 
+	it("two opens at once write one carry: the one that loses the race reads again and finds nothing to write", async () => {
+		const { whole, after } = shapes();
+		await svc.recordStates(id, "dan", snap, [
+			{ key: whole.key, state: "reviewed" },
+		]);
+		await Promise.all([
+			svc.carrySplits(id, "dan", after),
+			svc.carrySplits(id, "dan", after),
+			svc.carrySplits(id, "dan", after),
+		]);
+		const events = await store.readEvents(progressRef());
+		expect(events.filter((e) => e.type === "split-carried")).toHaveLength(1);
+	});
+
 	it("writes nothing for a snapshot that is no patch set, or a hunk nobody marked", async () => {
 		const { after } = shapes();
 		await svc.carrySplits(id, "dan", after);
