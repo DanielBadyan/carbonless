@@ -32,7 +32,11 @@ import {
 	agentStatusQuery,
 	agentThreadsQuery,
 } from "./api";
-import { closeReviewDrawer, useReviewDrawerOpen } from "./drawerStore";
+import {
+	closeReviewDrawer,
+	openReviewDrawer,
+	useReviewDrawerOpen,
+} from "./drawerStore";
 import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
 import {
 	closeAgentSetup,
@@ -356,6 +360,43 @@ describe("the chip's tap", () => {
 			expect(screen.getByTestId("setup")).toHaveTextContent("open"),
 		);
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("open while the joined session leaves: still pressed, and the tap closes it, no setup", async () => {
+		const { client, user } = chipOver(status(joined({ configured: false })));
+		const chip = screen.getByTestId("agent-chip");
+		await user.click(chip);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		act(() =>
+			client.setQueryData(
+				agentStatusQuery.queryKey,
+				status({ state: "off", configured: false, agent: undefined }),
+			),
+		);
+		await waitFor(() => expect(chip).toHaveAttribute("data-state", "off"));
+		expect(chip).toHaveAttribute("aria-expanded", "true");
+		expect(chip).toHaveAttribute("aria-controls", "review-conversation");
+		expect(face().className).toContain("bg-agent");
+		await user.click(chip);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		// Closed, with no agent: the next tap is the setup's.
+		expect(chip).not.toHaveAttribute("aria-expanded");
+		await user.click(chip);
+		expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("an early tap is replayed as an open: a drawer opened meanwhile stays open", async () => {
+		const { held } = heldChip();
+		await userEvent.click(screen.getByTestId("agent-chip"));
+		act(() => openReviewDrawer());
+		await act(async () => held.release(status()));
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy"),
+		);
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
 	});
 
 	it("an early tap, then the chip leaves (another review): nothing opens later", async () => {

@@ -27,6 +27,7 @@ import { askReview, replyAgent, useAgentWrites } from "./agentWrites";
 import { agentStatusQuery, postAgentCancel, useAgentOn } from "./api";
 import {
 	closeReviewDrawer,
+	isReviewDrawerOpen,
 	toggleReviewDrawer,
 	useReviewDrawerOpen,
 } from "./drawerStore";
@@ -177,7 +178,7 @@ export function ReviewConversationDrawer() {
 		when: () => on,
 		run: (e) => {
 			e.preventDefault();
-			if (status.isPending || !opensDrawer) {
+			if (!isReviewDrawerOpen() && (status.isPending || !opensDrawer)) {
 				// The chip's press: the setup, or held for the first status read.
 				pressAgentChip(status.data, status.isPending);
 				return;

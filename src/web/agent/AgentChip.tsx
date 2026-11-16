@@ -11,7 +11,12 @@ import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
-import { toggleReviewDrawer, useReviewDrawerOpen } from "./drawerStore";
+import {
+	closeReviewDrawer,
+	isReviewDrawerOpen,
+	openReviewDrawer,
+	useReviewDrawerOpen,
+} from "./drawerStore";
 import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
 import { unseenMessages } from "./threadAgent";
@@ -125,15 +130,30 @@ export const chipOpensDrawer = (status: AgentStatus | undefined): boolean =>
  */
 let earlyPress = false;
 
-/** Presses the chip: the drawer or the setup, or, before the first status read, holds the press. */
+/** Opens what the status says: the drawer, else the setup. */
+const openForStatus = (status: AgentStatus | undefined): void => {
+	if (chipOpensDrawer(status)) openReviewDrawer();
+	else openAgentSetup();
+};
+
+/**
+ * Presses the chip: an open drawer closes, whatever the agent (it may have
+ * left while it was open); else the drawer or the setup; before the first
+ * status read, the press is held.
+ */
 export function pressAgentChip(
 	status: AgentStatus | undefined,
 	pending: boolean,
 ): void {
-	if (pending) earlyPress = !earlyPress;
-	else if (chipOpensDrawer(status)) toggleReviewDrawer();
-	else openAgentSetup();
+	if (isReviewDrawerOpen()) closeReviewDrawer();
+	else if (pending) earlyPress = !earlyPress;
+	else openForStatus(status);
 }
+
+/** Forgets a held press (tests: the flag outlives a harness without the chip). */
+export const resetAgentChipPress = (): void => {
+	earlyPress = false;
+};
 
 /** The chip's icon colour: the status dot's, as text (agentDot). */
 export function agentInk(status: AgentStatus): string {
@@ -228,7 +248,8 @@ export function AgentChip({
 	useEffect(() => {
 		if (!earlyPress || !statusData) return;
 		earlyPress = false;
-		pressAgentChip(statusData, false);
+		// Replayed as an open, never a toggle.
+		openForStatus(statusData);
 	}, [statusData]);
 	// A failed read spends it, as leaving the review does.
 	useEffect(() => {
@@ -267,8 +288,9 @@ export function AgentChip({
 	// The agent's answers not yet seen; only once the threads are read
 	// (never a 0 while they load), and only while unseen.
 	const count = thread?.unread ? unseenMessages(thread).length : 0;
-	// Until the first status read, neither: a press is held (above).
-	const drawer = !status.isPending && chipOpensDrawer(data);
+	// An open drawer is the chip's to close, whatever the agent; until the
+	// first status read, neither (a press is held, above).
+	const drawer = drawerOpen || (!status.isPending && chipOpensDrawer(data));
 	const pressed = drawerOpen && drawer;
 	// Both jobs (the conversation, the agent), then the status.
 	const name = [

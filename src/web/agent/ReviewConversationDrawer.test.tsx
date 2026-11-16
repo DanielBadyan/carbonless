@@ -16,6 +16,7 @@ import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
+import { resetAgentChipPress } from "./AgentChip";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
 import {
@@ -97,6 +98,7 @@ afterEach(() => {
 	closeAgentSetup();
 	resetAgentWrites();
 	resetAgentDrafts();
+	resetAgentChipPress();
 	vi.unstubAllGlobals();
 });
 
@@ -368,6 +370,19 @@ describe("ReviewConversationDrawer", () => {
 		await user.keyboard("{Shift>}A{/Shift}");
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+	});
+
+	it("open while the agent has gone (nothing set up now): Shift+A closes it, no setup", async () => {
+		openReviewDrawer();
+		const { user } = show({
+			threads: [review()],
+			status: { ...status, state: "off", configured: false, agent: undefined },
+		});
+		expect(drawer()).toHaveFocus();
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(screen.getByTestId("agent-chip")).toHaveFocus();
 	});
 
 	it("Shift+A before the first status read opens nothing (the chip acts once it lands)", async () => {
