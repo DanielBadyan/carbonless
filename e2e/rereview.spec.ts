@@ -639,6 +639,60 @@ test("an empty since view says so once the engine has answered, with a spinner u
 	);
 });
 
+test("a first review shows a dot for the PR's current position, viewed and up to date, with no patch set written", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const current = node(page, "snapshot");
+	await expect(current).toBeVisible();
+	await expect(current.getByTestId("ps-dot-label")).toHaveText(
+		p.head().slice(0, 7),
+	);
+	await expect(
+		current.getByRole("button", { name: "comparison target" }),
+	).toBeVisible();
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(node(page, "head")).toHaveCount(0);
+	// Its card (a click makes it sticky, on a phone too): the commit it is at.
+	const short = p.head().slice(0, 7);
+	await page.getByTestId("ps-dot-snapshot").click();
+	const details = page.getByRole("dialog", { name: `${short} details` });
+	await expect(details).toContainText("Snapshot");
+	await expect(details).toContainText("PR head · not reviewed yet");
+	await expect(details).toContainText(short);
+	await page.keyboard.press("Escape");
+	await expect(details).toHaveCount(0);
+	// The branch → dot connector counts the PR's commits, like branch → PS1.
+	// (On a phone the label is the bare number; its name says it whole.)
+	const conn = page.getByTestId("ps-conn-snapshot");
+	await expect(conn).toHaveAccessibleName(
+		`main to ${short}: 1 commit`,
+		GIT_WAIT,
+	);
+	await expect(conn.getByTestId("ps-conn-label")).toHaveText(
+		isMobile ? "1" : "1 commit",
+	);
+	await expectNoPageOverflow(page);
+	// The dot and the tail are both on screen, not scrolled out of the rail.
+	const width = page.viewportSize()?.width ?? 0;
+	for (const el of [page.getByTestId("ps-dot-snapshot"), tail(page)]) {
+		const box = await el.boundingBox();
+		expect(box).not.toBeNull();
+		expect((box?.x ?? -1) >= 0).toBe(true);
+		expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+	}
+	// A plain dot: no patch set was made for it.
+	expect(reviewRefs(s, p)).not.toContain("/patchsets/");
+});
+
 test("a newer head fills the rail's last slot and shows the toast; nothing below the rail moves, nothing takes focus", async ({
 	page,
 	pr,

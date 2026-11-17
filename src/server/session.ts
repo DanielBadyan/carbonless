@@ -744,6 +744,15 @@ export class Session {
 					commits: this.#commitsOf(mergeBase, head),
 				}),
 			),
+			...(this.#patchsets.length === 0
+				? {
+						snapshotBase: this.#snapshot.base,
+						snapshotCommits: this.#commitsOf(
+							this.#snapshot.base,
+							this.#snapshot.head,
+						),
+					}
+				: {}),
 			lastSeen: this.#lastSeen,
 			head: this.#head,
 		};
