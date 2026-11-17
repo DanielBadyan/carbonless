@@ -43,9 +43,13 @@ export async function registerAccessKey(
 		const cookie = cookieName(app);
 		const query = request.query as Record<string, unknown> | undefined;
 		if (matches(query?.key)) {
+			// Lax, not Strict: a browser holds a Strict cookie back when the
+			// reviewer clicks a link to a review on another site (GitHub),
+			// which registerHostCheck allows on purpose. Cross-site writes and
+			// opens without a click are refused there.
 			reply.setCookie(cookie, key, {
 				httpOnly: true,
-				sameSite: "strict",
+				sameSite: "lax",
 				path: "/",
 				secure: (request.headers.host ?? "").toLowerCase() === secureHost,
 			});
